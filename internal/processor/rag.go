@@ -17,7 +17,7 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 	tools := []llm.Tool{
 		{
 			Type: "function",
-			Function: llm.ToolFunction{
+			Function: &llm.FunctionDefinition{
 				Name:        "search_file",
 				Description: "Искать подстроку в файле и вернуть номера строк с совпадениями. Аргументы: query (string) - строка для поиска.",
 				Parameters: map[string]any{
@@ -34,7 +34,7 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 		},
 		{
 			Type: "function",
-			Function: llm.ToolFunction{
+			Function: &llm.FunctionDefinition{
 				Name:        "read_lines",
 				Description: "Прочитать диапазон строк из файла. Аргументы: start_line (int), end_line (int) - номера строк.",
 				Parameters: map[string]any{
