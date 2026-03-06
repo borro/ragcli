@@ -63,6 +63,14 @@ func SplitByLines(reader io.Reader, maxLength int) ([]string, error) {
 	return chunks, nil
 }
 
+// truncateString обрезает строку до максимальной длины
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
+
 // RunMapReduce выполняет map-reduce обработку.
 // prompt - вопрос пользователя для которого нужно найти ответ в файле.
 func RunMapReduce(ctx context.Context, client *llm.Client, input io.Reader, cfg *config.Config, prompt string) (string, error) {
@@ -112,7 +120,7 @@ func RunMapReduce(ctx context.Context, client *llm.Client, input io.Reader, cfg 
 	for r := range mapResults {
 		if r != "SKIP" && r != "" {
 			filteredResults = append(filteredResults, r)
-			config.Log.Debug("got map result", "result", r[:min(len(r), 100)])
+			config.Log.Debug("got map result", "result", truncateString(r, 100))
 		}
 	}
 

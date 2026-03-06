@@ -8,13 +8,16 @@ import (
 	"github.com/borro/ragcli/internal/llm"
 )
 
-// RunRAG выполняет обработку в режиме RAG (Agentic Tool Calling)
-// prompt - вопрос пользователя для которого нужно найти ответ в данных.
-// Если filePath пустой, данные читаются из stdin, иначе из файла.
-func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *config.Config, prompt string) (string, error) {
-	config.Log.Info("starting RAG processing", "file_path", filePath, "prompt", prompt, "stdin_mode", filePath == "")
+// toolsConfig содержит инструменты и системный промпт для RAG.
+type toolsConfig struct {
+	tools        []llm.Tool
+	systemMessage llm.Message
+	userQuestion llm.Message
+}
 
-	// Создаём список инструментов
+// NewToolsConfig создаёт конфигурацию инструментов для RAG.
+func NewToolsConfig(prompt string) toolsConfig {
+	// Определяем инструменты
 	tools := []llm.Tool{
 		{
 			Type: "function",
@@ -57,8 +60,9 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 	}
 
 	// Системный промпт для агента
-	messages := []llm.Message{
-		{Role: "system", Content: fmt.Sprintf(`Ты — ИИ-агент. Твоя цель - ответить на вопрос пользователя, исследуя предоставленный файл. Используй доступные инструменты (search_file и read_lines) для поиска информации в файле. Если ты не можешь найти ответ, скажи об этом. Не пытайся угадать, делай запросы к файлу.
+	systemMessage := llm.Message{
+		Role: "system",
+		Content: `Ты — ИИ-агент. Твоя цель - ответить на вопрос пользователя, исследуя предоставленный файл. Используй доступные инструменты (search_file и read_lines) для поиска информации в файле. Если ты не можешь найти ответ, скажи об этом. Не пытайся угадать, делай запросы к файлу.
 
 ВАЖНО:
 - Используй инструменты РАЗ, если это необходимо для поиска ответа.
@@ -66,30 +70,46 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 - НЕ вызывай один и тот же инструмент повторно.
 - Когда получил результаты поиска - немедленно ответь на вопрос, используя найденную информацию.
 - Если поиск ничего не нашёл - сразу скажи об этом, не пытайся искать ещё раз.
-- Всегда давай ответ на основе всех доступной информации.`, prompt)},
-		{Role: "user", Content: fmt.Sprintf("Вопрос: \"%s\"", prompt)},
+- Всегда давай ответ на основе всех доступной информации.`,
 	}
 
-	req := llm.ChatCompletionRequest{
-		Model:      client.Model(),
-		Messages:   messages,
-		Tools:      tools,
-		ToolChoice: "auto",
+	userQuestion := llm.Message{
+		Role:    "user",
+		Content: fmt.Sprintf("Вопрос: \"%s\"", prompt),
 	}
 
+	return toolsConfig{
+		tools:          tools,
+		systemMessage:  systemMessage,
+		userQuestion:   userQuestion,
+	}
+}
+
+// RunRAG выполняет обработку в режиме RAG (Agentic Tool Calling).
+// prompt - вопрос пользователя для которого нужно найти ответ в данных.
+// Если filePath пустой, данные читаются из stdin, иначе из файла.
+func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *config.Config, prompt string) (string, error) {
+	config.Log.Info("starting RAG processing", "file_path", filePath, "prompt", prompt, "stdin_mode", filePath == "")
+
+	// Создаём конфигурацию инструментов
+	ragConfig := NewToolsConfig(prompt)
+	messages := make([]llm.Message, 0, 2)
+	messages = append(messages, ragConfig.systemMessage, ragConfig.userQuestion)
+
+	// Настройки для цикла общения
 	maxTurns := 6 // Максимум циклов общения с моделью (нужен 1 ход для ответа после tool call)
+	toolsToSend := ragConfig.tools
+	var toolChoiceToSend interface{} = "auto"
+
+	// Первый запрос всегда отправляем с инструментами
 	for turn := 1; turn <= maxTurns; turn++ {
 		// На последнем ходу отключаем инструменты — модель должна дать финальный ответ
-		noTools := (turn == maxTurns)
-
-		toolsToSend := tools
-		var toolChoiceToSend interface{} = "auto"
-		if noTools {
+		if turn == maxTurns {
 			toolsToSend = nil
 			toolChoiceToSend = nil
 		}
 
-		req = llm.ChatCompletionRequest{
+		req := llm.ChatCompletionRequest{
 			Model:      client.Model(),
 			Messages:   messages,
 			Tools:      toolsToSend,
@@ -102,7 +122,7 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 		default:
 		}
 
-		config.Log.Debug("sending request to LLM", "turn", turn, "no_tools", noTools)
+		config.Log.Debug("sending request to LLM", "turn", turn, "no_tools", toolsToSend == nil)
 
 		resp, err := client.SendRequest(ctx, req)
 		if err != nil {

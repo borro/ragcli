@@ -17,21 +17,21 @@ func TestGetEnv(t *testing.T) {
 		cleanup        func()
 	}{
 		{
-			name:          "env variable set",
-			key:           "TEST_KEY",
-			envValue:      "test_value",
-			defaultValue:  "default",
+			name:           "env variable set",
+			key:            "TEST_KEY",
+			envValue:       "test_value",
+			defaultValue:   "default",
 			expectedResult: "test_value",
 		},
 		{
-			name:          "env variable not set",
+			name:           "env variable not set",
 			key:            "NON_EXISTENT_KEY",
 			envValue:       "",
 			defaultValue:   "default",
 			expectedResult: "default",
 		},
 		{
-			name:          "empty env with default",
+			name:           "empty env with default",
 			key:            "EMPTY_KEY",
 			envValue:       "",
 			defaultValue:   "fallback",
@@ -65,38 +65,38 @@ func TestGetIntEnv(t *testing.T) {
 		cleanup        func()
 	}{
 		{
-			name:          "valid integer",
-			key:           "TEST_INT",
-			envValue:      "42",
-			defaultValue:  0,
+			name:           "valid integer",
+			key:            "TEST_INT",
+			envValue:       "42",
+			defaultValue:   0,
 			expectedResult: 42,
 		},
 		{
-			name:          "invalid integer (string)",
-			key:           "TEST_INT",
+			name:           "invalid integer (string)",
+			key:            "TEST_INT",
 			envValue:       "not_a_number",
 			defaultValue:   0,
 			expectedResult: 0,
 		},
 		{
-			name:          "empty env with default",
+			name:           "empty env with default",
 			key:            "EMPTY_INT",
 			envValue:       "",
 			defaultValue:   100,
 			expectedResult: 100,
 		},
 		{
-			name:          "valid with spaces",
-			key:           "TEST_INT",
-			envValue:      "  15  ",
-			defaultValue:  0,
+			name:           "valid with spaces",
+			key:            "TEST_INT",
+			envValue:       "  15  ",
+			defaultValue:   0,
 			expectedResult: 15,
 		},
 		{
-			name:          "negative value",
-			key:           "TEST_INT",
-			envValue:      "-10",
-			defaultValue:  0,
+			name:           "negative value",
+			key:            "TEST_INT",
+			envValue:       "-10",
+			defaultValue:   0,
 			expectedResult: -10,
 		},
 	}
@@ -127,70 +127,70 @@ func TestGetBoolEnv(t *testing.T) {
 		cleanup        func()
 	}{
 		{
-			name:          "true value",
-			key:           "TEST_BOOL",
-			envValue:      "true",
-			defaultValue:  false,
+			name:           "true value",
+			key:            "TEST_BOOL",
+			envValue:       "true",
+			defaultValue:   false,
 			expectedResult: true,
 		},
 		{
-			name:          "1 as true",
-			key:           "TEST_BOOL",
-			envValue:      "1",
-			defaultValue:  false,
+			name:           "1 as true",
+			key:            "TEST_BOOL",
+			envValue:       "1",
+			defaultValue:   false,
 			expectedResult: true,
 		},
 		{
-			name:          "yes as true",
-			key:           "TEST_BOOL",
-			envValue:      "yes",
-			defaultValue:  false,
+			name:           "yes as true",
+			key:            "TEST_BOOL",
+			envValue:       "yes",
+			defaultValue:   false,
 			expectedResult: true,
 		},
 		{
-			name:          "false value",
-			key:           "TEST_BOOL",
-			envValue:      "false",
-			defaultValue:  true,
+			name:           "false value",
+			key:            "TEST_BOOL",
+			envValue:       "false",
+			defaultValue:   true,
 			expectedResult: false,
 		},
 		{
-			name:          "0 as false",
-			key:           "TEST_BOOL",
-			envValue:      "0",
-			defaultValue:  true,
+			name:           "0 as false",
+			key:            "TEST_BOOL",
+			envValue:       "0",
+			defaultValue:   true,
 			expectedResult: false,
 		},
 		{
-			name:          "no as false",
-			key:           "TEST_BOOL",
-			envValue:      "no",
-			defaultValue:  true,
+			name:           "no as false",
+			key:            "TEST_BOOL",
+			envValue:       "no",
+			defaultValue:   true,
 			expectedResult: false,
 		},
 		{
-			name:          "mixed case true",
-			key:           "TEST_BOOL",
-			envValue:      "TRUE",
-			defaultValue:  false,
+			name:           "mixed case true",
+			key:            "TEST_BOOL",
+			envValue:       "TRUE",
+			defaultValue:   false,
 			expectedResult: true,
 		},
 		{
-			name:          "mixed case false",
-			key:           "TEST_BOOL",
-			envValue:      "FALSE",
-			defaultValue:  true,
+			name:           "mixed case false",
+			key:            "TEST_BOOL",
+			envValue:       "FALSE",
+			defaultValue:   true,
 			expectedResult: false,
 		},
 		{
-			name:          "invalid value returns default",
-			key:           "TEST_BOOL",
-			envValue:      "invalid",
-			defaultValue:  true,
+			name:           "invalid value returns default",
+			key:            "TEST_BOOL",
+			envValue:       "invalid",
+			defaultValue:   true,
 			expectedResult: true,
 		},
 		{
-			name:          "empty env with default",
+			name:           "empty env with default",
 			key:            "EMPTY_BOOL",
 			envValue:       "",
 			defaultValue:   false,
@@ -224,52 +224,52 @@ func TestGetTimeDurationEnv(t *testing.T) {
 		cleanup        func()
 	}{
 		{
-			name:          "valid duration",
-			key:           "TEST_DURATION",
-			envValue:      "5m",
-			defaultValue:  10 * time.Minute,
+			name:           "valid duration",
+			key:            "TEST_DURATION",
+			envValue:       "5m",
+			defaultValue:   10 * time.Minute,
 			expectedResult: 5 * time.Minute,
 		},
 		{
-			name:          "negative duration ignored",
-			key:           "TEST_DURATION",
-			envValue:      "-1m",
-			defaultValue:  10 * time.Minute,
+			name:           "negative duration ignored",
+			key:            "TEST_DURATION",
+			envValue:       "-1m",
+			defaultValue:   10 * time.Minute,
 			expectedResult: 10 * time.Minute,
 		},
 		{
-			name:          "invalid duration format ignored",
-			key:           "TEST_DURATION",
-			envValue:      "5xyz",
-			defaultValue:  10 * time.Minute,
+			name:           "invalid duration format ignored",
+			key:            "TEST_DURATION",
+			envValue:       "5xyz",
+			defaultValue:   10 * time.Minute,
 			expectedResult: 10 * time.Minute,
 		},
 		{
-			name:          "empty env with default",
+			name:           "empty env with default",
 			key:            "EMPTY_DURATION",
 			envValue:       "",
 			defaultValue:   30 * time.Second,
 			expectedResult: 30 * time.Second,
 		},
 		{
-			name:          "valid seconds",
-			key:           "TEST_DURATION",
-			envValue:      "30s",
-			defaultValue:  10 * time.Minute,
+			name:           "valid seconds",
+			key:            "TEST_DURATION",
+			envValue:       "30s",
+			defaultValue:   10 * time.Minute,
 			expectedResult: 30 * time.Second,
 		},
 		{
-			name:          "valid hours",
-			key:           "TEST_DURATION",
-			envValue:      "2h",
-			defaultValue:  10 * time.Minute,
+			name:           "valid hours",
+			key:            "TEST_DURATION",
+			envValue:       "2h",
+			defaultValue:   10 * time.Minute,
 			expectedResult: 2 * time.Hour,
 		},
 		{
-			name:          "millisecond precision",
-			key:           "TEST_DURATION",
-			envValue:      "500ms",
-			defaultValue:  1 * time.Second,
+			name:           "millisecond precision",
+			key:            "TEST_DURATION",
+			envValue:       "500ms",
+			defaultValue:   1 * time.Second,
 			expectedResult: 500 * time.Millisecond,
 		},
 	}
@@ -292,18 +292,18 @@ func TestGetTimeDurationEnv(t *testing.T) {
 
 func TestLoadWithFlags(t *testing.T) {
 	tests := []struct {
-		name          string
-		args          []string
-		envSetup      func()
-		expectedMode  string
-		expectError   bool
-		cleanup       func()
+		name         string
+		args         []string
+		envSetup     func()
+		expectedMode string
+		expectError  bool
+		cleanup      func()
 	}{
 		{
-			name:       "valid flags with all parameters",
-			args:       []string{"-f", "test.txt", "-mode", "rag", "-api-url", "http://test.com", "-model", "gpt-4", "-c", "4", "-l", "5000", "-r", "5", "-v"},
+			name:         "valid flags with all parameters",
+			args:         []string{"-f", "test.txt", "-mode", "rag", "-api-url", "http://test.com", "-model", "gpt-4", "-c", "4", "-l", "5000", "-r", "5", "-v"},
 			expectedMode: "rag",
-			expectError: false,
+			expectError:  false,
 			cleanup: func() {
 				os.Unsetenv("INPUT_FILE")
 				os.Unsetenv("MODE")
@@ -340,10 +340,10 @@ func TestLoadWithFlags(t *testing.T) {
 			},
 		},
 		{
-			name:          "env variable overrides flag",
-			args:          []string{"-f", "flag.txt"},
-			expectedMode:  "custom_mode",
-			expectError:   false,
+			name:         "env variable overrides flag",
+			args:         []string{"-f", "flag.txt"},
+			expectedMode: "custom_mode",
+			expectError:  false,
 			envSetup: func() {
 				os.Setenv("INPUT_FILE", "env.txt")
 				os.Setenv("MODE", "custom_mode")
@@ -364,70 +364,70 @@ func TestLoadWithFlags(t *testing.T) {
 			},
 		},
 		{
-			name:          "short and long flag aliases should use same value",
-			args:          []string{"-f", "test.txt", "-file", "test2.txt"},
-			expectedMode:  "map-reduce",
-			expectError:   false,
-			cleanup: func() {
-				os.Unsetenv("INPUT_FILE")
-				os.Unsetenv("MODE")
-				os.Unsetenv("LLM_API_URL")
-				os.Unsetenv("LLM_MODEL")
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("CONCURRENCY")
-				os.Unsetenv("LENGTH")
-				os.Unsetenv("RETRY")
-				os.Unsetenv("VERBOSE")
-				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
-				os.Unsetenv("HTTP_DIAL_TIMEOUT")
-				os.Unsetenv("HTTP_TLS_TIMEOUT")
-			},
-		},
-		{
-			name:          "invalid concurrency defaults to 1",
-			args:          []string{"-c", "-1"},
-			expectedMode:  "map-reduce",
-			expectError:   false,
-			cleanup: func() {
-				os.Unsetenv("INPUT_FILE")
-				os.Unsetenv("MODE")
-				os.Unsetenv("LLM_API_URL")
-				os.Unsetenv("LLM_MODEL")
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("CONCURRENCY")
-				os.Unsetenv("LENGTH")
-				os.Unsetenv("RETRY")
-				os.Unsetenv("VERBOSE")
-				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
-				os.Unsetenv("HTTP_DIAL_TIMEOUT")
-				os.Unsetenv("HTTP_TLS_TIMEOUT")
-			},
-		},
-		{
-			name:          "invalid chunk length defaults to 1000",
-			args:          []string{"-l", "500"},
-			expectedMode:  "map-reduce",
-			expectError:   false,
-			cleanup: func() {
-				os.Unsetenv("INPUT_FILE")
-				os.Unsetenv("MODE")
-				os.Unsetenv("LLM_API_URL")
-				os.Unsetenv("LLM_MODEL")
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("CONCURRENCY")
-				os.Unsetenv("LENGTH")
-				os.Unsetenv("RETRY")
-				os.Unsetenv("VERBOSE")
-				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
-				os.Unsetenv("HTTP_DIAL_TIMEOUT")
-				os.Unsetenv("HTTP_TLS_TIMEOUT")
-			},
-		},
-		{
-			name:       "multiple positional args combined into single prompt",
-			args:       []string{"question1 question2 question3"},
+			name:         "short and long flag aliases should use same value",
+			args:         []string{"-f", "test.txt", "-file", "test2.txt"},
 			expectedMode: "map-reduce",
-			expectError: false,
+			expectError:  false,
+			cleanup: func() {
+				os.Unsetenv("INPUT_FILE")
+				os.Unsetenv("MODE")
+				os.Unsetenv("LLM_API_URL")
+				os.Unsetenv("LLM_MODEL")
+				os.Unsetenv("OPENAI_API_KEY")
+				os.Unsetenv("CONCURRENCY")
+				os.Unsetenv("LENGTH")
+				os.Unsetenv("RETRY")
+				os.Unsetenv("VERBOSE")
+				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				os.Unsetenv("HTTP_TLS_TIMEOUT")
+			},
+		},
+		{
+			name:         "invalid concurrency defaults to 1",
+			args:         []string{"-c", "-1"},
+			expectedMode: "map-reduce",
+			expectError:  false,
+			cleanup: func() {
+				os.Unsetenv("INPUT_FILE")
+				os.Unsetenv("MODE")
+				os.Unsetenv("LLM_API_URL")
+				os.Unsetenv("LLM_MODEL")
+				os.Unsetenv("OPENAI_API_KEY")
+				os.Unsetenv("CONCURRENCY")
+				os.Unsetenv("LENGTH")
+				os.Unsetenv("RETRY")
+				os.Unsetenv("VERBOSE")
+				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				os.Unsetenv("HTTP_TLS_TIMEOUT")
+			},
+		},
+		{
+			name:         "invalid chunk length defaults to 1000",
+			args:         []string{"-l", "500"},
+			expectedMode: "map-reduce",
+			expectError:  false,
+			cleanup: func() {
+				os.Unsetenv("INPUT_FILE")
+				os.Unsetenv("MODE")
+				os.Unsetenv("LLM_API_URL")
+				os.Unsetenv("LLM_MODEL")
+				os.Unsetenv("OPENAI_API_KEY")
+				os.Unsetenv("CONCURRENCY")
+				os.Unsetenv("LENGTH")
+				os.Unsetenv("RETRY")
+				os.Unsetenv("VERBOSE")
+				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				os.Unsetenv("HTTP_TLS_TIMEOUT")
+			},
+		},
+		{
+			name:         "multiple positional args combined into single prompt",
+			args:         []string{"question1 question2 question3"},
+			expectedMode: "map-reduce",
+			expectError:  false,
 			cleanup: func() {
 				os.Unsetenv("INPUT_FILE")
 				os.Unsetenv("MODE")
