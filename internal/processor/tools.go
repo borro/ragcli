@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/borro/ragcli/internal/config"
 	"github.com/borro/ragcli/internal/llm"
 )
 
@@ -203,6 +204,8 @@ func executeTool(ctx context.Context, model string, call llm.ToolCall, fr FileRe
 
 // ExecuteToolCalls обрабатывает вызовы инструментов от LLM и возвращает результаты.
 func ExecuteToolCalls(ctx context.Context, client *llm.Client, toolCalls []llm.ToolCall, path string) ([]string, error) {
+	config.Log.Debug("ExecuteToolCalls called", "path_length", len(path), "path_is_empty", path == "", "tool_calls_count", len(toolCalls))
+
 	fr := NewFileReader(path)
 
 	var results []string
@@ -215,6 +218,7 @@ func ExecuteToolCalls(ctx context.Context, client *llm.Client, toolCalls []llm.T
 
 		result, err := executeTool(ctx, client.Model(), call, fr)
 		if err != nil {
+			config.Log.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
 			results = append(results, fmt.Sprintf(`{"error": %q}`, err.Error()))
 			continue
 		}

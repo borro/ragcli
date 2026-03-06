@@ -73,10 +73,10 @@ func main() {
 	case "map-reduce":
 		result, err = processor.RunMapReduce(ctx, client, inputReader, cfg, prompt)
 	case "rag":
-		// Передаём путь к файлу (или пустой строке для stdin)
-		filePath := ""
-		if cfg.InputPath != "" {
-			filePath = cfg.InputPath
+		// Передаём путь к файлу (или tempFile для stdin режима)
+		filePath := cfg.InputPath
+		if filePath == "" && tempFile != "" {
+			filePath = tempFile
 		}
 		result, err = processor.RunRAG(ctx, client, filePath, cfg, prompt)
 	default:
