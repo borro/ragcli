@@ -20,6 +20,7 @@ type ToolCallResult struct {
 }
 
 // ExecuteToolCalls обрабатывает вызовы инструментов от LLM и возвращает результаты
+// Если filePath пустой, данные читаются из stdin
 func ExecuteToolCalls(ctx context.Context, client *llm.Client, toolCalls []llm.ToolCall, filePath string) ([]string, error) {
 	var results []string
 
@@ -30,7 +31,7 @@ func ExecuteToolCalls(ctx context.Context, client *llm.Client, toolCalls []llm.T
 		default:
 		}
 
-		config.Log.Debug("executing tool call", "name", call.Function.Name)
+		config.Log.Debug("executing tool call", "name", call.Function.Name, "file_path", filePath)
 
 		result, err := executeTool(ctx, client.Model(), call, filePath)
 		if err != nil {
@@ -82,6 +83,9 @@ func executeTool(ctx context.Context, model string, call llm.ToolCall, filePath 
 
 // SearchFile ищет подстроку или regex в файле, возвращает номера строк с совпадениями
 func SearchFile(filePath, query string) (string, error) {
+	if filePath == "" {
+		return readFromStdinAndSearch(query)
+	}
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
@@ -111,12 +115,40 @@ func SearchFile(filePath, query string) (string, error) {
 	return strings.Join(results, "\n"), nil
 }
 
+// readFromStdinAndSearch читает данные из stdin и ищет подстроку
+func readFromStdinAndSearch(query string) (string, error) {
+	var results []string
+	lineNum := 1
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(strings.ToLower(line), strings.ToLower(query)) {
+			results = append(results, fmt.Sprintf("Line %d: %s", lineNum, line))
+		}
+		lineNum++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("failed to scan stdin: %w", err)
+	}
+
+	if len(results) == 0 {
+		return "Нет совпадений в stdin", nil
+	}
+
+	return strings.Join(results, "\n"), nil
+}
+
 // ReadLines читает диапазон строк из файла
 func ReadLines(filePath string, startLine, endLine int) (string, error) {
 	if startLine < 1 {
 		startLine = 1
 	}
 
+	if filePath == "" {
+		return readLinesFromStdin(startLine, endLine)
+	}
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
@@ -140,6 +172,30 @@ func ReadLines(filePath string, startLine, endLine int) (string, error) {
 
 	if len(results) == 0 {
 		return "Нет строк в указанном диапазоне", nil
+	}
+
+	return strings.Join(results, "\n"), nil
+}
+
+// readLinesFromStdin читает диапазон строк из stdin
+func readLinesFromStdin(startLine, endLine int) (string, error) {
+	var results []string
+	lineNum := 1
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() && lineNum <= endLine {
+		if lineNum >= startLine {
+			results = append(results, fmt.Sprintf("%d: %s", lineNum, scanner.Text()))
+		}
+		lineNum++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("failed to scan stdin: %w", err)
+	}
+
+	if len(results) == 0 {
+		return "Нет строк в stdin в указанном диапазоне", nil
 	}
 
 	return strings.Join(results, "\n"), nil

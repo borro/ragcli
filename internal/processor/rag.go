@@ -9,9 +9,10 @@ import (
 )
 
 // RunRAG выполняет обработку в режиме RAG (Agentic Tool Calling)
-// prompt - вопрос пользователя для которого нужно найти ответ в файле.
+// prompt - вопрос пользователя для которого нужно найти ответ в данных.
+// Если filePath пустой, данные читаются из stdin, иначе из файла.
 func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *config.Config, prompt string) (string, error) {
-	config.Log.Info("starting RAG processing", "file_path", filePath, "prompt", prompt)
+	config.Log.Info("starting RAG processing", "file_path", filePath, "prompt", prompt, "stdin_mode", filePath == "")
 
 	// Создаём список инструментов
 	tools := []llm.Tool{
@@ -19,7 +20,7 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 			Type: "function",
 			Function: &llm.FunctionDefinition{
 				Name:        "search_file",
-				Description: "Искать подстроку в файле и вернуть номера строк с совпадениями. Аргументы: query (string) - строка для поиска.",
+				Description: "Искать подстроку в файле и вернуть номера строк с совпадениями. Аргументы: query (string) - строка для поиска. ИСПОЛЬЗУЙ ЭТОТ ИНСТРУМЕНТ ТОЛЬКО ОДИН РАЗ!",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -57,7 +58,16 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 
 	// Системный промпт для агента
 	messages := []llm.Message{
-		{Role: "system", Content: fmt.Sprintf("Ты — ИИ-агент. Пользователь задал вопрос по большому файлу. Его вопрос: \"%s\". Используй доступные инструменты (search_file и read_lines), чтобы исследовать файл и найти ответ. Не пытайся угадать, делай запросы к файлу", prompt)},
+		{Role: "system", Content: fmt.Sprintf(`Ты — ИИ-агент. Твоя цель - ответить на вопрос пользователя, исследуя предоставленный файл. Используй доступные инструменты (search_file и read_lines) для поиска информации в файле. Если ты не можешь найти ответ, скажи об этом. Не пытайся угадать, делай запросы к файлу.
+
+ВАЖНО:
+- Используй инструменты РАЗ, если это необходимо для поиска ответа.
+- После получения результатов инструмента ПРЯМО СРАЗУ сформулируй ответ на вопрос пользователя.
+- НЕ вызывай один и тот же инструмент повторно.
+- Когда получил результаты поиска - немедленно ответь на вопрос, используя найденную информацию.
+- Если поиск ничего не нашёл - сразу скажи об этом, не пытайся искать ещё раз.
+- Всегда давай ответ на основе всех доступной информации.`, prompt)},
+		{Role: "user", Content: fmt.Sprintf("Вопрос: \"%s\"", prompt)},
 	}
 
 	req := llm.ChatCompletionRequest{
@@ -67,15 +77,32 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 		ToolChoice: "auto",
 	}
 
-	maxTurns := 10 // Максимум циклов общения с моделью
+	maxTurns := 6 // Максимум циклов общения с моделью (нужен 1 ход для ответа после tool call)
 	for turn := 1; turn <= maxTurns; turn++ {
+		// На последнем ходу отключаем инструменты — модель должна дать финальный ответ
+		noTools := (turn == maxTurns)
+
+		toolsToSend := tools
+		var toolChoiceToSend interface{} = "auto"
+		if noTools {
+			toolsToSend = nil
+			toolChoiceToSend = nil
+		}
+
+		req = llm.ChatCompletionRequest{
+			Model:      client.Model(),
+			Messages:   messages,
+			Tools:      toolsToSend,
+			ToolChoice: toolChoiceToSend,
+		}
+
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		default:
 		}
 
-		config.Log.Debug("sending request to LLM", "turn", turn)
+		config.Log.Debug("sending request to LLM", "turn", turn, "no_tools", noTools)
 
 		resp, err := client.SendRequest(ctx, req)
 		if err != nil {
@@ -89,7 +116,7 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 		choice := resp.Choices[0]
 		messages = append(messages, choice.Message)
 
-		config.Log.Debug("got response from LLM", "role", choice.Message.Role)
+		config.Log.Debug("got response from LLM", "role", choice.Message.Role, "content", choice.Message.Content)
 
 		// Проверяем, есть ли tool calls
 		if len(choice.Message.ToolCalls) > 0 {
@@ -101,7 +128,8 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 				return "", fmt.Errorf("failed to execute tool calls: %w", err)
 			}
 
-			// Добавляем результаты в историю диалога
+			// Добавляем результаты в историю диалога (в правильном порядке согласно спецификации)
+			config.Log.Debug("tool calls results", "results", results)
 			for _, result := range results {
 				messages = append(messages, llm.Message{
 					Role:       "tool",
@@ -109,6 +137,19 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 					Content:    result,
 					ToolCallID: choice.Message.ToolCalls[0].ID,
 				})
+			}
+
+			// Добавляем assistant message с результатами tool calls, чтобы модель использовала их
+			toolResponse := fmt.Sprintf("Я выполнил поиск. Вот результаты:\n\n%s\n\nТеперь ответь на вопрос пользователя, используя найденную информацию.", results[0])
+			messages = append(messages, llm.Message{
+				Role:    "assistant",
+				Content: toolResponse,
+			})
+
+			// Если это был последний ход, не продолжаем цикл — возвращаем результаты tool calls
+			if turn == maxTurns {
+				config.Log.Info("this was the last turn, returning tool results as answer")
+				return results[0], nil
 			}
 
 			continue

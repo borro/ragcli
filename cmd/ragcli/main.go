@@ -73,7 +73,12 @@ func main() {
 	case "map-reduce":
 		result, err = processor.RunMapReduce(ctx, client, inputReader, cfg, prompt)
 	case "rag":
-		result, err = processor.RunRAG(ctx, client, cfg.InputPath, cfg, prompt)
+		// Передаём путь к файлу (или пустой строке для stdin)
+		filePath := ""
+		if cfg.InputPath != "" {
+			filePath = cfg.InputPath
+		}
+		result, err = processor.RunRAG(ctx, client, filePath, cfg, prompt)
 	default:
 		err = fmt.Errorf("unknown mode: %s", cfg.Mode)
 	}
@@ -88,47 +93,47 @@ func main() {
 
 // getInputReader открывает файл или читает stdin во временный файл
 func getInputReader(inputPath string) (io.Reader, string, error) {
-	if inputPath == "" {
-		// Читаем из stdin во временный файл
-		tmpFile, err := os.CreateTemp("", "ragcli-stdin-*.txt")
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to create temp file: %w", err)
-		}
-		defer tmpFile.Close()
-
-		reader := bufio.NewReader(os.Stdin)
-		for {
-			line, err := reader.ReadString('\n')
-			if _, writeErr := tmpFile.WriteString(line); writeErr != nil {
-				return nil, "", fmt.Errorf("failed to write to temp file: %w", writeErr)
-			}
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, "", fmt.Errorf("failed to read stdin: %w", err)
-			}
-		}
-
-		// Сбрасываем буфер и возвращаемся в начало файла
-		tmpFile.Sync()
-		f, err := os.Open(tmpFile.Name())
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to reopen temp file: %w", err)
-		}
-		return f, tmpFile.Name(), nil
-	}
-
 	// Проверяем, существует ли файл
-	if _, err := os.Stat(inputPath); os.IsNotExist(err) {
-		return nil, "", fmt.Errorf("file does not exist: %s", inputPath)
+	if inputPath != "" {
+		if _, err := os.Stat(inputPath); os.IsNotExist(err) {
+			return nil, "", fmt.Errorf("file does not exist: %s", inputPath)
+		}
+
+		f, err := os.Open(inputPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to open file: %w", err)
+		}
+		return f, "", nil
 	}
 
-	f, err := os.Open(inputPath)
+	// Читаем из stdin во временный файл
+	tmpFile, err := os.CreateTemp("", "ragcli-stdin-*.txt")
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to open file: %w", err)
+		return nil, "", fmt.Errorf("failed to create temp file: %w", err)
 	}
-	return f, "", nil
+	defer tmpFile.Close()
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		line, err := reader.ReadString('\n')
+		if _, writeErr := tmpFile.WriteString(line); writeErr != nil {
+			return nil, "", fmt.Errorf("failed to write to temp file: %w", writeErr)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to read stdin: %w", err)
+		}
+	}
+
+	// Сбрасываем буфер и возвращаемся в начало файла
+	tmpFile.Sync()
+	f, err := os.Open(tmpFile.Name())
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to reopen temp file: %w", err)
+	}
+	return f, tmpFile.Name(), nil
 }
 
 // printConfigDebug выводит все параметры конфигурации в debug режиме
