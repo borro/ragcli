@@ -45,3 +45,7 @@ coverage.json
 *.temp
 .cache/
 .nyc_output/
+
+# Build and release artifacts
+*.exe
+*.bin
