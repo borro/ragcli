@@ -158,11 +158,3 @@ func RunReduce(ctx context.Context, client *llm.Client, results []string, prompt
 
 	return resp.Choices[0].Message.Content, nil
 }
-
-// min вспомогательная функция
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
