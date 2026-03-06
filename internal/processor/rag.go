@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/borro/ragcli/internal/config"
 	"github.com/borro/ragcli/internal/llm"
@@ -150,12 +151,12 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 
 			// Добавляем результаты в историю диалога (в правильном порядке согласно спецификации)
 			config.Log.Debug("tool calls results", "results", results)
-			for _, result := range results {
+			for i, result := range results {
 				messages = append(messages, llm.Message{
 					Role:       "tool",
-					Name:       choice.Message.ToolCalls[0].Function.Name,
+					Name:       choice.Message.ToolCalls[i].Function.Name,
 					Content:    result,
-					ToolCallID: choice.Message.ToolCalls[0].ID,
+					ToolCallID: choice.Message.ToolCalls[i].ID,
 				})
 			}
 
@@ -169,7 +170,7 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 			// Если это был последний ход, не продолжаем цикл — возвращаем результаты tool calls
 			if turn == maxTurns {
 				config.Log.Info("this was the last turn, returning tool results as answer")
-				return results[0], nil
+				return strings.TrimSpace(results[0]), nil
 			}
 
 			continue
@@ -177,7 +178,7 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 
 		// Если нет tool calls, значит модель сгенерировала финальный ответ
 		config.Log.Info("received final answer from model")
-		return choice.Message.Content, nil
+		return strings.TrimSpace(choice.Message.Content), nil
 	}
 
 	return "", fmt.Errorf("max turns reached without final answer")

@@ -164,5 +164,5 @@ func RunReduce(ctx context.Context, client *llm.Client, results []string, prompt
 		return "", fmt.Errorf("no choices in reduce response")
 	}
 
-	return resp.Choices[0].Message.Content, nil
+	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
 }

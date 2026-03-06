@@ -78,7 +78,7 @@ func (c *Client) SendRequest(ctx context.Context, req ChatCompletionRequest) (*C
 
 		// Проверяем тип ошибки и решаем стоит ли retry
 		if attempt <= c.retryCount {
-			delay := 2 << (attempt - 1) // exponential backoff: 2, 4, 8 seconds
+			delay := 1 << (attempt - 1) // exponential backoff: 1, 2, 4, 8 seconds
 			config.Log.Debug("retrying request", "attempt", attempt+1, "delay_seconds", delay)
 			select {
 			case <-ctx.Done():
