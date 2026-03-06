@@ -128,7 +128,9 @@ func getInputReader(inputPath string) (io.Reader, string, error) {
 	}
 
 	// Сбрасываем буфер и возвращаемся в начало файла
-	tmpFile.Sync()
+	if err := tmpFile.Sync(); err != nil {
+		return nil, "", fmt.Errorf("failed to sync temp file: %w", err)
+	}
 	f, err := os.Open(tmpFile.Name())
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to reopen temp file: %w", err)

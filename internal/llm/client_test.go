@@ -207,7 +207,7 @@ func TestSendRequest_ContextCancelled(t *testing.T) {
 
 			// Ошибка должна быть либо ctx.Err(), либо custom error о завершении попыток
 			if !isContextError(err) {
-				// Если ошибка не контекстная, она может быть о завершении retries
+				t.Log("non-context error occurred (expected for exhausted retries)")
 			}
 		})
 	}

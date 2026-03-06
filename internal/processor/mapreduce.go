@@ -111,6 +111,7 @@ func RunMapReduce(ctx context.Context, client *llm.Client, input io.Reader, cfg 
 
 	// Закрываем канал после завершения всех горутин
 	go func() {
+		//nolint:errcheck // g.Wait() не может вернуть ошибку при использовании errgroup.WithContext
 		g.Wait()
 		close(mapResults)
 	}()

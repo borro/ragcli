@@ -1,4 +1,3 @@
-- [x] добавить конфигурируемые HTTP таймауты (Dial, TLS, Request)
-- [x] увеличить таймаут запроса по умолчанию до 10 минут
 - [ ] проверить на prompt-injection
 - [ ] написать автотесты на утилиту
+- [ ] разобраться с internal/processor/mapreduce.go:115:9: Error return value of `g.Wait` is not checked (errcheck)
