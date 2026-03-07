@@ -15,9 +15,15 @@ builds:
     goarch:
       - amd64
       - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
 
 archives:
-  - name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+  - id: default
+    builds:
+      - ragcli
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
     format_overrides:
@@ -27,3 +33,6 @@ archives:
 
 checksum:
   name_template: checksums.txt
+
+changelog:
+  use: git

@@ -1,0 +1,11 @@
+pre-commit:
+  parallel: false
+  commands:
+    gofmt:
+      glob: "*.go"
+      run: gofmt -w {staged_files}
+      stage_fixed: true
+    golangci-lint:
+      run: golangci-lint run --timeout=5m ./cmd/... ./internal/...
+    go-test:
+      run: go test ./...

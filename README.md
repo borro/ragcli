@@ -1,5 +1,8 @@
 # RAG CLI — Инструмент для работы с LLM через RAG и Map-Reduce
 
+[![CI main](https://github.com/borro/ragcli/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/borro/ragcli/actions/workflows/ci.yaml)
+[![Coverage](https://codecov.io/gh/borro/ragcli/graph/badge.svg)](https://codecov.io/gh/borro/ragcli)
+
 Командная строка для обработки больших текстовых файлов с помощью LLM (Large Language Models) двумя режимами: **Map-Reduce** и **Agentic Tool Calling (RAG)**.
 
 ## Какую проблему решает ragcli
@@ -67,10 +70,10 @@ ragcli/
 
 ```bash
 # Сборка бинарника
-go build -o ragcli ./cmd/ragcli/main.go
+go build -o ragcli ./cmd/ragcli
 
 # Или запуск напрямую
-go run ./cmd/ragcli/main.go --help
+go run ./cmd/ragcli --help
 ```
 
 ## CLI Флаги
@@ -236,9 +239,29 @@ export HTTP_REQUEST_TIMEOUT=15m
 
 Детали workflow см. в `.github/workflows/ci.yaml`
 
+### Pre-commit хуки
+
+Локальные проверки перед коммитом запускаются через `lefthook`.
+
+Установка:
+```bash
+go install github.com/evilmartians/lefthook@latest
+curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin $(cat .golangci-lint-version)
+lefthook install
+```
+
+Для репозитория зафиксирована версия `golangci-lint` из `.golangci-lint-version`.
+
+Хук `pre-commit` выполняет проверки в таком порядке:
+- `gofmt` для staged `.go` файлов с автоматическим добавлением исправлений в индекс
+- `golangci-lint run --timeout=5m ./cmd/... ./internal/...`
+- `go test ./...`
+
+Эти хуки дублируют базовые проверки CI, но не заменяют GitHub Actions.
+
 ### Автоматические релизы
 
-При создании тега вида `vX.Y.Z` автоматически создаётся релиз с бинарниками для всех платформ через [goreleaser](https://goreleaser.com/).
+При создании тега вида `vX.Y.Z` автоматически создаётся релиз с бинарниками для всех платформ через [goreleaser](https://goreleaser.com/). Конфигурация релиза зафиксирована в `.goreleaser.yml`.
 
 Для создания нового релиза:
 ```bash
@@ -252,4 +275,9 @@ git tag v1.0.0 && git push origin v1.0.0
 go build -o ragcli ./cmd/ragcli
 ```
 
-Для кроссплатформенной сборки используйте скрипт в `test.sh` или соберите отдельно для каждой платформы через переменные `GOOS` и `GOARCH`.
+Для проверки release-конфига без публикации можно использовать dry-run:
+```bash
+goreleaser release --clean --snapshot --skip=publish --config .goreleaser.yml
+```
+
+Для кроссплатформенной сборки используйте GoReleaser или соберите отдельно для каждой платформы через переменные `GOOS` и `GOARCH`.
