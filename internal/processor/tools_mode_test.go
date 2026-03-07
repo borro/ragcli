@@ -98,8 +98,8 @@ func TestRunTools_MultiStepToolLoop(t *testing.T) {
 }
 
 func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
-	responses := make([]*llm.ChatCompletionResponse, 0, ragMaxTurns)
-	for i := 0; i < ragMaxTurns; i++ {
+	responses := make([]*llm.ChatCompletionResponse, 0, toolsMaxTurns)
+	for i := 0; i < toolsMaxTurns; i++ {
 		responses = append(responses, chatResponse(message("assistant", "", []openai.ToolCall{
 			toolCall("loop-call", "search_file", `{"query":"x"}`),
 		})))
