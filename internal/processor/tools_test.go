@@ -99,7 +99,11 @@ func TestSearchFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() {
+		if cerr := os.Remove(tmpFile.Name()); cerr != nil {
+			t.Logf("failed to remove temp file: %v", cerr)
+		}
+	}()
 
 	testContent := `первая строка
 вторая строка с текстом
@@ -110,7 +114,9 @@ func TestSearchFile(t *testing.T) {
 	if _, err := tmpFile.WriteString(testContent); err != nil {
 		t.Fatalf("Failed to write to temp file: %v", err)
 	}
-	tmpFile.Close()
+	if cerr := tmpFile.Close(); cerr != nil {
+		t.Logf("failed to close temp file: %v", cerr)
+	}
 
 	tests := []struct {
 		name           string
@@ -169,7 +175,11 @@ func TestReadLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() {
+		if cerr := os.Remove(tmpFile.Name()); cerr != nil {
+			t.Logf("failed to remove temp file: %v", cerr)
+		}
+	}()
 
 	testContent := `первая строка
 вторая строка
@@ -185,7 +195,9 @@ func TestReadLines(t *testing.T) {
 	if _, err := tmpFile.WriteString(testContent); err != nil {
 		t.Fatalf("Failed to write to temp file: %v", err)
 	}
-	tmpFile.Close()
+	if cerr := tmpFile.Close(); cerr != nil {
+		t.Logf("failed to close temp file: %v", cerr)
+	}
 
 	tests := []struct {
 		name           string

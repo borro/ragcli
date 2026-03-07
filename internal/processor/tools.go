@@ -36,7 +36,11 @@ func (fr *fileReader) Search(query string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			config.Log.Warn("failed to close file in Search", "error", cerr)
+		}
+	}()
 
 	var results []string
 	scanner := bufio.NewScanner(file)
@@ -71,7 +75,11 @@ func (fr *fileReader) ReadLines(start, end int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			config.Log.Warn("failed to close file in ReadLines", "error", cerr)
+		}
+	}()
 
 	var results []string
 	scanner := bufio.NewScanner(file)

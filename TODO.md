@@ -1,4 +1,4 @@
 - [ ] проверить на prompt-injection
-- [ ] написать автотесты на утилиту
 - [ ] разобраться с internal/processor/mapreduce.go:115:9: Error return value of `g.Wait` is not checked (errcheck)
 - [ ] обновить golangci-lint run до 2 версии
+- [ ] добавить версию через goreleaser

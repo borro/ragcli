@@ -42,8 +42,14 @@ func TestGetEnv(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.envValue != "" {
-				os.Setenv(tt.key, tt.envValue)
-				cleanup := func() { os.Unsetenv(tt.key) }
+				if err := os.Setenv(tt.key, tt.envValue); err != nil {
+					t.Fatalf("failed to set env: %v", err)
+				}
+				cleanup := func() {
+					if err := os.Unsetenv(tt.key); err != nil {
+						t.Logf("failed to unset env: %v", err)
+					}
+				}
 				defer cleanup()
 			}
 
@@ -104,8 +110,14 @@ func TestGetIntEnv(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.envValue != "" {
-				os.Setenv(tt.key, tt.envValue)
-				cleanup := func() { os.Unsetenv(tt.key) }
+				if err := os.Setenv(tt.key, tt.envValue); err != nil {
+					t.Fatalf("failed to set env: %v", err)
+				}
+				cleanup := func() {
+					if err := os.Unsetenv(tt.key); err != nil {
+						t.Logf("failed to unset env: %v", err)
+					}
+				}
 				defer cleanup()
 			}
 
@@ -201,8 +213,14 @@ func TestGetBoolEnv(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.envValue != "" {
-				os.Setenv(tt.key, tt.envValue)
-				cleanup := func() { os.Unsetenv(tt.key) }
+				if err := os.Setenv(tt.key, tt.envValue); err != nil {
+					t.Fatalf("failed to set env: %v", err)
+				}
+				cleanup := func() {
+					if err := os.Unsetenv(tt.key); err != nil {
+						t.Logf("failed to unset env: %v", err)
+					}
+				}
 				defer cleanup()
 			}
 
@@ -277,8 +295,14 @@ func TestGetTimeDurationEnv(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.envValue != "" {
-				os.Setenv(tt.key, tt.envValue)
-				cleanup := func() { os.Unsetenv(tt.key) }
+				if err := os.Setenv(tt.key, tt.envValue); err != nil {
+					t.Fatalf("failed to set env: %v", err)
+				}
+				cleanup := func() {
+					if err := os.Unsetenv(tt.key); err != nil {
+						t.Logf("failed to unset env: %v", err)
+					}
+				}
 				defer cleanup()
 			}
 
@@ -305,18 +329,18 @@ func TestLoadWithFlags(t *testing.T) {
 			expectedMode: "rag",
 			expectError:  false,
 			cleanup: func() {
-				os.Unsetenv("INPUT_FILE")
-				os.Unsetenv("MODE")
-				os.Unsetenv("LLM_API_URL")
-				os.Unsetenv("LLM_MODEL")
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("CONCURRENCY")
-				os.Unsetenv("LENGTH")
-				os.Unsetenv("RETRY")
-				os.Unsetenv("VERBOSE")
-				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
-				os.Unsetenv("HTTP_DIAL_TIMEOUT")
-				os.Unsetenv("HTTP_TLS_TIMEOUT")
+				_ = os.Unsetenv("INPUT_FILE")
+				_ = os.Unsetenv("MODE")
+				_ = os.Unsetenv("LLM_API_URL")
+				_ = os.Unsetenv("LLM_MODEL")
+				_ = os.Unsetenv("OPENAI_API_KEY")
+				_ = os.Unsetenv("CONCURRENCY")
+				_ = os.Unsetenv("LENGTH")
+				_ = os.Unsetenv("RETRY")
+				_ = os.Unsetenv("VERBOSE")
+				_ = os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				_ = os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				_ = os.Unsetenv("HTTP_TLS_TIMEOUT")
 			},
 		},
 		{
@@ -325,18 +349,18 @@ func TestLoadWithFlags(t *testing.T) {
 			expectedMode: "map-reduce",
 			expectError:  false,
 			cleanup: func() {
-				os.Unsetenv("INPUT_FILE")
-				os.Unsetenv("MODE")
-				os.Unsetenv("LLM_API_URL")
-				os.Unsetenv("LLM_MODEL")
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("CONCURRENCY")
-				os.Unsetenv("LENGTH")
-				os.Unsetenv("RETRY")
-				os.Unsetenv("VERBOSE")
-				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
-				os.Unsetenv("HTTP_DIAL_TIMEOUT")
-				os.Unsetenv("HTTP_TLS_TIMEOUT")
+				_ = os.Unsetenv("INPUT_FILE")
+				_ = os.Unsetenv("MODE")
+				_ = os.Unsetenv("LLM_API_URL")
+				_ = os.Unsetenv("LLM_MODEL")
+				_ = os.Unsetenv("OPENAI_API_KEY")
+				_ = os.Unsetenv("CONCURRENCY")
+				_ = os.Unsetenv("LENGTH")
+				_ = os.Unsetenv("RETRY")
+				_ = os.Unsetenv("VERBOSE")
+				_ = os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				_ = os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				_ = os.Unsetenv("HTTP_TLS_TIMEOUT")
 			},
 		},
 		{
@@ -345,22 +369,26 @@ func TestLoadWithFlags(t *testing.T) {
 			expectedMode: "custom_mode",
 			expectError:  false,
 			envSetup: func() {
-				os.Setenv("INPUT_FILE", "env.txt")
-				os.Setenv("MODE", "custom_mode")
+				if err := os.Setenv("INPUT_FILE", "env.txt"); err != nil {
+					t.Fatalf("failed to set INPUT_FILE env: %v", err)
+				}
+				if err := os.Setenv("MODE", "custom_mode"); err != nil {
+					t.Fatalf("failed to set MODE env: %v", err)
+				}
 			},
 			cleanup: func() {
-				os.Unsetenv("INPUT_FILE")
-				os.Unsetenv("MODE")
-				os.Unsetenv("LLM_API_URL")
-				os.Unsetenv("LLM_MODEL")
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("CONCURRENCY")
-				os.Unsetenv("LENGTH")
-				os.Unsetenv("RETRY")
-				os.Unsetenv("VERBOSE")
-				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
-				os.Unsetenv("HTTP_DIAL_TIMEOUT")
-				os.Unsetenv("HTTP_TLS_TIMEOUT")
+				_ = os.Unsetenv("INPUT_FILE")
+				_ = os.Unsetenv("MODE")
+				_ = os.Unsetenv("LLM_API_URL")
+				_ = os.Unsetenv("LLM_MODEL")
+				_ = os.Unsetenv("OPENAI_API_KEY")
+				_ = os.Unsetenv("CONCURRENCY")
+				_ = os.Unsetenv("LENGTH")
+				_ = os.Unsetenv("RETRY")
+				_ = os.Unsetenv("VERBOSE")
+				_ = os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				_ = os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				_ = os.Unsetenv("HTTP_TLS_TIMEOUT")
 			},
 		},
 		{
@@ -369,18 +397,18 @@ func TestLoadWithFlags(t *testing.T) {
 			expectedMode: "map-reduce",
 			expectError:  false,
 			cleanup: func() {
-				os.Unsetenv("INPUT_FILE")
-				os.Unsetenv("MODE")
-				os.Unsetenv("LLM_API_URL")
-				os.Unsetenv("LLM_MODEL")
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("CONCURRENCY")
-				os.Unsetenv("LENGTH")
-				os.Unsetenv("RETRY")
-				os.Unsetenv("VERBOSE")
-				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
-				os.Unsetenv("HTTP_DIAL_TIMEOUT")
-				os.Unsetenv("HTTP_TLS_TIMEOUT")
+				_ = os.Unsetenv("INPUT_FILE")
+				_ = os.Unsetenv("MODE")
+				_ = os.Unsetenv("LLM_API_URL")
+				_ = os.Unsetenv("LLM_MODEL")
+				_ = os.Unsetenv("OPENAI_API_KEY")
+				_ = os.Unsetenv("CONCURRENCY")
+				_ = os.Unsetenv("LENGTH")
+				_ = os.Unsetenv("RETRY")
+				_ = os.Unsetenv("VERBOSE")
+				_ = os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				_ = os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				_ = os.Unsetenv("HTTP_TLS_TIMEOUT")
 			},
 		},
 		{
@@ -389,18 +417,18 @@ func TestLoadWithFlags(t *testing.T) {
 			expectedMode: "map-reduce",
 			expectError:  false,
 			cleanup: func() {
-				os.Unsetenv("INPUT_FILE")
-				os.Unsetenv("MODE")
-				os.Unsetenv("LLM_API_URL")
-				os.Unsetenv("LLM_MODEL")
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("CONCURRENCY")
-				os.Unsetenv("LENGTH")
-				os.Unsetenv("RETRY")
-				os.Unsetenv("VERBOSE")
-				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
-				os.Unsetenv("HTTP_DIAL_TIMEOUT")
-				os.Unsetenv("HTTP_TLS_TIMEOUT")
+				_ = os.Unsetenv("INPUT_FILE")
+				_ = os.Unsetenv("MODE")
+				_ = os.Unsetenv("LLM_API_URL")
+				_ = os.Unsetenv("LLM_MODEL")
+				_ = os.Unsetenv("OPENAI_API_KEY")
+				_ = os.Unsetenv("CONCURRENCY")
+				_ = os.Unsetenv("LENGTH")
+				_ = os.Unsetenv("RETRY")
+				_ = os.Unsetenv("VERBOSE")
+				_ = os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				_ = os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				_ = os.Unsetenv("HTTP_TLS_TIMEOUT")
 			},
 		},
 		{
@@ -409,18 +437,18 @@ func TestLoadWithFlags(t *testing.T) {
 			expectedMode: "map-reduce",
 			expectError:  false,
 			cleanup: func() {
-				os.Unsetenv("INPUT_FILE")
-				os.Unsetenv("MODE")
-				os.Unsetenv("LLM_API_URL")
-				os.Unsetenv("LLM_MODEL")
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("CONCURRENCY")
-				os.Unsetenv("LENGTH")
-				os.Unsetenv("RETRY")
-				os.Unsetenv("VERBOSE")
-				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
-				os.Unsetenv("HTTP_DIAL_TIMEOUT")
-				os.Unsetenv("HTTP_TLS_TIMEOUT")
+				_ = os.Unsetenv("INPUT_FILE")
+				_ = os.Unsetenv("MODE")
+				_ = os.Unsetenv("LLM_API_URL")
+				_ = os.Unsetenv("LLM_MODEL")
+				_ = os.Unsetenv("OPENAI_API_KEY")
+				_ = os.Unsetenv("CONCURRENCY")
+				_ = os.Unsetenv("LENGTH")
+				_ = os.Unsetenv("RETRY")
+				_ = os.Unsetenv("VERBOSE")
+				_ = os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				_ = os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				_ = os.Unsetenv("HTTP_TLS_TIMEOUT")
 			},
 		},
 		{
@@ -429,18 +457,18 @@ func TestLoadWithFlags(t *testing.T) {
 			expectedMode: "map-reduce",
 			expectError:  false,
 			cleanup: func() {
-				os.Unsetenv("INPUT_FILE")
-				os.Unsetenv("MODE")
-				os.Unsetenv("LLM_API_URL")
-				os.Unsetenv("LLM_MODEL")
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("CONCURRENCY")
-				os.Unsetenv("LENGTH")
-				os.Unsetenv("RETRY")
-				os.Unsetenv("VERBOSE")
-				os.Unsetenv("HTTP_REQUEST_TIMEOUT")
-				os.Unsetenv("HTTP_DIAL_TIMEOUT")
-				os.Unsetenv("HTTP_TLS_TIMEOUT")
+				_ = os.Unsetenv("INPUT_FILE")
+				_ = os.Unsetenv("MODE")
+				_ = os.Unsetenv("LLM_API_URL")
+				_ = os.Unsetenv("LLM_MODEL")
+				_ = os.Unsetenv("OPENAI_API_KEY")
+				_ = os.Unsetenv("CONCURRENCY")
+				_ = os.Unsetenv("LENGTH")
+				_ = os.Unsetenv("RETRY")
+				_ = os.Unsetenv("VERBOSE")
+				_ = os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				_ = os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				_ = os.Unsetenv("HTTP_TLS_TIMEOUT")
 			},
 		},
 	}

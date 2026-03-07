@@ -60,7 +60,9 @@ func main() {
 	}
 	defer func() {
 		if tempFile != "" {
-			os.Remove(tempFile)
+			if err := os.Remove(tempFile); err != nil {
+				config.Log.Warn("failed to remove temp file", "error", err)
+			}
 		}
 	}()
 
@@ -111,7 +113,11 @@ func getInputReader(inputPath string) (io.Reader, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer tmpFile.Close()
+	defer func() {
+		if err := tmpFile.Close(); err != nil {
+			config.Log.Error("failed to close temp file", "error", err)
+		}
+	}()
 
 	reader := bufio.NewReader(os.Stdin)
 	for {
