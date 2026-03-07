@@ -132,9 +132,9 @@ func RunMapReduce(ctx context.Context, client *llm.Client, input io.Reader, cfg 
 
 	config.Log.Info("map phase completed", "results_count", len(filteredResults))
 
-	// Reduce фаза: собираем все результаты и генерируем финальный ответ
+	// Reduce фаза: собираем все результаты и генерируем финальный ответ с предотвращением переполнения контекста
 	// Используем исходный контекст ctx, а не mapCtx (который был отменен после завершения g.Wait())
-	return RunReduce(ctx, client, filteredResults, prompt)
+	return RunMapReduceIterative(ctx, client, filteredResults, prompt, cfg)
 }
 
 // RunReduce выполняет reduce фазу
@@ -166,4 +166,71 @@ func RunReduce(ctx context.Context, client *llm.Client, results []string, prompt
 	}
 
 	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
+}
+
+// RunMapReduceIterative выполняет итеративную обработку map-reduce с предотвращением переполнения контекста.
+// Если результат reduce превышает cfg.ChunkLength, функция рекурсивно делит результаты на части,
+// запускает дополнительную фазу map для каждой части и агрегирует их снова до тех пор, пока
+// результат не поместится в окно длины ChunkLength.
+func RunMapReduceIterative(ctx context.Context, client *llm.Client, results []string, prompt string, cfg *config.Config) (string, error) {
+	return runMapReduceIterativeWithDepth(ctx, client, results, prompt, cfg, 0)
+}
+
+const maxRecursionDepth = 10
+
+// runMapReduceIterativeWithDepth - внутренняя функция с подсчётом глубины рекурсии
+func runMapReduceIterativeWithDepth(ctx context.Context, client *llm.Client, results []string, prompt string, cfg *config.Config, depth int) (string, error) {
+	config.Log.Info("map-reduce iteration started", "results_count", len(results), "depth", depth)
+
+	// Защита от бесконечной рекурсии
+	if depth > maxRecursionDepth {
+		return "", fmt.Errorf("max recursion depth (%d) exceeded, result still too large: %d bytes (max allowed: %d)", 
+			maxRecursionDepth, len(results), cfg.ChunkLength)
+	}
+
+	// Выполняем reduce фазу для агрегации всех результатов
+	reducedResult, err := RunReduce(ctx, client, results, prompt)
+	if err != nil {
+		return "", fmt.Errorf("reduce failed: %w", err)
+	}
+
+	config.Log.Debug("reduced result size", "size_bytes", len(reducedResult))
+
+	// Проверяем размер результата в байтах
+	if len(reducedResult) <= cfg.ChunkLength {
+		config.Log.Info("map-reduce iteration completed successfully", "result_size", len(reducedResult), "max_allowed", cfg.ChunkLength, "depth", depth)
+		return reducedResult, nil
+	}
+
+	// Защита: если результатов меньше 2, нельзя разделить дальше - возвращаем текущий результат
+	if len(results) < 2 {
+		config.Log.Warn("cannot split further, returning result despite exceeding chunk length", 
+			"result_size", len(reducedResult), "max_allowed", cfg.ChunkLength)
+		return reducedResult, nil
+	}
+
+	config.Log.Warn("chunk too large, splitting and retrying map phase", "current_size", len(reducedResult), "max_allowed", cfg.ChunkLength, "depth", depth)
+
+	// Делим результаты пополам и рекурсивно обрабатываем каждую часть
+	mid := len(results) / 2
+	part1Results := results[:mid]
+	part2Results := results[mid:]
+
+	config.Log.Info("splitting results for recursive map phase", "part1_count", len(part1Results), "part2_count", len(part2Results))
+
+	result1, err1 := runMapReduceIterativeWithDepth(ctx, client, part1Results, prompt, cfg, depth+1)
+	if err1 != nil {
+		return "", fmt.Errorf("map-reduce iteration failed for part 1: %w", err1)
+	}
+
+	result2, err2 := runMapReduceIterativeWithDepth(ctx, client, part2Results, prompt, cfg, depth+1)
+	if err2 != nil {
+		return "", fmt.Errorf("map-reduce iteration failed for part 2: %w", err2)
+	}
+
+	// Агрегируем результаты рекурсивных вызовов и запускаем reduce снова
+	combinedResults := []string{result1, result2}
+	config.Log.Info("aggregating recursive results and running reduce again", "combined_count", len(combinedResults))
+
+	return runMapReduceIterativeWithDepth(ctx, client, combinedResults, prompt, cfg, depth+1)
 }
