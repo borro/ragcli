@@ -121,6 +121,8 @@ func run(args []string, stdout io.Writer) int {
 		return 1
 	}
 
+	result = strings.TrimSpace(result)
+
 	if _, err := fmt.Fprintln(stdout, result); err != nil {
 		slog.Error("failed to write result", "error", err)
 		return 1
