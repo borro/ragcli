@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -80,13 +81,7 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	cfg := &Config{}
 
 	// Входной файл
-	if *file != "" {
-		cfg.InputPath = *file
-	} else if *fileLong != "" {
-		cfg.InputPath = *fileLong
-	} else {
-		cfg.InputPath = getEnv("INPUT_FILE", "")
-	}
+	cfg.InputPath = chooseString(*file, *fileLong, getEnv("INPUT_FILE", ""))
 
 	// Режим работы
 	modeVal := *mode
@@ -105,25 +100,13 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	cfg.APIKey = *apiKey
 
 	// Конкурентность
-	if *concurrency >= 1 {
-		cfg.Concurrency = *concurrency
-	} else if *concurrencyLong >= 1 {
-		cfg.Concurrency = *concurrencyLong
-	} else {
-		cfg.Concurrency = getIntEnv("CONCURRENCY", 1)
-	}
+	cfg.Concurrency = chooseIntAtLeast(*concurrency, *concurrencyLong, getIntEnv("CONCURRENCY", 1), 1)
 	if cfg.Concurrency < 1 {
 		cfg.Concurrency = 1
 	}
 
 	// Длина чанка
-	if *chunkLength >= 1000 {
-		cfg.ChunkLength = *chunkLength
-	} else if *lengthLong >= 1000 {
-		cfg.ChunkLength = *lengthLong
-	} else {
-		cfg.ChunkLength = getIntEnv("LENGTH", 10000)
-	}
+	cfg.ChunkLength = chooseIntAtLeast(*chunkLength, *lengthLong, getIntEnv("LENGTH", 10000), 1000)
 	if cfg.ChunkLength < 1000 {
 		cfg.ChunkLength = 1000 // Минимум
 	}
@@ -173,12 +156,32 @@ func getEnv(key string, defaultValue string) string {
 // getIntEnv получает целочисленную переменную окружения
 func getIntEnv(key string, defaultValue int) int {
 	if v := os.Getenv(key); v != "" {
-		var result int
-		if _, err := fmt.Sscanf(v, "%d", &result); err == nil {
+		result, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil {
 			return result
 		}
 	}
 	return defaultValue
+}
+
+func chooseString(primary string, secondary string, fallback string) string {
+	if primary != "" {
+		return primary
+	}
+	if secondary != "" {
+		return secondary
+	}
+	return fallback
+}
+
+func chooseIntAtLeast(primary int, secondary int, fallback int, min int) int {
+	if primary >= min {
+		return primary
+	}
+	if secondary >= min {
+		return secondary
+	}
+	return fallback
 }
 
 // getBoolEnv получает булеву переменную окружения

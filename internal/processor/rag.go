@@ -11,9 +11,9 @@ import (
 
 // toolsConfig содержит инструменты и системный промпт для RAG.
 type toolsConfig struct {
-	tools        []llm.Tool
+	tools         []llm.Tool
 	systemMessage llm.Message
-	userQuestion llm.Message
+	userQuestion  llm.Message
 }
 
 // NewToolsConfig создаёт конфигурацию инструментов для RAG.
@@ -80,17 +80,16 @@ func NewToolsConfig(prompt string) toolsConfig {
 	}
 
 	return toolsConfig{
-		tools:          tools,
-		systemMessage:  systemMessage,
-		userQuestion:   userQuestion,
+		tools:         tools,
+		systemMessage: systemMessage,
+		userQuestion:  userQuestion,
 	}
 }
 
 // RunRAG выполняет обработку в режиме RAG (Agentic Tool Calling).
-// prompt - вопрос пользователя для которого нужно найти ответ в данных.
-// Если filePath пустой, данные читаются из stdin, иначе из файла.
-func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *config.Config, prompt string) (string, error) {
-	config.Log.Info("starting RAG processing", "file_path", filePath, "prompt", prompt, "stdin_mode", filePath == "")
+// filePath должен указывать на файл с данными; stdin уже нормализуется в temp file на уровне CLI.
+func RunRAG(ctx context.Context, client *llm.Client, filePath, prompt string) (string, error) {
+	config.Log.Info("starting RAG processing", "file_path", filePath, "prompt", prompt)
 
 	// Создаём конфигурацию инструментов
 	ragConfig := NewToolsConfig(prompt)
@@ -111,7 +110,6 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 		}
 
 		req := llm.ChatCompletionRequest{
-			Model:      client.Model(),
 			Messages:   messages,
 			Tools:      toolsToSend,
 			ToolChoice: toolChoiceToSend,
@@ -144,7 +142,7 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 			config.Log.Info("received tool calls from model", "count", len(choice.Message.ToolCalls))
 
 			// Выполняем tool calls
-			results, err := ExecuteToolCalls(ctx, client, choice.Message.ToolCalls, filePath)
+			results, err := ExecuteToolCalls(ctx, choice.Message.ToolCalls, filePath)
 			if err != nil {
 				return "", fmt.Errorf("failed to execute tool calls: %w", err)
 			}
@@ -160,8 +158,9 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 				})
 			}
 
+			firstResult := firstToolResult(results)
 			// Добавляем assistant message с результатами tool calls, чтобы модель использовала их
-			toolResponse := fmt.Sprintf("Я выполнил поиск. Вот результаты:\n\n%s\n\nТеперь ответь на вопрос пользователя, используя найденную информацию.", results[0])
+			toolResponse := fmt.Sprintf("Я выполнил поиск. Вот результаты:\n\n%s\n\nТеперь ответь на вопрос пользователя, используя найденную информацию.", firstResult)
 			messages = append(messages, llm.Message{
 				Role:    "assistant",
 				Content: toolResponse,
@@ -170,7 +169,7 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 			// Если это был последний ход, не продолжаем цикл — возвращаем результаты tool calls
 			if turn == maxTurns {
 				config.Log.Info("this was the last turn, returning tool results as answer")
-				return strings.TrimSpace(results[0]), nil
+				return strings.TrimSpace(firstResult), nil
 			}
 
 			continue
@@ -182,4 +181,12 @@ func RunRAG(ctx context.Context, client *llm.Client, filePath string, cfg *confi
 	}
 
 	return "", fmt.Errorf("max turns reached without final answer")
+}
+
+func firstToolResult(results []string) string {
+	if len(results) == 0 {
+		return ""
+	}
+
+	return results[0]
 }

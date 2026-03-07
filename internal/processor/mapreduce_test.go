@@ -11,7 +11,6 @@ func TestSplitByLines(t *testing.T) {
 		input          string
 		maxLength      int
 		expectedChunks []string
-		expectError    bool
 	}{
 		{
 			name:      "simple split",
@@ -22,7 +21,6 @@ func TestSplitByLines(t *testing.T) {
 				"line2",
 				"line3",
 			},
-			expectError: false,
 		},
 		{
 			name:      "input within single chunk",
@@ -31,78 +29,98 @@ func TestSplitByLines(t *testing.T) {
 			expectedChunks: []string{
 				"hello world",
 			},
-			expectError: false,
 		},
 		{
-			name:           "empty input returns empty chunks",
+			name:           "empty input",
 			input:          "",
 			maxLength:      100,
 			expectedChunks: []string{},
-			expectError:    false,
 		},
 		{
-			name:      "new line doesn't fit, new chunk created",
+			name:      "new line doesn't fit",
 			input:     "hello\nworld",
 			maxLength: 5,
 			expectedChunks: []string{
 				"hello",
 				"world",
 			},
-			expectError: false,
 		},
 		{
-			name: "long lines are chunked",
-			// Функция добавляет строку в текущий чанк, когда она не превышает maxLength
+			name:      "long line larger than chunk",
 			input:     "this is a very long line that exceeds the maxLength limit significantly\nanother line",
 			maxLength: 30,
 			expectedChunks: []string{
 				"this is a very long line that exceeds the maxLength limit significantly",
 				"another line",
 			},
-			expectError: false,
 		},
 		{
-			name:      "lines with newlines within limit",
+			name:      "multiple lines fit into one chunk",
 			input:     "line1\nline2\nline3",
 			maxLength: 100,
 			expectedChunks: []string{
 				"line1\nline2\nline3",
 			},
-			expectError: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			chunks, err := SplitByLines(strings.NewReader(tt.input), tt.maxLength)
-
-			if tt.expectError {
-				if err == nil {
-					t.Fatal("SplitByLines() expected error, got nil")
-				}
-				return
-			}
-
 			if err != nil {
 				t.Fatalf("SplitByLines() error = %v", err)
 			}
 
 			if len(chunks) != len(tt.expectedChunks) {
-				t.Errorf("SplitByLines() returned %d chunks, want %d", len(chunks), len(tt.expectedChunks))
-				for i, chunk := range chunks {
-					t.Logf("chunk[%d] = %q (len=%d)", i, chunk, len(chunk))
-				}
-				for i, expected := range tt.expectedChunks {
-					t.Logf("expected[%d] = %q (len=%d)", i, expected, len(expected))
-				}
-				return
+				t.Fatalf(
+					"SplitByLines() returned %d chunks, want %d\nchunks=%v",
+					len(chunks),
+					len(tt.expectedChunks),
+					chunks,
+				)
 			}
 
-			for i, chunk := range chunks {
-				if chunk != tt.expectedChunks[i] {
-					t.Errorf("chunk[%d] = %q, want %q", i, chunk, tt.expectedChunks[i])
+			for i := range chunks {
+				if chunks[i] != tt.expectedChunks[i] {
+					t.Errorf(
+						"chunk[%d] = %q, want %q",
+						i,
+						chunks[i],
+						tt.expectedChunks[i],
+					)
 				}
 			}
 		})
+	}
+}
+
+func TestSplitByLines_ExactBoundary(t *testing.T) {
+	input := "12345\n67890"
+
+	chunks, err := SplitByLines(strings.NewReader(input), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []string{
+		"12345",
+		"67890",
+	}
+
+	if len(chunks) != len(expected) {
+		t.Fatalf("got %v", chunks)
+	}
+}
+
+func TestSplitByLines_LargeInput(t *testing.T) {
+	var builder strings.Builder
+
+	for i := 0; i < 1000; i++ {
+		builder.WriteString("line\n")
+	}
+
+	_, err := SplitByLines(strings.NewReader(builder.String()), 50)
+	if err != nil {
+		t.Fatal(err)
 	}
 }

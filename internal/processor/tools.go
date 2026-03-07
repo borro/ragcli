@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -12,77 +13,111 @@ import (
 	"github.com/borro/ragcli/internal/llm"
 )
 
-// ToolCallResult представляет результат вызова инструмента.
-type ToolCallResult struct {
-	Name   string `json:"name"`
-	Result string `json:"result"`
-	Error  string `json:"error,omitempty"`
-}
-
-// FileReader интерфейс для доступа к содержимому (файл или stdin).
-type FileReader interface {
+type lineReader interface {
 	Search(query string) (string, error)
 	ReadLines(start, end int) (string, error)
 }
 
-// fileReader реализует FileReader для файлов.
+// fileReader реализует доступ к строкам файла.
 type fileReader struct {
 	path string
 }
 
-// SearchFile ищет подстроку в файле, возвращает номера строк с совпадениями.
 func (fr *fileReader) Search(query string) (string, error) {
-	file, err := os.Open(fr.path)
+	return searchInReader(
+		fr.path,
+		"file",
+		query,
+		"Нет совпадений",
+		func() (io.ReadCloser, error) {
+			return os.Open(fr.path)
+		},
+	)
+}
+
+// ReadLines читает диапазон строк из файла.
+func (fr *fileReader) ReadLines(start, end int) (string, error) {
+	return readLinesFromReader(
+		fr.path,
+		"file",
+		start,
+		end,
+		"Нет строк в указанном диапазоне",
+		func() (io.ReadCloser, error) {
+			return os.Open(fr.path)
+		},
+	)
+}
+
+func newFileReader(path string) *fileReader {
+	return &fileReader{path: path}
+}
+
+func searchInReader(
+	sourceName string,
+	sourceKind string,
+	query string,
+	noMatchesMessage string,
+	open func() (io.ReadCloser, error),
+) (string, error) {
+	reader, err := open()
 	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
+		return "", fmt.Errorf("failed to open %s: %w", sourceKind, err)
 	}
 	defer func() {
-		if cerr := file.Close(); cerr != nil {
-			config.Log.Warn("failed to close file in Search", "error", cerr)
+		if cerr := reader.Close(); cerr != nil {
+			config.Log.Warn("failed to close source in Search", "source", sourceName, "error", cerr)
 		}
 	}()
 
 	var results []string
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(reader)
 	lineNum := 1
+	lowerQuery := strings.ToLower(query)
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(strings.ToLower(line), strings.ToLower(query)) {
+		if strings.Contains(strings.ToLower(line), lowerQuery) {
 			results = append(results, fmt.Sprintf("Line %d: %s", lineNum, line))
 		}
 		lineNum++
 	}
 
 	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("failed to scan file: %w", err)
+		return "", fmt.Errorf("failed to scan %s: %w", sourceKind, err)
 	}
 
 	if len(results) == 0 {
-		return "Нет совпадений", nil
+		return noMatchesMessage, nil
 	}
 
 	return strings.Join(results, "\n"), nil
 }
 
-// ReadLines читает диапазон строк из файла.
-func (fr *fileReader) ReadLines(start, end int) (string, error) {
+func readLinesFromReader(
+	sourceName string,
+	sourceKind string,
+	start int,
+	end int,
+	emptyRangeMessage string,
+	open func() (io.ReadCloser, error),
+) (string, error) {
 	if start < 1 {
 		start = 1
 	}
 
-	file, err := os.Open(fr.path)
+	reader, err := open()
 	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
+		return "", fmt.Errorf("failed to open %s: %w", sourceKind, err)
 	}
 	defer func() {
-		if cerr := file.Close(); cerr != nil {
-			config.Log.Warn("failed to close file in ReadLines", "error", cerr)
+		if cerr := reader.Close(); cerr != nil {
+			config.Log.Warn("failed to close source in ReadLines", "source", sourceName, "error", cerr)
 		}
 	}()
 
 	var results []string
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(reader)
 	lineNum := 1
 
 	for scanner.Scan() && lineNum <= end {
@@ -93,28 +128,31 @@ func (fr *fileReader) ReadLines(start, end int) (string, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("failed to scan file: %w", err)
+		return "", fmt.Errorf("failed to scan %s: %w", sourceKind, err)
 	}
 
 	if len(results) == 0 {
-		return "Нет строк в указанном диапазоне", nil
+		return emptyRangeMessage, nil
 	}
 
 	return strings.Join(results, "\n"), nil
-}
-
-// NewFileReader создаёт reader для файла.
-func NewFileReader(path string) FileReader {
-	return &fileReader{path: path}
 }
 
 // SearchFile ищет подстроку в файле, возвращает номера строк с совпадениями.
 // Если path пустой, данные читаются из stdin.
 func SearchFile(path, query string) (string, error) {
 	if path == "" {
-		return StdinSearch(query)
+		return searchInReader(
+			"stdin",
+			"stdin",
+			query,
+			"Нет совпадений в stdin",
+			func() (io.ReadCloser, error) {
+				return io.NopCloser(os.Stdin), nil
+			},
+		)
 	}
-	fr := NewFileReader(path)
+	fr := newFileReader(path)
 	return fr.Search(query)
 }
 
@@ -126,63 +164,33 @@ func ReadLines(path string, startLine, endLine int) (string, error) {
 	}
 
 	if path == "" {
-		return StdinReadLines(startLine, endLine)
+		return readLinesFromReader(
+			"stdin",
+			"stdin",
+			startLine,
+			endLine,
+			"Нет строк в stdin в указанном диапазоне",
+			func() (io.ReadCloser, error) {
+				return io.NopCloser(os.Stdin), nil
+			},
+		)
 	}
-	fr := NewFileReader(path)
+	fr := newFileReader(path)
 	return fr.ReadLines(startLine, endLine)
 }
 
 // StdinSearch читает данные из stdin и ищет подстроку.
 func StdinSearch(query string) (string, error) {
-	var results []string
-	lineNum := 1
-
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(strings.ToLower(line), strings.ToLower(query)) {
-			results = append(results, fmt.Sprintf("Line %d: %s", lineNum, line))
-		}
-		lineNum++
-	}
-
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("failed to scan stdin: %w", err)
-	}
-
-	if len(results) == 0 {
-		return "Нет совпадений в stdin", nil
-	}
-
-	return strings.Join(results, "\n"), nil
+	return SearchFile("", query)
 }
 
 // StdinReadLines читает диапазон строк из stdin.
 func StdinReadLines(startLine, endLine int) (string, error) {
-	var results []string
-	lineNum := 1
-
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() && lineNum <= endLine {
-		if lineNum >= startLine {
-			results = append(results, fmt.Sprintf("%d: %s", lineNum, scanner.Text()))
-		}
-		lineNum++
-	}
-
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("failed to scan stdin: %w", err)
-	}
-
-	if len(results) == 0 {
-		return "Нет строк в stdin в указанном диапазоне", nil
-	}
-
-	return strings.Join(results, "\n"), nil
+	return ReadLines("", startLine, endLine)
 }
 
-// executeTool выполняет конкретный инструмент через FileReader.
-func executeTool(ctx context.Context, model string, call llm.ToolCall, fr FileReader) (string, error) {
+// executeTool выполняет конкретный инструмент через file-backed reader.
+func executeTool(call llm.ToolCall, reader lineReader) (string, error) {
 	switch call.Function.Name {
 	case "search_file":
 		var params struct {
@@ -192,7 +200,7 @@ func executeTool(ctx context.Context, model string, call llm.ToolCall, fr FileRe
 			return "", fmt.Errorf("invalid arguments for search_file: %w", err)
 		}
 
-		return fr.Search(params.Query)
+		return reader.Search(params.Query)
 
 	case "read_lines":
 		var params struct {
@@ -203,7 +211,7 @@ func executeTool(ctx context.Context, model string, call llm.ToolCall, fr FileRe
 			return "", fmt.Errorf("invalid arguments for read_lines: %w", err)
 		}
 
-		return fr.ReadLines(params.StartLine, params.EndLine)
+		return reader.ReadLines(params.StartLine, params.EndLine)
 
 	default:
 		return "", fmt.Errorf("unknown tool: %s", call.Function.Name)
@@ -211,10 +219,10 @@ func executeTool(ctx context.Context, model string, call llm.ToolCall, fr FileRe
 }
 
 // ExecuteToolCalls обрабатывает вызовы инструментов от LLM и возвращает результаты.
-func ExecuteToolCalls(ctx context.Context, client *llm.Client, toolCalls []llm.ToolCall, path string) ([]string, error) {
+func ExecuteToolCalls(ctx context.Context, toolCalls []llm.ToolCall, path string) ([]string, error) {
 	config.Log.Debug("ExecuteToolCalls called", "path_length", len(path), "path_is_empty", path == "", "tool_calls_count", len(toolCalls))
 
-	fr := NewFileReader(path)
+	reader := newFileReader(path)
 
 	var results []string
 	for _, call := range toolCalls {
@@ -224,7 +232,7 @@ func ExecuteToolCalls(ctx context.Context, client *llm.Client, toolCalls []llm.T
 		default:
 		}
 
-		result, err := executeTool(ctx, client.Model(), call, fr)
+		result, err := executeTool(call, reader)
 		if err != nil {
 			config.Log.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
 			results = append(results, fmt.Sprintf(`{"error": %q}`, err.Error()))

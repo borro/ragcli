@@ -67,20 +67,20 @@ func main() {
 	}()
 
 	// Создаем клиент LLM с настройками таймаутов из конфига
-	client := llm.NewClient(cfg.APIURL, cfg.Model, cfg.APIKey, cfg.RetryCount, cfg)
+	client := llm.NewClient(cfg.APIURL, cfg.Model, cfg.APIKey, cfg.RetryCount)
 
 	var result string
 
 	switch strings.ToLower(cfg.Mode) {
 	case "map-reduce":
-		result, err = processor.RunMapReduce(ctx, client, inputReader, cfg, prompt)
+		result, err = processor.RunSRMR(ctx, client, inputReader, cfg, prompt)
 	case "rag":
 		// Передаём путь к файлу (или tempFile для stdin режима)
 		filePath := cfg.InputPath
 		if filePath == "" && tempFile != "" {
 			filePath = tempFile
 		}
-		result, err = processor.RunRAG(ctx, client, filePath, cfg, prompt)
+		result, err = processor.RunRAG(ctx, client, filePath, prompt)
 	default:
 		err = fmt.Errorf("unknown mode: %s", cfg.Mode)
 	}

@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/borro/ragcli/internal/config"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -51,8 +50,7 @@ func TestNewClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config.Config{}
-			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retryCount, cfg)
+			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retryCount)
 
 			if client.model != tt.expectedModel {
 				t.Errorf("NewClient() model = %q, want %q", client.model, tt.expectedModel)
@@ -66,8 +64,7 @@ func TestNewClient(t *testing.T) {
 
 // TestClient_Model проверяет Getter модели
 func TestClient_Model(t *testing.T) {
-	cfg := &config.Config{}
-	client := NewClient("http://test.com", "test-model", "api-key", 3, cfg)
+	client := NewClient("http://test.com", "test-model", "api-key", 3)
 
 	model := client.Model()
 	if model != "test-model" {
@@ -113,8 +110,7 @@ func TestSendRequest_CreatesRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config.Config{}
-			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retry, cfg)
+			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retry)
 
 			messages := []openai.ChatCompletionMessage{
 				{
@@ -138,7 +134,6 @@ func TestSendRequest_CreatesRequest(t *testing.T) {
 			}
 
 			req := ChatCompletionRequest{
-				Model:    tt.model,
 				Messages: messages,
 			}
 
@@ -181,8 +176,7 @@ func TestSendRequest_ContextCancelled(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config.Config{}
-			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retry, cfg)
+			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retry)
 
 			messages := []openai.ChatCompletionMessage{
 				{
@@ -192,7 +186,6 @@ func TestSendRequest_ContextCancelled(t *testing.T) {
 			}
 
 			req := ChatCompletionRequest{
-				Model:    "gpt-3.5-turbo",
 				Messages: messages,
 			}
 
@@ -247,8 +240,7 @@ func TestSendRequest_ExhaustedRetries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config.Config{}
-			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retry, cfg)
+			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retry)
 
 			messages := []openai.ChatCompletionMessage{
 				{
@@ -258,7 +250,6 @@ func TestSendRequest_ExhaustedRetries(t *testing.T) {
 			}
 
 			req := ChatCompletionRequest{
-				Model:    "gpt-3.5-turbo",
 				Messages: messages,
 			}
 
@@ -278,12 +269,11 @@ func TestChatCompletionRequest_Structure(t *testing.T) {
 	tests := []struct {
 		name string
 		req  ChatCompletionRequest
-		want string
+		want int
 	}{
 		{
 			name: "simple request",
 			req: ChatCompletionRequest{
-				Model: "gpt-3.5-turbo",
 				Messages: []openai.ChatCompletionMessage{
 					{
 						Role:    "user",
@@ -291,12 +281,11 @@ func TestChatCompletionRequest_Structure(t *testing.T) {
 					},
 				},
 			},
-			want: "gpt-3.5-turbo",
+			want: 1,
 		},
 		{
 			name: "request with tools",
 			req: ChatCompletionRequest{
-				Model: "gpt-4",
 				Messages: []openai.ChatCompletionMessage{
 					{
 						Role:    "user",
@@ -313,12 +302,11 @@ func TestChatCompletionRequest_Structure(t *testing.T) {
 					},
 				},
 			},
-			want: "gpt-4",
+			want: 1,
 		},
 		{
 			name: "request with tool choice",
 			req: ChatCompletionRequest{
-				Model:    "gpt-4",
 				Messages: []openai.ChatCompletionMessage{},
 				Tools: []openai.Tool{
 					{
@@ -335,14 +323,14 @@ func TestChatCompletionRequest_Structure(t *testing.T) {
 					},
 				},
 			},
-			want: "gpt-4",
+			want: 0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.req.Model; got != tt.want {
-				t.Errorf("ChatCompletionRequest.Model = %q, want %q", got, tt.want)
+			if got := len(tt.req.Messages); got != tt.want {
+				t.Errorf("len(ChatCompletionRequest.Messages) = %d, want %d", got, tt.want)
 			}
 		})
 	}

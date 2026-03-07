@@ -18,42 +18,56 @@ const separator = "\n\n---\n\n"
 // PROMPTS
 //
 
-const mapSystemPrompt = `
-Ты извлекаешь факты из текста для ответа на вопрос.
+const mapPrompt = `
+Извлеки факты из текста, которые помогают ответить на вопрос.
 
 Правила:
-- извлекай только факты, относящиеся к вопросу
-- каждый факт — отдельной строкой
+- каждый факт отдельной строкой
 - максимум 5 фактов
 - кратко
-- игнорируй нерелевантный текст
+- только релевантная информация
 
-Формат:
-- факт
-- факт
-
-Если нет информации — SKIP
+Если информации нет — ответь SKIP
 `
 
-const reduceCompressPrompt = `
-Ты объединяешь факты из разных частей документа.
+const reducePrompt = `
+Объедини факты.
 
 Правила:
-- удаляй повторяющиеся факты
+- удаляй дубликаты
 - объединяй похожие факты
 - максимум 10 фактов
 - каждый факт отдельной строкой
 - не добавляй новую информацию
 `
 
-const finalReducePrompt = `
-Сформулируй финальный ответ на вопрос, используя только факты.
+const finalPrompt = `
+Сформулируй ответ на вопрос используя только факты.
+Если информации недостаточно — скажи об этом.
+`
+
+const critiquePrompt = `
+Ты проверяешь ответ.
+
+Проверь:
+- опирается ли ответ на факты
+- есть ли неподтвержденные утверждения
+- есть ли противоречия
+
+Формат ответа:
+
+SUPPORTED: yes/no
+ISSUES:
+- ...
+`
+
+const refinePrompt = `
+Исправь ответ на основе замечаний.
 
 Правила:
+- используй только факты
+- исправь ошибки
 - не добавляй новую информацию
-- объединяй факты в связный ответ
-- если информации недостаточно — скажи об этом
-- если есть противоречия — укажи
 `
 
 //
@@ -61,8 +75,8 @@ const finalReducePrompt = `
 //
 
 func callLLM(ctx context.Context, client *llm.Client, messages []llm.Message) (string, error) {
+
 	req := llm.ChatCompletionRequest{
-		Model:    client.Model(),
 		Messages: messages,
 	}
 
@@ -82,69 +96,102 @@ func callLLM(ctx context.Context, client *llm.Client, messages []llm.Message) (s
 // message builders
 //
 
-func mapMessages(prompt, chunk string) []llm.Message {
+func mapMessages(question, chunk string) []llm.Message {
 	return []llm.Message{
-		{Role: "system", Content: mapSystemPrompt},
+		{Role: "system", Content: mapPrompt},
+		{
+			Role:    "user",
+			Content: fmt.Sprintf("Вопрос:\n%s\n\nТекст:\n```\n%s\n```", question, chunk),
+		},
+	}
+}
+
+func reduceMessages(question, facts string) []llm.Message {
+	return []llm.Message{
+		{Role: "system", Content: reducePrompt},
+		{
+			Role:    "user",
+			Content: fmt.Sprintf("Вопрос:\n%s\n\nФакты:\n```\n%s\n```", question, facts),
+		},
+	}
+}
+
+func finalMessages(question, facts string) []llm.Message {
+	return []llm.Message{
+		{Role: "system", Content: finalPrompt},
+		{
+			Role:    "user",
+			Content: fmt.Sprintf("Вопрос:\n%s\n\nФакты:\n```\n%s\n```", question, facts),
+		},
+	}
+}
+
+func critiqueMessages(question, facts, answer string) []llm.Message {
+	return []llm.Message{
+		{Role: "system", Content: critiquePrompt},
 		{
 			Role: "user",
 			Content: fmt.Sprintf(
-				"Вопрос:\n%s\n\nТекст:\n```\n%s\n```",
-				prompt,
-				chunk,
+				"Вопрос:\n%s\n\nФакты:\n```\n%s\n```\n\nОтвет:\n%s",
+				question,
+				facts,
+				answer,
 			),
 		},
 	}
 }
 
-func reduceCompressMessages(prompt, facts string) []llm.Message {
+func refineMessages(question, facts, answer, critique string) []llm.Message {
 	return []llm.Message{
-		{Role: "system", Content: reduceCompressPrompt},
+		{Role: "system", Content: refinePrompt},
 		{
 			Role: "user",
 			Content: fmt.Sprintf(
-				"Вопрос:\n%s\n\nФакты:\n```\n%s\n```",
-				prompt,
+				"Вопрос:\n%s\n\nФакты:\n```\n%s\n```\n\nОтвет:\n%s\n\nЗамечания:\n%s",
+				question,
 				facts,
-			),
-		},
-	}
-}
-
-func finalReduceMessages(prompt, facts string) []llm.Message {
-	return []llm.Message{
-		{Role: "system", Content: finalReducePrompt},
-		{
-			Role: "user",
-			Content: fmt.Sprintf(
-				"Вопрос:\n%s\n\nФакты:\n```\n%s\n```",
-				prompt,
-				facts,
+				answer,
+				critique,
 			),
 		},
 	}
 }
 
 //
-// Chunking
+// chunking
 //
 
 func SplitByLines(r io.Reader, maxLen int) ([]string, error) {
+
 	scanner := bufio.NewScanner(r)
 
-	var (
-		chunks []string
-		buf    strings.Builder
-	)
+	var chunks []string
+	var buf strings.Builder
 
 	for scanner.Scan() {
+
 		line := scanner.Text()
-		if buf.Len()+len(line)+1 > maxLen {
-			chunks = append(chunks, buf.String())
-			buf.Reset()
+
+		nextLen := buf.Len() + len(line)
+		if buf.Len() > 0 {
+			nextLen++
 		}
+
+		if nextLen > maxLen {
+			if buf.Len() > 0 {
+				chunks = append(chunks, buf.String())
+				buf.Reset()
+			} else {
+				// Если строка длиннее maxLen, сохраняем ее как отдельный чанк.
+				chunks = append(chunks, line)
+				continue
+			}
+		}
+
 		if buf.Len() > 0 {
 			buf.WriteByte('\n')
 		}
+
 		buf.WriteString(line)
 	}
 
@@ -159,20 +206,24 @@ func SplitByLines(r io.Reader, maxLen int) ([]string, error) {
 // MAP
 //
 
-func runMapParallel(ctx context.Context, client *llm.Client, chunks []string, prompt string, workers int) ([]string, error) {
+func runMapParallel(ctx context.Context, client *llm.Client, chunks []string, question string, workers int) ([]string, error) {
+
 	jobs := make(chan string)
 	results := make(chan string)
 
 	var wg sync.WaitGroup
 
 	for i := 0; i < workers; i++ {
+
 		wg.Add(1)
 
 		go func() {
+
 			defer wg.Done()
 
 			for chunk := range jobs {
-				res, err := callLLM(ctx, client, mapMessages(prompt, chunk))
+
+				res, err := callLLM(ctx, client, mapMessages(question, chunk))
 				if err != nil {
 					continue
 				}
@@ -186,6 +237,7 @@ func runMapParallel(ctx context.Context, client *llm.Client, chunks []string, pr
 	}
 
 	go func() {
+
 		for _, c := range chunks {
 			jobs <- c
 		}
@@ -208,12 +260,15 @@ func runMapParallel(ctx context.Context, client *llm.Client, chunks []string, pr
 }
 
 //
-// BATCH HELPER
+// batching
 //
 
 func batchStrings(items []string, size int) [][]string {
+
 	var batches [][]string
+
 	for size < len(items) {
+
 		items, batches = items[size:], append(batches, items[:size])
 	}
 
@@ -223,18 +278,27 @@ func batchStrings(items []string, size int) [][]string {
 }
 
 //
-// REDUCE (fan-in)
+// REDUCE
 //
 
-func fanInReduce(ctx context.Context, client *llm.Client, results []string, prompt string, cfg *config.Config) (string, error) {
+func fanInReduce(ctx context.Context, client *llm.Client, results []string, question string, cfg *config.Config) (string, error) {
+
+	reduceBatchSize := cfg.Concurrency
+	if reduceBatchSize < 2 {
+		reduceBatchSize = 2
+	}
+
 	for len(results) > 1 {
-		batches := batchStrings(results, cfg.ChunkLength)
+
+		batches := batchStrings(results, reduceBatchSize)
 
 		var next []string
+
 		for _, batch := range batches {
+
 			input := strings.Join(batch, separator)
 
-			summary, err := callLLM(ctx, client, reduceCompressMessages(prompt, input))
+			summary, err := callLLM(ctx, client, reduceMessages(question, input))
 			if err != nil {
 				return "", err
 			}
@@ -245,14 +309,32 @@ func fanInReduce(ctx context.Context, client *llm.Client, results []string, prom
 		results = next
 	}
 
-	return callLLM(ctx, client, finalReduceMessages(prompt, results[0]))
+	return results[0], nil
+}
+
+//
+// SELF REFINEMENT
+//
+
+func selfRefine(ctx context.Context, client *llm.Client, question, facts, answer string) (string, error) {
+
+	critique, err := callLLM(ctx, client, critiqueMessages(question, facts, answer))
+	if err != nil {
+		return "", err
+	}
+
+	if strings.Contains(critique, "NONE") {
+		return answer, nil
+	}
+
+	return callLLM(ctx, client, refineMessages(question, facts, answer, critique))
 }
 
 //
 // PIPELINE
 //
 
-func RunMapReduce(ctx context.Context, client *llm.Client, input io.Reader, cfg *config.Config, prompt string) (string, error) {
+func RunSRMR(ctx context.Context, client *llm.Client, input io.Reader, cfg *config.Config, question string) (string, error) {
 
 	chunks, err := SplitByLines(input, cfg.ChunkLength)
 	if err != nil {
@@ -263,7 +345,7 @@ func RunMapReduce(ctx context.Context, client *llm.Client, input io.Reader, cfg 
 		return "Файл пустой", nil
 	}
 
-	mapResults, err := runMapParallel(ctx, client, chunks, prompt, cfg.Concurrency)
+	mapResults, err := runMapParallel(ctx, client, chunks, question, cfg.Concurrency)
 	if err != nil {
 		return "", err
 	}
@@ -272,5 +354,15 @@ func RunMapReduce(ctx context.Context, client *llm.Client, input io.Reader, cfg 
 		return "Нет информации для ответа", nil
 	}
 
-	return fanInReduce(ctx, client, mapResults, prompt, cfg)
+	facts, err := fanInReduce(ctx, client, mapResults, question, cfg)
+	if err != nil {
+		return "", err
+	}
+
+	answer, err := callLLM(ctx, client, finalMessages(question, facts))
+	if err != nil {
+		return "", err
+	}
+
+	return selfRefine(ctx, client, question, facts, answer)
 }

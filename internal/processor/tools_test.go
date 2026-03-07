@@ -8,42 +8,47 @@ import (
 func TestStdinSearch(t *testing.T) {
 	tests := []struct {
 		name           string
+		input          string
 		query          string
 		expectedResult string
 		expectError    bool
 	}{
 		{
-			name:           "found match (case insensitive)",
-			query:          "текст",
-			expectedResult: "Нет совпадений в stdin",
-			expectError:    false,
+			name: "found match (case insensitive)",
+			input: `первая строка
+вторая строка с текстом
+третья строка`,
+			query:          "ТЕКСТ",
+			expectedResult: "Line 2: вторая строка с текстом",
 		},
 		{
 			name:           "no match",
+			input:          "первая строка\nвторая строка\n",
 			query:          "нет в файле",
 			expectedResult: "Нет совпадений в stdin",
-			expectError:    false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := StdinSearch(tt.query)
+			withStdin(t, tt.input, func() {
+				result, err := StdinSearch(tt.query)
 
-			if tt.expectError {
-				if err == nil {
-					t.Fatal("StdinSearch() expected error, got nil")
+				if tt.expectError {
+					if err == nil {
+						t.Fatal("StdinSearch() expected error, got nil")
+					}
+					return
 				}
-				return
-			}
 
-			if err != nil {
-				t.Fatalf("StdinSearch() error = %v", err)
-			}
+				if err != nil {
+					t.Fatalf("StdinSearch() error = %v", err)
+				}
 
-			if result != tt.expectedResult {
-				t.Errorf("StdinSearch() result = %q, want %q", result, tt.expectedResult)
-			}
+				if result != tt.expectedResult {
+					t.Errorf("StdinSearch() result = %q, want %q", result, tt.expectedResult)
+				}
+			})
 		})
 	}
 }
@@ -51,72 +56,62 @@ func TestStdinSearch(t *testing.T) {
 func TestStdinReadLines(t *testing.T) {
 	tests := []struct {
 		name           string
+		input          string
 		startLine      int
 		endLine        int
 		expectedResult string
 		expectError    bool
 	}{
 		{
-			name:           "valid range",
+			name: "valid range",
+			input: `первая строка
+вторая строка
+третья строка
+четвёртая строка`,
 			startLine:      2,
-			endLine:        4,
-			expectedResult: "Нет строк в stdin в указанном диапазоне",
-			expectError:    false,
+			endLine:        3,
+			expectedResult: "2: вторая строка\n3: третья строка",
 		},
 		{
 			name:           "out of bounds end",
+			input:          "первая строка\nвторая строка\n",
 			startLine:      100,
 			endLine:        200,
 			expectedResult: "Нет строк в stdin в указанном диапазоне",
-			expectError:    false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := StdinReadLines(tt.startLine, tt.endLine)
+			withStdin(t, tt.input, func() {
+				result, err := StdinReadLines(tt.startLine, tt.endLine)
 
-			if tt.expectError {
-				if err == nil {
-					t.Fatal("StdinReadLines() expected error, got nil")
+				if tt.expectError {
+					if err == nil {
+						t.Fatal("StdinReadLines() expected error, got nil")
+					}
+					return
 				}
-				return
-			}
 
-			if err != nil {
-				t.Fatalf("StdinReadLines() error = %v", err)
-			}
+				if err != nil {
+					t.Fatalf("StdinReadLines() error = %v", err)
+				}
 
-			if result != tt.expectedResult {
-				t.Errorf("StdinReadLines() result = %q, want %q", result, tt.expectedResult)
-			}
+				if result != tt.expectedResult {
+					t.Errorf("StdinReadLines() result = %q, want %q", result, tt.expectedResult)
+				}
+			})
 		})
 	}
 }
 
 func TestSearchFile(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "test-search-*.txt")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer func() {
-		if cerr := os.Remove(tmpFile.Name()); cerr != nil {
-			t.Logf("failed to remove temp file: %v", cerr)
-		}
-	}()
-
-	testContent := `первая строка
+	filePath := writeTempFile(t, `первая строка
 вторая строка с текстом
 третья строка
 четвёртая строка с текстом
 пятая строка
-`
-	if _, err := tmpFile.WriteString(testContent); err != nil {
-		t.Fatalf("Failed to write to temp file: %v", err)
-	}
-	if cerr := tmpFile.Close(); cerr != nil {
-		t.Logf("failed to close temp file: %v", cerr)
-	}
+`)
 
 	tests := []struct {
 		name           string
@@ -127,24 +122,21 @@ func TestSearchFile(t *testing.T) {
 	}{
 		{
 			name:           "found match (case insensitive)",
-			filePath:       tmpFile.Name(),
+			filePath:       filePath,
 			query:          "текст",
 			expectedResult: "Line 2: вторая строка с текстом\nLine 4: четвёртая строка с текстом",
-			expectError:    false,
 		},
 		{
 			name:           "no match",
-			filePath:       tmpFile.Name(),
+			filePath:       filePath,
 			query:          "нет в файле",
 			expectedResult: "Нет совпадений",
-			expectError:    false,
 		},
 		{
-			name:           "non-existent file",
-			filePath:       "/non/existent/file.txt",
-			query:          "test",
-			expectedResult: "",
-			expectError:    true,
+			name:        "non-existent file",
+			filePath:    "/non/existent/file.txt",
+			query:       "test",
+			expectError: true,
 		},
 	}
 
@@ -171,17 +163,7 @@ func TestSearchFile(t *testing.T) {
 }
 
 func TestReadLines(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "test-read-*.txt")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer func() {
-		if cerr := os.Remove(tmpFile.Name()); cerr != nil {
-			t.Logf("failed to remove temp file: %v", cerr)
-		}
-	}()
-
-	testContent := `первая строка
+	filePath := writeTempFile(t, `первая строка
 вторая строка
 третья строка
 четвёртая строка
@@ -191,13 +173,7 @@ func TestReadLines(t *testing.T) {
 восьмая строка
 девятая строка
 десятая строка
-`
-	if _, err := tmpFile.WriteString(testContent); err != nil {
-		t.Fatalf("Failed to write to temp file: %v", err)
-	}
-	if cerr := tmpFile.Close(); cerr != nil {
-		t.Logf("failed to close temp file: %v", cerr)
-	}
+`)
 
 	tests := []struct {
 		name           string
@@ -209,35 +185,31 @@ func TestReadLines(t *testing.T) {
 	}{
 		{
 			name:           "valid range",
-			filePath:       tmpFile.Name(),
+			filePath:       filePath,
 			startLine:      3,
 			endLine:        5,
 			expectedResult: "3: третья строка\n4: четвёртая строка\n5: пятая строка",
-			expectError:    false,
 		},
 		{
 			name:           "out of bounds start",
-			filePath:       tmpFile.Name(),
+			filePath:       filePath,
 			startLine:      100,
 			endLine:        200,
 			expectedResult: "Нет строк в указанном диапазоне",
-			expectError:    false,
 		},
 		{
-			name:           "invalid file path",
-			filePath:       "/non/existent/file.txt",
-			startLine:      1,
-			endLine:        5,
-			expectedResult: "",
-			expectError:    true,
+			name:        "invalid file path",
+			filePath:    "/non/existent/file.txt",
+			startLine:   1,
+			endLine:     5,
+			expectError: true,
 		},
 		{
 			name:           "negative start (should be clamped to 1)",
-			filePath:       tmpFile.Name(),
+			filePath:       filePath,
 			startLine:      -5,
 			endLine:        5,
 			expectedResult: "1: первая строка\n2: вторая строка\n3: третья строка\n4: четвёртая строка\n5: пятая строка",
-			expectError:    false,
 		},
 	}
 
@@ -261,4 +233,56 @@ func TestReadLines(t *testing.T) {
 			}
 		})
 	}
+}
+
+func writeTempFile(t *testing.T, content string) string {
+	t.Helper()
+
+	tmpFile, err := os.CreateTemp("", "processor-tools-*.txt")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		t.Fatalf("failed to close temp file: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := os.Remove(tmpFile.Name()); err != nil {
+			t.Logf("failed to remove temp file: %v", err)
+		}
+	})
+
+	return tmpFile.Name()
+}
+
+func withStdin(t *testing.T, input string, fn func()) {
+	t.Helper()
+
+	originalStdin := os.Stdin
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+
+	if _, err := writer.WriteString(input); err != nil {
+		t.Fatalf("failed to write stdin fixture: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close stdin writer: %v", err)
+	}
+
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = originalStdin
+		if err := reader.Close(); err != nil {
+			t.Logf("failed to close stdin reader: %v", err)
+		}
+	})
+
+	fn()
 }

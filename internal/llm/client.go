@@ -19,12 +19,8 @@ type Client struct {
 // Message представляет сообщение в чате
 type Message = openai.ChatCompletionMessage
 
-// Choice представляет выбор из ответа модели
-type Choice = openai.ChatCompletionChoice
-
 // ChatCompletionRequest представляет запрос к chat completion API
 type ChatCompletionRequest struct {
-	Model      string                         `json:"model"`
 	Messages   []openai.ChatCompletionMessage `json:"messages"`
 	Tools      []Tool                         `json:"tools,omitempty"`
 	ToolChoice interface{}                    `json:"tool_choice,omitempty"`
@@ -42,11 +38,8 @@ type ChatCompletionResponse = openai.ChatCompletionResponse
 // ToolCall represents a tool call from the model
 type ToolCall = openai.ToolCall
 
-// ToolCallFunc represents the function part of a tool call
-type ToolCallFunc = openai.FunctionCall
-
 // NewClient создаёт новый LLM клиент, используя go-openai библиотеку
-func NewClient(baseURL, model, apiKey string, retryCount int, cfg *config.Config) *Client {
+func NewClient(baseURL, model, apiKey string, retryCount int) *Client {
 	config := openai.DefaultConfig(apiKey)
 	if baseURL != "" {
 		config.BaseURL = baseURL
