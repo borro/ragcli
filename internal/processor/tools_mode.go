@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
-	"github.com/borro/ragcli/internal/config"
 	"github.com/borro/ragcli/internal/llm"
 )
 
@@ -18,7 +19,7 @@ const (
 )
 
 type chatRequester interface {
-	SendRequest(ctx context.Context, req llm.ChatCompletionRequest) (*llm.ChatCompletionResponse, error)
+	SendRequestWithMetrics(ctx context.Context, req llm.ChatCompletionRequest) (*llm.RequestResult, error)
 }
 
 type toolsConfig struct {
@@ -28,11 +29,15 @@ type toolsConfig struct {
 }
 
 type orchestratorStats struct {
-	uniqueSearches int
-	uniqueReads    int
-	cacheHits      int
-	duplicateCalls int
-	noProgressRuns int
+	uniqueSearches   int
+	uniqueReads      int
+	cacheHits        int
+	duplicateCalls   int
+	noProgressRuns   int
+	llmCalls         int
+	promptTokens     int
+	completionTokens int
+	totalTokens      int
 }
 
 type orchestrationError struct {
@@ -181,7 +186,8 @@ func NewToolsConfig(prompt string) toolsConfig {
 }
 
 func RunTools(ctx context.Context, client chatRequester, filePath, prompt string) (string, error) {
-	config.Log.Info("starting tools processing", "file_path", filePath, "prompt", prompt)
+	startedAt := time.Now()
+	slog.Debug("tools processing started", "file_path", filePath, "has_file_path", filePath != "")
 
 	toolsConfig := NewToolsConfig(prompt)
 	messages := make([]llm.Message, 0, 2)
@@ -190,14 +196,20 @@ func RunTools(ctx context.Context, client chatRequester, filePath, prompt string
 	var toolChoiceToSend interface{} = "auto"
 	emptyFinalAnswerRetries := 0
 
-	logStop := func(reason string) {
-		config.Log.Info("tools processing finished",
+	logStop := func(reason string, turns int) {
+		slog.Debug("tools processing finished",
 			"stop_reason", reason,
+			"turns", turns,
+			"duration_ms", time.Since(startedAt).Milliseconds(),
 			"unique_searches", loopState.stats.uniqueSearches,
 			"unique_reads", loopState.stats.uniqueReads,
 			"cache_hits", loopState.stats.cacheHits,
 			"duplicate_calls", loopState.stats.duplicateCalls,
 			"no_progress_runs", loopState.stats.noProgressRuns,
+			"llm_calls", loopState.stats.llmCalls,
+			"prompt_tokens", loopState.stats.promptTokens,
+			"completion_tokens", loopState.stats.completionTokens,
+			"total_tokens", loopState.stats.totalTokens,
 		)
 	}
 
@@ -210,44 +222,59 @@ func RunTools(ctx context.Context, client chatRequester, filePath, prompt string
 
 		select {
 		case <-ctx.Done():
-			logStop("context_done")
+			logStop("context_done", turn-1)
 			return "", ctx.Err()
 		default:
 		}
 
-		config.Log.Debug("sending tools request to LLM", "turn", turn)
+		slog.Debug("tools turn started",
+			"turn", turn,
+			"message_count", len(messages),
+			"tool_choice", req.ToolChoice,
+		)
 
-		resp, err := client.SendRequest(ctx, req)
+		result, err := client.SendRequestWithMetrics(ctx, req)
 		if err != nil {
-			logStop("request_error")
+			logStop("request_error", turn)
 			return "", fmt.Errorf("failed to send request: %w", err)
 		}
+		loopState.stats.llmCalls++
+		loopState.stats.promptTokens += result.Metrics.PromptTokens
+		loopState.stats.completionTokens += result.Metrics.CompletionTokens
+		loopState.stats.totalTokens += result.Metrics.TotalTokens
+
+		resp := result.Response
 
 		if len(resp.Choices) == 0 {
-			logStop("empty_choices")
+			logStop("empty_choices", turn)
 			return "", fmt.Errorf("no choices in response")
 		}
 
 		choice := resp.Choices[0]
 		messages = append(messages, choice.Message)
 
-		config.Log.Debug("got response from LLM", "role", choice.Message.Role, "content", choice.Message.Content)
+		slog.Debug("tools turn received llm response",
+			"turn", turn,
+			"role", choice.Message.Role,
+			"tool_calls_count", len(choice.Message.ToolCalls),
+			"has_content", choice.Message.Content != "",
+		)
 
 		if len(choice.Message.ToolCalls) > 0 {
-			config.Log.Info("received tool calls from model", "count", len(choice.Message.ToolCalls))
+			slog.Debug("received tool calls from model", "turn", turn, "count", len(choice.Message.ToolCalls))
 
 			results, err := loopState.executeToolCalls(ctx, choice.Message.ToolCalls)
 			if err != nil {
 				var orchErr orchestrationError
 				if errorsAsOrchestration(err, &orchErr) {
-					logStop(orchErr.Code)
+					logStop(orchErr.Code, turn)
 				} else {
-					logStop("tool_error")
+					logStop("tool_error", turn)
 				}
 				return "", fmt.Errorf("failed to execute tool calls: %w", err)
 			}
 
-			config.Log.Debug("tool calls results", "results", results)
+			slog.Debug("tool calls finished", "turn", turn, "result_count", len(results))
 			for i, result := range results {
 				messages = append(messages, llm.Message{
 					Role:       "tool",
@@ -260,11 +287,11 @@ func RunTools(ctx context.Context, client chatRequester, filePath, prompt string
 			continue
 		}
 
-		config.Log.Info("received final answer from model")
+		slog.Debug("received final answer from model", "turn", turn)
 		if choice.Message.Content == "" {
 			if emptyFinalAnswerRetries < emptyFinalAnswerRetryLimit {
 				emptyFinalAnswerRetries++
-				config.Log.Warn("received empty final answer from model, retrying without tools", "attempt", emptyFinalAnswerRetries)
+				slog.Warn("received empty final answer from model, retrying without tools", "attempt", emptyFinalAnswerRetries)
 				messages = append(messages, llm.Message{
 					Role: "user",
 					Content: "Сформулируй финальный ответ обычным текстом на основе уже найденных данных. " +
@@ -273,14 +300,14 @@ func RunTools(ctx context.Context, client chatRequester, filePath, prompt string
 				toolChoiceToSend = "none"
 				continue
 			}
-			logStop("empty_final_answer")
+			logStop("empty_final_answer", turn)
 			return "", fmt.Errorf("received final response without content")
 		}
-		logStop("final_answer")
+		logStop("final_answer", turn)
 		return choice.Message.Content, nil
 	}
 
-	logStop("orchestration_limit")
+	logStop("orchestration_limit", toolsMaxTurns)
 	return "", orchestrationError{
 		Code:    "orchestration_limit",
 		Message: fmt.Sprintf("tools orchestration exceeded %d turns without final answer", toolsMaxTurns),
@@ -310,7 +337,7 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []llm.To
 
 		result, meta, err := s.executeToolCall(call)
 		if err != nil {
-			config.Log.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
+			slog.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
 			toolErr, marshalErr := marshalJSON(asToolError(err))
 			if marshalErr != nil {
 				return nil, marshalErr
@@ -363,8 +390,10 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []llm.To
 }
 
 func (s *toolLoopState) executeToolCall(call llm.ToolCall) (string, toolExecutionMeta, error) {
+	logToolCallStarted(call, summarizeToolArguments(call))
 	signature, err := canonicalToolSignature(call)
 	if err != nil {
+		logToolCallError(call, 0, err)
 		return "", toolExecutionMeta{}, err
 	}
 
@@ -384,11 +413,25 @@ func (s *toolLoopState) executeToolCall(call llm.ToolCall) (string, toolExecutio
 		}
 
 		annotated, err := annotateToolPayload(cached.raw, meta)
+		if err != nil {
+			logToolCallError(call, 0, err)
+			return "", toolExecutionMeta{}, err
+		}
+		summary := summarizeToolResult(call.Function.Name, cached.raw)
+		if summary == nil {
+			summary = map[string]any{}
+		}
+		summary["cached"] = true
+		summary["duplicate"] = true
+		summary["novel_lines"] = meta.NovelLines
+		logToolCallFinished(call, 0, "cached", summary)
 		return annotated, meta, err
 	}
 
+	startedAt := time.Now()
 	raw, err := executeTool(call, s.reader)
 	if err != nil {
+		logToolCallError(call, time.Since(startedAt), err)
 		return "", toolExecutionMeta{}, err
 	}
 
@@ -421,6 +464,7 @@ func (s *toolLoopState) executeToolCall(call llm.ToolCall) (string, toolExecutio
 
 	annotated, err := annotateToolPayload(raw, meta)
 	if err != nil {
+		logToolCallError(call, time.Since(startedAt), err)
 		return "", toolExecutionMeta{}, err
 	}
 
@@ -435,6 +479,14 @@ func (s *toolLoopState) executeToolCall(call llm.ToolCall) (string, toolExecutio
 	case "read_lines", "read_around":
 		s.stats.uniqueReads++
 	}
+
+	summary := summarizeToolResult(call.Function.Name, raw)
+	if summary == nil {
+		summary = map[string]any{}
+	}
+	summary["novel_lines"] = meta.NovelLines
+	summary["already_seen"] = meta.AlreadySeen
+	logToolCallFinished(call, time.Since(startedAt), "ok", summary)
 
 	return annotated, meta, nil
 }

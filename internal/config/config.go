@@ -27,18 +27,6 @@ type Config struct {
 	TLSTimeout     time.Duration // Таймаут TLS рукопожатия
 }
 
-// Log - глобальный logger, всегда пишет в stderr
-var Log *slog.Logger
-
-func init() {
-	// Создаём logger с уровнем Error по умолчанию (без verbose выводятся только ошибки)
-	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     slog.LevelError,
-		AddSource: true,
-	})
-	Log = slog.New(handler)
-}
-
 // LoadWithFlags загружает конфигурацию из env и CLI флагов.
 // args - это массив командных аргументов (обычно os.Args[1:]).
 // Возвращает конфигурацию, список позиционных аргументов (после всех флагов) и ошибку.
@@ -68,7 +56,7 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	}
 
 	// Debug логирование для диагностики позиционных аргументов
-	Log.Debug("после парсинга флагов", "все_аргументы_перед_парсингом", args, "positional_args_после_парсинга", fs.Args(), "count_pos_args", len(fs.Args()))
+	slog.Debug("после парсинга флагов", "все_аргументы_перед_парсингом", args, "positional_args_после_парсинга", fs.Args(), "count_pos_args", len(fs.Args()))
 
 	// Получаем позиционные аргументы (после всех флагов)
 	positionalArgs := fs.Args()
@@ -76,7 +64,7 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	// Если есть несколько позиционных аргументов, объединяем их в один prompt через пробел
 	// Это позволяет использовать вопрос без кавычек: ./ragcli вопрос с пробелами
 	if len(positionalArgs) > 1 {
-		Log.Debug("объединение нескольких позиционных аргументов в prompt", "original_count", len(positionalArgs), "combined_prompt", strings.Join(positionalArgs, " "))
+		slog.Debug("объединение нескольких позиционных аргументов в prompt", "original_count", len(positionalArgs), "combined_prompt", strings.Join(positionalArgs, " "))
 		positionalArgs = []string{strings.Join(positionalArgs, " ")}
 	}
 
@@ -139,11 +127,9 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 
 	// Устанавливаем уровень логирования
 	if cfg.Verbose {
-		handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level:     slog.LevelDebug,
-			AddSource: true,
-		})
-		Log = slog.New(handler)
+		ConfigureLogger(true)
+	} else {
+		ConfigureLogger(false)
 	}
 
 	return cfg, positionalArgs, nil

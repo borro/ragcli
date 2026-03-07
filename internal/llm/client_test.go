@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -333,6 +334,111 @@ func TestChatCompletionRequest_Structure(t *testing.T) {
 				t.Errorf("len(ChatCompletionRequest.Messages) = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSendRequestWithMetrics_UsageAndTPS(t *testing.T) {
+	client := NewClient("", "test-model", "", 0)
+	client.doRequest = func(_ context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+		if req.Model != "test-model" {
+			t.Fatalf("Model = %q, want %q", req.Model, "test-model")
+		}
+		return openai.ChatCompletionResponse{
+			Choices: []openai.ChatCompletionChoice{
+				{
+					Message: openai.ChatCompletionMessage{
+						Role:    "assistant",
+						Content: "ok",
+					},
+				},
+			},
+			Usage: openai.Usage{
+				PromptTokens:     10,
+				CompletionTokens: 20,
+				TotalTokens:      30,
+			},
+		}, nil
+	}
+
+	result, err := client.SendRequestWithMetrics(context.Background(), ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("SendRequestWithMetrics() error = %v", err)
+	}
+
+	if result.Metrics.PromptTokens != 10 || result.Metrics.CompletionTokens != 20 || result.Metrics.TotalTokens != 30 {
+		t.Fatalf("metrics token usage = %+v, want 10/20/30", result.Metrics)
+	}
+	if result.Metrics.TokensPerSecond <= 0 {
+		t.Fatalf("TokensPerSecond = %v, want > 0", result.Metrics.TokensPerSecond)
+	}
+	if result.Metrics.Attempt != 1 {
+		t.Fatalf("Attempt = %d, want 1", result.Metrics.Attempt)
+	}
+}
+
+func TestSendRequestWithMetrics_ZeroCompletionTokensNoTPS(t *testing.T) {
+	client := NewClient("", "test-model", "", 0)
+	client.doRequest = func(_ context.Context, _ openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+		return openai.ChatCompletionResponse{
+			Choices: []openai.ChatCompletionChoice{
+				{Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}},
+			},
+			Usage: openai.Usage{
+				PromptTokens:     5,
+				CompletionTokens: 0,
+				TotalTokens:      5,
+			},
+		}, nil
+	}
+
+	result, err := client.SendRequestWithMetrics(context.Background(), ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("SendRequestWithMetrics() error = %v", err)
+	}
+	if result.Metrics.TokensPerSecond != 0 {
+		t.Fatalf("TokensPerSecond = %v, want 0", result.Metrics.TokensPerSecond)
+	}
+}
+
+func TestSendRequestWithMetrics_RetryUsesSuccessfulAttemptMetrics(t *testing.T) {
+	client := NewClient("", "test-model", "", 1)
+	attempts := 0
+	client.doRequest = func(_ context.Context, _ openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+		attempts++
+		if attempts == 1 {
+			return openai.ChatCompletionResponse{}, errors.New("temporary failure")
+		}
+		return openai.ChatCompletionResponse{
+			Choices: []openai.ChatCompletionChoice{
+				{Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}},
+			},
+			Usage: openai.Usage{
+				PromptTokens:     7,
+				CompletionTokens: 3,
+				TotalTokens:      10,
+			},
+		}, nil
+	}
+
+	result, err := client.SendRequestWithMetrics(context.Background(), ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("SendRequestWithMetrics() error = %v", err)
+	}
+
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if result.Metrics.Attempt != 2 {
+		t.Fatalf("Attempt = %d, want 2", result.Metrics.Attempt)
+	}
+	if result.Metrics.TotalTokens != 10 {
+		t.Fatalf("TotalTokens = %d, want 10", result.Metrics.TotalTokens)
 	}
 }
 

@@ -3,9 +3,9 @@ package llm
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
-	"github.com/borro/ragcli/internal/config"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -14,6 +14,7 @@ type Client struct {
 	client     *openai.Client
 	model      string
 	retryCount int
+	doRequest  func(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
 }
 
 // Message представляет сообщение в чате
@@ -38,6 +39,28 @@ type ChatCompletionResponse = openai.ChatCompletionResponse
 // ToolCall represents a tool call from the model
 type ToolCall = openai.ToolCall
 
+// RequestMetrics содержит метаданные и наблюдаемость по одному запросу к LLM.
+type RequestMetrics struct {
+	Model            string
+	Attempt          int
+	MessageCount     int
+	ToolCount        int
+	ToolChoice       string
+	Duration         time.Duration
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	TokensPerSecond  float64
+	ChoiceCount      int
+	HasToolCalls     bool
+}
+
+// RequestResult содержит ответ LLM и собранные метрики запроса.
+type RequestResult struct {
+	Response *ChatCompletionResponse
+	Metrics  RequestMetrics
+}
+
 // NewClient создаёт новый LLM клиент, используя go-openai библиотеку
 func NewClient(baseURL, model, apiKey string, retryCount int) *Client {
 	config := openai.DefaultConfig(apiKey)
@@ -50,11 +73,26 @@ func NewClient(baseURL, model, apiKey string, retryCount int) *Client {
 		model:      model,
 		retryCount: retryCount,
 	}
+	client.doRequest = func(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+		return client.client.CreateChatCompletion(ctx, req)
+	}
 	return client
 }
 
 // SendRequest отправляет запрос к LLM API с механизмом retry и exponential backoff
 func (c *Client) SendRequest(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
+	result, err := c.SendRequestWithMetrics(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Response, nil
+}
+
+// SendRequestWithMetrics отправляет запрос к LLM API и возвращает ответ вместе с метриками.
+func (c *Client) SendRequestWithMetrics(ctx context.Context, req ChatCompletionRequest) (*RequestResult, error) {
+	toolChoice := toolChoiceLabel(req.ToolChoice)
+
 	for attempt := 1; attempt <= c.retryCount+1; attempt++ {
 		select {
 		case <-ctx.Done():
@@ -62,17 +100,59 @@ func (c *Client) SendRequest(ctx context.Context, req ChatCompletionRequest) (*C
 		default:
 		}
 
-		resp, err := c.doRequest(ctx, req)
+		slog.Debug("llm request started",
+			"model", c.model,
+			"attempt", attempt,
+			"message_count", len(req.Messages),
+			"tool_count", len(req.Tools),
+			"tool_choice", toolChoice,
+		)
+
+		startedAt := time.Now()
+		resp, err := c.doRequestOnce(ctx, req)
+		elapsed := time.Since(startedAt)
 		if err == nil {
-			return &resp, nil
+			metrics := buildRequestMetrics(c.model, attempt, req, resp, elapsed)
+			slog.Debug("llm request finished",
+				"model", metrics.Model,
+				"attempt", metrics.Attempt,
+				"message_count", metrics.MessageCount,
+				"tool_count", metrics.ToolCount,
+				"tool_choice", metrics.ToolChoice,
+				"duration_ms", metrics.Duration.Milliseconds(),
+				"choice_count", metrics.ChoiceCount,
+				"has_tool_calls", metrics.HasToolCalls,
+				"prompt_tokens", metrics.PromptTokens,
+				"completion_tokens", metrics.CompletionTokens,
+				"total_tokens", metrics.TotalTokens,
+				"tokens_per_second", metrics.TokensPerSecond,
+			)
+			return &RequestResult{
+				Response: &resp,
+				Metrics:  metrics,
+			}, nil
 		}
 
-		config.Log.Debug("request failed", "attempt", attempt, "error", err)
+		slog.Debug("llm request failed",
+			"model", c.model,
+			"attempt", attempt,
+			"message_count", len(req.Messages),
+			"tool_count", len(req.Tools),
+			"tool_choice", toolChoice,
+			"duration_ms", elapsed.Milliseconds(),
+			"error", err,
+		)
 
 		// Проверяем тип ошибки и решаем стоит ли retry
 		if attempt <= c.retryCount {
 			delay := 1 << (attempt - 1) // exponential backoff: 1, 2, 4, 8 seconds
-			config.Log.Debug("retrying request", "attempt", attempt+1, "delay_seconds", delay)
+			slog.Debug("retrying llm request",
+				"model", c.model,
+				"failed_attempt", attempt,
+				"next_attempt", attempt+1,
+				"delay_seconds", delay,
+				"reason", err,
+			)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -84,8 +164,8 @@ func (c *Client) SendRequest(ctx context.Context, req ChatCompletionRequest) (*C
 	return nil, fmt.Errorf("request failed after %d attempts", c.retryCount+1)
 }
 
-// doRequest выполняет один HTTP запрос к API через go-openai
-func (c *Client) doRequest(ctx context.Context, req ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+// doRequestOnce выполняет один HTTP запрос к API через go-openai.
+func (c *Client) doRequestOnce(ctx context.Context, req ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 	openaiReq := openai.ChatCompletionRequest{
 		Model:    c.model,
 		Messages: req.Messages,
@@ -96,10 +176,57 @@ func (c *Client) doRequest(ctx context.Context, req ChatCompletionRequest) (open
 		openaiReq.ToolChoice = req.ToolChoice
 	}
 
-	return c.client.CreateChatCompletion(ctx, openaiReq)
+	return c.doRequest(ctx, openaiReq)
 }
 
 // Model возвращает имя модели
 func (c *Client) Model() string {
 	return c.model
+}
+
+func buildRequestMetrics(model string, attempt int, req ChatCompletionRequest, resp openai.ChatCompletionResponse, duration time.Duration) RequestMetrics {
+	metrics := RequestMetrics{
+		Model:            model,
+		Attempt:          attempt,
+		MessageCount:     len(req.Messages),
+		ToolCount:        len(req.Tools),
+		ToolChoice:       toolChoiceLabel(req.ToolChoice),
+		Duration:         duration,
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		TotalTokens:      resp.Usage.TotalTokens,
+		ChoiceCount:      len(resp.Choices),
+		HasToolCalls:     responseHasToolCalls(resp),
+	}
+
+	if metrics.CompletionTokens > 0 && duration > 0 {
+		metrics.TokensPerSecond = float64(metrics.CompletionTokens) / duration.Seconds()
+	}
+
+	return metrics
+}
+
+func responseHasToolCalls(resp openai.ChatCompletionResponse) bool {
+	for _, choice := range resp.Choices {
+		if len(choice.Message.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func toolChoiceLabel(toolChoice interface{}) string {
+	if toolChoice == nil {
+		return "auto"
+	}
+
+	switch value := toolChoice.(type) {
+	case string:
+		if value == "" {
+			return "auto"
+		}
+		return value
+	default:
+		return fmt.Sprintf("%T", toolChoice)
+	}
 }

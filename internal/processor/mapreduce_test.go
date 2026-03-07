@@ -1,8 +1,16 @@
 package processor
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/borro/ragcli/internal/config"
+	"github.com/borro/ragcli/internal/llm"
 )
 
 func TestSplitByLines(t *testing.T) {
@@ -123,4 +131,136 @@ func TestSplitByLines_LargeInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRunSRMR_EndToEndWithRefine(t *testing.T) {
+	client := newSequencedLLMClient(t, []string{
+		"fact from chunk 1",
+		"fact from chunk 2",
+		"fact from chunk 1\nfact from chunk 2",
+		"initial answer",
+		"SUPPORTED: no\nISSUES:\n- make it more precise",
+		"refined answer",
+	}, nil)
+
+	result, err := RunSRMR(context.Background(), client, strings.NewReader("aaa\nbbb\n"), &config.Config{
+		InputPath:   "input.txt",
+		ChunkLength: 3,
+		Concurrency: 1,
+		RetryCount:  0,
+	}, "Что в файле?")
+	if err != nil {
+		t.Fatalf("RunSRMR() error = %v", err)
+	}
+	if result != "refined answer" {
+		t.Fatalf("RunSRMR() result = %q, want %q", result, "refined answer")
+	}
+}
+
+func TestRunSRMR_EmptyInput(t *testing.T) {
+	client := newSequencedLLMClient(t, nil, nil)
+
+	result, err := RunSRMR(context.Background(), client, strings.NewReader(""), &config.Config{
+		InputPath:   "input.txt",
+		ChunkLength: 10,
+		Concurrency: 1,
+		RetryCount:  0,
+	}, "Что в файле?")
+	if err != nil {
+		t.Fatalf("RunSRMR() error = %v", err)
+	}
+	if result != "Файл пустой" {
+		t.Fatalf("RunSRMR() result = %q, want %q", result, "Файл пустой")
+	}
+}
+
+func TestRunSRMR_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
+	t.Run("all map requests skip", func(t *testing.T) {
+		client := newSequencedLLMClient(t, []string{"SKIP", "SKIP"}, nil)
+
+		result, err := RunSRMR(context.Background(), client, strings.NewReader("aaa\nbbb\n"), &config.Config{
+			InputPath:   "input.txt",
+			ChunkLength: 3,
+			Concurrency: 1,
+			RetryCount:  0,
+		}, "Что в файле?")
+		if err != nil {
+			t.Fatalf("RunSRMR() error = %v", err)
+		}
+		if result != "Нет информации для ответа" {
+			t.Fatalf("RunSRMR() result = %q, want %q", result, "Нет информации для ответа")
+		}
+	})
+
+	t.Run("map requests fail", func(t *testing.T) {
+		client := newSequencedLLMClient(t, nil, []int{http.StatusInternalServerError, http.StatusInternalServerError})
+
+		result, err := RunSRMR(context.Background(), client, strings.NewReader("aaa\nbbb\n"), &config.Config{
+			InputPath:   "input.txt",
+			ChunkLength: 3,
+			Concurrency: 1,
+			RetryCount:  0,
+		}, "Что в файле?")
+		if err != nil {
+			t.Fatalf("RunSRMR() error = %v", err)
+		}
+		if result != "Нет информации для ответа" {
+			t.Fatalf("RunSRMR() result = %q, want %q", result, "Нет информации для ответа")
+		}
+	})
+}
+
+func newSequencedLLMClient(t *testing.T, responses []string, statuses []int) *llm.Client {
+	t.Helper()
+
+	var mu sync.Mutex
+	requestIndex := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		index := requestIndex
+		requestIndex++
+		mu.Unlock()
+
+		statusCode := http.StatusOK
+		if index < len(statuses) && statuses[index] != 0 {
+			statusCode = statuses[index]
+		}
+		if statusCode != http.StatusOK {
+			http.Error(w, "upstream error", statusCode)
+			return
+		}
+
+		content := ""
+		if index < len(responses) {
+			content = responses[index]
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chatcmpl-test",
+			"object":  "chat.completion",
+			"created": 1,
+			"model":   "test-model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": content,
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]any{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		}); err != nil {
+			t.Fatalf("failed to encode fake llm response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	return llm.NewClient(server.URL, "test-model", "", 0)
 }

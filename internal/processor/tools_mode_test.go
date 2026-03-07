@@ -17,7 +17,7 @@ type scriptedRequester struct {
 	requests  []llm.ChatCompletionRequest
 }
 
-func (s *scriptedRequester) SendRequest(_ context.Context, req llm.ChatCompletionRequest) (*llm.ChatCompletionResponse, error) {
+func (s *scriptedRequester) SendRequestWithMetrics(_ context.Context, req llm.ChatCompletionRequest) (*llm.RequestResult, error) {
 	s.requests = append(s.requests, req)
 	index := len(s.requests) - 1
 
@@ -29,7 +29,18 @@ func (s *scriptedRequester) SendRequest(_ context.Context, req llm.ChatCompletio
 		return nil, context.DeadlineExceeded
 	}
 
-	return s.responses[index], nil
+	return &llm.RequestResult{
+		Response: s.responses[index],
+		Metrics: llm.RequestMetrics{
+			Attempt:          1,
+			MessageCount:     len(req.Messages),
+			ToolCount:        len(req.Tools),
+			PromptTokens:     10,
+			CompletionTokens: 5,
+			TotalTokens:      15,
+			TokensPerSecond:  50,
+		},
+	}, nil
 }
 
 func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {

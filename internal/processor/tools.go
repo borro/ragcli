@@ -6,16 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/borro/ragcli/internal/llm"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
-
-	"github.com/borro/ragcli/internal/config"
-	"github.com/borro/ragcli/internal/llm"
 )
 
 const (
@@ -135,7 +135,7 @@ func (r *cachedLineReader) ensureLoaded() error {
 	}
 	defer func() {
 		if cerr := reader.Close(); cerr != nil {
-			config.Log.Warn("failed to close source", "source", r.sourceName, "error", cerr)
+			slog.Warn("failed to close source", "source", r.sourceName, "error", cerr)
 		}
 	}()
 
@@ -601,8 +601,155 @@ func executeTool(call llm.ToolCall, reader lineReader) (string, error) {
 	}
 }
 
+func logToolCallStarted(call llm.ToolCall, args map[string]any) {
+	logArgs := []any{
+		"tool_name", call.Function.Name,
+		"tool_call_id", call.ID,
+	}
+	if args != nil {
+		logArgs = append(logArgs, "arguments", args)
+	}
+	slog.Debug("tool call started", logArgs...)
+}
+
+func logToolCallFinished(call llm.ToolCall, duration time.Duration, status string, summary map[string]any) {
+	logArgs := []any{
+		"tool_name", call.Function.Name,
+		"tool_call_id", call.ID,
+		"status", status,
+		"duration_ms", duration.Milliseconds(),
+	}
+	for key, value := range summary {
+		logArgs = append(logArgs, key, value)
+	}
+	slog.Debug("tool call finished", logArgs...)
+}
+
+func logToolCallError(call llm.ToolCall, duration time.Duration, err error) {
+	toolErr := asToolError(err)
+	logArgs := []any{
+		"tool_name", call.Function.Name,
+		"tool_call_id", call.ID,
+		"duration_ms", duration.Milliseconds(),
+		"error_code", toolErr.Code,
+		"retryable", toolErr.Retryable,
+		"error", toolErr.Message,
+	}
+	if len(toolErr.Details) > 0 {
+		logArgs = append(logArgs, "details", toolErr.Details)
+	}
+	slog.Debug("tool call failed", logArgs...)
+}
+
+func summarizeToolArguments(call llm.ToolCall) map[string]any {
+	if strings.TrimSpace(call.Function.Arguments) == "" {
+		return nil
+	}
+
+	switch call.Function.Name {
+	case "search_file":
+		var params struct {
+			Query        string `json:"query"`
+			Mode         string `json:"mode"`
+			Limit        int    `json:"limit"`
+			Offset       int    `json:"offset"`
+			ContextLines int    `json:"context_lines"`
+		}
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
+			return map[string]any{"decode_error": err.Error()}
+		}
+		normalized := normalizeSearchParams(SearchParams{
+			Query:        params.Query,
+			Mode:         params.Mode,
+			Limit:        params.Limit,
+			Offset:       params.Offset,
+			ContextLines: params.ContextLines,
+		})
+		return map[string]any{
+			"query":         normalized.Query,
+			"mode":          normalized.Mode,
+			"limit":         normalized.Limit,
+			"offset":        normalized.Offset,
+			"context_lines": normalized.ContextLines,
+		}
+	case "read_lines":
+		var params struct {
+			StartLine int `json:"start_line"`
+			EndLine   int `json:"end_line"`
+		}
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
+			return map[string]any{"decode_error": err.Error()}
+		}
+		return map[string]any{
+			"start_line": params.StartLine,
+			"end_line":   params.EndLine,
+		}
+	case "read_around":
+		var params struct {
+			Line   int `json:"line"`
+			Before int `json:"before"`
+			After  int `json:"after"`
+		}
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
+			return map[string]any{"decode_error": err.Error()}
+		}
+		return map[string]any{
+			"line":   params.Line,
+			"before": params.Before,
+			"after":  params.After,
+		}
+	default:
+		return map[string]any{
+			"raw_arguments": call.Function.Arguments,
+		}
+	}
+}
+
+func summarizeToolResult(toolName string, raw string) map[string]any {
+	switch toolName {
+	case "search_file":
+		var result SearchResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return map[string]any{"decode_error": err.Error()}
+		}
+		summary := map[string]any{
+			"mode":          result.Mode,
+			"match_count":   result.MatchCount,
+			"total_matches": result.TotalMatches,
+			"has_more":      result.HasMore,
+		}
+		if result.NextOffset > 0 {
+			summary["next_offset"] = result.NextOffset
+		}
+		return summary
+	case "read_lines":
+		var result ReadLinesResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return map[string]any{"decode_error": err.Error()}
+		}
+		return map[string]any{
+			"start_line": result.StartLine,
+			"end_line":   result.EndLine,
+			"line_count": result.LineCount,
+		}
+	case "read_around":
+		var result ReadAroundResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return map[string]any{"decode_error": err.Error()}
+		}
+		return map[string]any{
+			"line":       result.Line,
+			"start_line": result.StartLine,
+			"end_line":   result.EndLine,
+			"line_count": result.LineCount,
+		}
+	default:
+		return nil
+	}
+}
+
 func ExecuteToolCalls(ctx context.Context, toolCalls []llm.ToolCall, path string) ([]string, error) {
-	config.Log.Debug("ExecuteToolCalls called", "path_length", len(path), "path_is_empty", path == "", "tool_calls_count", len(toolCalls))
+	slog.Debug("ExecuteToolCalls called", "path_length", len(path), "path_is_empty", path == "", "tool_calls_count", len(toolCalls))
 
 	reader := newFileReader(path)
 
@@ -616,7 +763,7 @@ func ExecuteToolCalls(ctx context.Context, toolCalls []llm.ToolCall, path string
 
 		result, err := executeTool(call, reader)
 		if err != nil {
-			config.Log.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
+			slog.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
 			toolErr, marshalErr := marshalJSON(asToolError(err))
 			if marshalErr != nil {
 				return nil, marshalErr

@@ -422,6 +422,79 @@ func TestCachedLineReader_LoadsOnceAcrossTools(t *testing.T) {
 	}
 }
 
+func TestSummarizeToolArguments_NormalizesSearchParams(t *testing.T) {
+	summary := summarizeToolArguments(toolCall("1", "search_file", `{"query":"alpha","limit":50,"offset":-1}`))
+
+	if summary["mode"] != "auto" {
+		t.Fatalf("mode = %#v, want auto", summary["mode"])
+	}
+	if summary["limit"] != maxSearchLimit {
+		t.Fatalf("limit = %#v, want %d", summary["limit"], maxSearchLimit)
+	}
+	if summary["offset"] != 0 {
+		t.Fatalf("offset = %#v, want 0", summary["offset"])
+	}
+}
+
+func TestSummarizeToolResult_SearchPagination(t *testing.T) {
+	raw, err := marshalJSON(SearchResult{
+		Mode:         "literal",
+		MatchCount:   2,
+		TotalMatches: 5,
+		HasMore:      true,
+		NextOffset:   2,
+	})
+	if err != nil {
+		t.Fatalf("marshalJSON() error = %v", err)
+	}
+
+	summary := summarizeToolResult("search_file", raw)
+	if summary["mode"] != "literal" {
+		t.Fatalf("mode = %#v, want literal", summary["mode"])
+	}
+	if summary["match_count"] != float64(2) && summary["match_count"] != 2 {
+		t.Fatalf("match_count = %#v, want 2", summary["match_count"])
+	}
+	if summary["next_offset"] != float64(2) && summary["next_offset"] != 2 {
+		t.Fatalf("next_offset = %#v, want 2", summary["next_offset"])
+	}
+}
+
+func TestSummarizeToolResult_ReadRanges(t *testing.T) {
+	readLinesRaw, err := marshalJSON(ReadLinesResult{
+		StartLine: 10,
+		EndLine:   12,
+		LineCount: 3,
+	})
+	if err != nil {
+		t.Fatalf("marshalJSON(ReadLinesResult) error = %v", err)
+	}
+	readLinesSummary := summarizeToolResult("read_lines", readLinesRaw)
+	if readLinesSummary["start_line"] != float64(10) && readLinesSummary["start_line"] != 10 {
+		t.Fatalf("start_line = %#v, want 10", readLinesSummary["start_line"])
+	}
+	if readLinesSummary["line_count"] != float64(3) && readLinesSummary["line_count"] != 3 {
+		t.Fatalf("line_count = %#v, want 3", readLinesSummary["line_count"])
+	}
+
+	readAroundRaw, err := marshalJSON(ReadAroundResult{
+		Line:      11,
+		StartLine: 10,
+		EndLine:   12,
+		LineCount: 3,
+	})
+	if err != nil {
+		t.Fatalf("marshalJSON(ReadAroundResult) error = %v", err)
+	}
+	readAroundSummary := summarizeToolResult("read_around", readAroundRaw)
+	if readAroundSummary["line"] != float64(11) && readAroundSummary["line"] != 11 {
+		t.Fatalf("line = %#v, want 11", readAroundSummary["line"])
+	}
+	if readAroundSummary["end_line"] != float64(12) && readAroundSummary["end_line"] != 12 {
+		t.Fatalf("end_line = %#v, want 12", readAroundSummary["end_line"])
+	}
+}
+
 func assertSearchResult(t *testing.T, raw string, query string, requestedMode string, expectedMode string, expectedLines []int) {
 	t.Helper()
 
