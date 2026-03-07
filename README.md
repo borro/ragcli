@@ -96,8 +96,8 @@ go run ./cmd/ragcli --help
 | `-l, --length` | `LENGTH` | `10000` | Макс. размер чанка в байтах (map-reduce) |
 | `--rag-top-k` | `RAG_TOP_K` | `8` | Сколько чанков брать после retrieval |
 | `--rag-final-k` | `RAG_FINAL_K` | `4` | Сколько чанков передавать в финальный answer synthesis |
-| `--rag-chunk-size` | `RAG_CHUNK_SIZE` | `5000` | Размер retrieval чанка в байтах |
-| `--rag-chunk-overlap` | `RAG_CHUNK_OVERLAP` | `750` | Перекрытие retrieval чанков в байтах |
+| `--rag-chunk-size` | `RAG_CHUNK_SIZE` | `1800` | Размер retrieval чанка в байтах |
+| `--rag-chunk-overlap` | `RAG_CHUNK_OVERLAP` | `200` | Перекрытие retrieval чанков в байтах |
 | `--rag-index-ttl` | `RAG_INDEX_TTL` | `24h` | TTL временного локального индекса |
 | `--rag-index-dir` | `RAG_INDEX_DIR` | `${TMPDIR}/ragcli-index` | Базовая директория локального индекса |
 | `--rag-rerank` | `RAG_RERANK` | `heuristic` | Режим rerank: `off`, `heuristic`, `model` |

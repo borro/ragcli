@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -85,6 +86,19 @@ func TestChunkTextPreservesLineRanges(t *testing.T) {
 	}
 	if chunks[1].SourcePath != "sample.txt" {
 		t.Fatalf("SourcePath = %q, want sample.txt", chunks[1].SourcePath)
+	}
+}
+
+func TestChunkTextIgnoresTrailingNewlinePhantomLine(t *testing.T) {
+	chunks := chunkText([]byte("one\ntwo\n"), "sample.txt", 64, 0)
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
+	}
+	if chunks[0].EndLine != 2 {
+		t.Fatalf("EndLine = %d, want 2", chunks[0].EndLine)
+	}
+	if strings.HasSuffix(chunks[0].Text, "\n") {
+		t.Fatalf("chunk text = %q, want no synthetic trailing empty line", chunks[0].Text)
 	}
 }
 
@@ -247,6 +261,96 @@ func TestPersistedIndexFilesExist(t *testing.T) {
 	}
 	if index.Manifest.ChunkCount == 0 {
 		t.Fatal("manifest chunk count = 0, want persisted chunks")
+	}
+}
+
+func TestPersistIndexUsesPrivatePermissions(t *testing.T) {
+	tempDir := t.TempDir()
+	indexDir := filepath.Join(tempDir, "index")
+	index := &Index{
+		Manifest: Manifest{
+			SchemaVersion:  indexSchemaVersion,
+			CreatedAt:      time.Now().UTC(),
+			InputHash:      "hash",
+			DocID:          "doc",
+			SourcePath:     "source.txt",
+			EmbeddingModel: "embed",
+			ChunkSize:      100,
+			ChunkOverlap:   10,
+			ChunkCount:     1,
+		},
+		Chunks:     []Chunk{{DocID: "doc", SourcePath: "source.txt", ChunkID: 0, StartLine: 1, EndLine: 1, Text: "alpha"}},
+		Embeddings: [][]float32{{1, 0, 0}},
+	}
+
+	if err := persistIndex(indexDir, index); err != nil {
+		t.Fatalf("persistIndex() error = %v", err)
+	}
+
+	dirInfo, err := os.Stat(indexDir)
+	if err != nil {
+		t.Fatalf("os.Stat(indexDir) error = %v", err)
+	}
+	if dirInfo.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("index dir perms = %o, want private perms", dirInfo.Mode().Perm())
+	}
+
+	for _, name := range []string{manifestFilename, chunksFilename, embeddingsFilename} {
+		info, err := os.Stat(filepath.Join(indexDir, name))
+		if err != nil {
+			t.Fatalf("os.Stat(%s) error = %v", name, err)
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("%s perms = %o, want private perms", name, info.Mode().Perm())
+		}
+	}
+}
+
+func TestBuildOrLoadIndexConcurrentWritersSharePublishedIndex(t *testing.T) {
+	cfg := &config.Config{
+		EmbeddingModel:  "embed",
+		RAGTopK:         2,
+		RAGFinalK:       1,
+		RAGChunkSize:    40,
+		RAGChunkOverlap: 8,
+		RAGIndexTTL:     time.Hour,
+		RAGIndexDir:     t.TempDir(),
+		RAGRerank:       "off",
+	}
+
+	embedder := &fakeEmbedder{}
+	content := "one\nretry policy\nthree\n"
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := buildOrLoadIndex(context.Background(), embedder, Source{
+				Path:        "/tmp/source.txt",
+				DisplayName: "source.txt",
+				Reader:      strings.NewReader(content),
+			}, cfg, &pipelineStats{})
+			errs <- err
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("buildOrLoadIndex() concurrent error = %v", err)
+		}
+	}
+
+	hash := hashInput([]byte(content), "source.txt", cfg)
+	indexDir := filepath.Join(cfg.RAGIndexDir, hash)
+	for _, name := range []string{manifestFilename, chunksFilename, embeddingsFilename} {
+		if _, err := os.Stat(filepath.Join(indexDir, name)); err != nil {
+			t.Fatalf("expected published index file %s: %v", name, err)
+		}
 	}
 }
 

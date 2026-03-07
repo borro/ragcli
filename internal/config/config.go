@@ -57,8 +57,8 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	retryCount := fs.Int("r", getIntEnv("RETRY", 3), "количество повторных попыток при ошибках LLM")
 	ragTopK := fs.Int("rag-top-k", getIntEnv("RAG_TOP_K", 8), "количество кандидатов после retrieval в mode=rag")
 	ragFinalK := fs.Int("rag-final-k", getIntEnv("RAG_FINAL_K", 4), "количество чанков в финальном контексте mode=rag")
-	ragChunkSize := fs.Int("rag-chunk-size", getIntEnv("RAG_CHUNK_SIZE", 5000), "размер retrieval чанка в байтах")
-	ragChunkOverlap := fs.Int("rag-chunk-overlap", getIntEnv("RAG_CHUNK_OVERLAP", 750), "перекрытие retrieval чанков в байтах")
+	ragChunkSize := fs.Int("rag-chunk-size", getIntEnv("RAG_CHUNK_SIZE", 1800), "размер retrieval чанка в байтах")
+	ragChunkOverlap := fs.Int("rag-chunk-overlap", getIntEnv("RAG_CHUNK_OVERLAP", 200), "перекрытие retrieval чанков в байтах")
 	ragIndexTTL := fs.String("rag-index-ttl", getEnv("RAG_INDEX_TTL", "24h"), "ttl локального индекса mode=rag")
 	ragIndexDir := fs.String("rag-index-dir", getEnv("RAG_INDEX_DIR", defaultRAGIndexDir()), "директория локального индекса mode=rag")
 	ragRerank := fs.String("rag-rerank", getEnv("RAG_RERANK", "heuristic"), "rerank режим для mode=rag: off|heuristic|model")
@@ -136,8 +136,8 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	if cfg.RAGFinalK > cfg.RAGTopK {
 		cfg.RAGFinalK = cfg.RAGTopK
 	}
-	cfg.RAGChunkSize = chooseIntAtLeast(*ragChunkSize, getIntEnv("RAG_CHUNK_SIZE", 5000), 5000, 1000)
-	cfg.RAGChunkOverlap = chooseIntAtLeast(*ragChunkOverlap, getIntEnv("RAG_CHUNK_OVERLAP", 750), 750, 0)
+	cfg.RAGChunkSize = chooseIntAtLeast(*ragChunkSize, getIntEnv("RAG_CHUNK_SIZE", 1800), 1800, 1000)
+	cfg.RAGChunkOverlap = chooseIntAtLeast(*ragChunkOverlap, getIntEnv("RAG_CHUNK_OVERLAP", 200), 200, 0)
 	if cfg.RAGChunkOverlap >= cfg.RAGChunkSize {
 		cfg.RAGChunkOverlap = cfg.RAGChunkSize / 4
 	}

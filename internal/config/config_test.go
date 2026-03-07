@@ -596,3 +596,20 @@ func TestLoadWithFlags_RAGOptions(t *testing.T) {
 		t.Fatalf("RAGRerank = %q, want off", cfg.RAGRerank)
 	}
 }
+
+func TestLoadWithFlags_RAGDefaultsAreSafeForLocalEmbeddings(t *testing.T) {
+	t.Setenv("RAG_CHUNK_SIZE", "")
+	t.Setenv("RAG_CHUNK_OVERLAP", "")
+
+	cfg, _, err := LoadWithFlags([]string{"--mode", "rag"})
+	if err != nil {
+		t.Fatalf("LoadWithFlags() error = %v", err)
+	}
+
+	if cfg.RAGChunkSize != 1800 {
+		t.Fatalf("RAGChunkSize = %d, want 1800", cfg.RAGChunkSize)
+	}
+	if cfg.RAGChunkOverlap != 200 {
+		t.Fatalf("RAGChunkOverlap = %d, want 200", cfg.RAGChunkOverlap)
+	}
+}

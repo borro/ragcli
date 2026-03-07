@@ -155,7 +155,7 @@ func Run(ctx context.Context, chat chatRequester, embedder embeddingRequester, s
 }
 
 func buildOrLoadIndex(ctx context.Context, embedder embeddingRequester, source Source, cfg *config.Config, stats *pipelineStats) (*Index, error) {
-	if err := os.MkdirAll(cfg.RAGIndexDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.RAGIndexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create rag index dir: %w", err)
 	}
 	cleanupExpiredIndexes(cfg.RAGIndexDir, cfg.RAGIndexTTL)
@@ -203,6 +203,10 @@ func buildOrLoadIndex(ctx context.Context, embedder embeddingRequester, source S
 	}
 
 	if err := persistIndex(indexDir, index); err != nil {
+		if cached, loadErr := loadIndex(indexDir, cfg.RAGIndexTTL); loadErr == nil {
+			stats.CacheHit = true
+			return cached, nil
+		}
 		return nil, err
 	}
 
@@ -294,19 +298,35 @@ func loadIndex(indexDir string, ttl time.Duration) (*Index, error) {
 }
 
 func persistIndex(indexDir string, index *Index) error {
-	if err := os.MkdirAll(indexDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create index dir: %w", err)
+	parentDir := filepath.Dir(indexDir)
+	if err := os.MkdirAll(parentDir, 0o700); err != nil {
+		return fmt.Errorf("failed to create parent index dir: %w", err)
+	}
+
+	tempDir, err := os.MkdirTemp(parentDir, "."+filepath.Base(indexDir)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp index dir: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(tempDir)
+	}()
+
+	if err := os.Chmod(tempDir, 0o700); err != nil {
+		return fmt.Errorf("failed to secure temp index dir: %w", err)
+	}
+
+	if _, err := os.Stat(indexDir); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to stat index dir: %w", err)
 	}
 
 	manifestData, err := json.Marshal(index.Manifest)
 	if err != nil {
 		return fmt.Errorf("failed to encode manifest: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(indexDir, manifestFilename), manifestData, 0o644); err != nil {
-		return fmt.Errorf("failed to write manifest: %w", err)
-	}
 
-	chunksFile, err := os.Create(filepath.Join(indexDir, chunksFilename))
+	chunksFile, err := os.OpenFile(filepath.Join(tempDir, chunksFilename), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to create chunks file: %w", err)
 	}
@@ -325,8 +345,18 @@ func persistIndex(indexDir string, index *Index) error {
 	if err != nil {
 		return fmt.Errorf("failed to encode embeddings: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(indexDir, embeddingsFilename), embeddingsData, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tempDir, embeddingsFilename), embeddingsData, 0o600); err != nil {
 		return fmt.Errorf("failed to write embeddings: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, manifestFilename), manifestData, 0o600); err != nil {
+		return fmt.Errorf("failed to write manifest: %w", err)
+	}
+
+	if err := os.Rename(tempDir, indexDir); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to publish index dir: %w", err)
 	}
 
 	return nil
@@ -358,6 +388,10 @@ func readChunks(path string) ([]Chunk, error) {
 }
 
 func chunkText(content []byte, sourcePath string, chunkSize, overlap int) []Chunk {
+	if len(content) == 0 {
+		return nil
+	}
+
 	type lineInfo struct {
 		text      string
 		byteStart int
@@ -366,6 +400,9 @@ func chunkText(content []byte, sourcePath string, chunkSize, overlap int) []Chun
 	}
 
 	rawLines := strings.Split(string(content), "\n")
+	if len(rawLines) > 0 && rawLines[len(rawLines)-1] == "" && len(content) > 0 && content[len(content)-1] == '\n' {
+		rawLines = rawLines[:len(rawLines)-1]
+	}
 	lines := make([]lineInfo, 0, len(rawLines))
 	offset := 0
 	for i, line := range rawLines {
