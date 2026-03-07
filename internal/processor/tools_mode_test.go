@@ -49,8 +49,8 @@ func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 	if len(client.requests) != 1 {
 		t.Fatalf("requests = %d, want 1", len(client.requests))
 	}
-	if len(client.requests[0].Tools) != 2 {
-		t.Fatalf("tools sent = %d, want 2", len(client.requests[0].Tools))
+	if len(client.requests[0].Tools) != 3 {
+		t.Fatalf("tools sent = %d, want 3", len(client.requests[0].Tools))
 	}
 }
 
@@ -135,12 +135,30 @@ func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 
 	lastMessages := client.requests[1].Messages
 	toolMsg := lastMessages[len(lastMessages)-1]
-	var payload map[string]string
+	var payload map[string]any
 	if err := json.Unmarshal([]byte(toolMsg.Content), &payload); err != nil {
 		t.Fatalf("json.Unmarshal(tool message) error = %v", err)
 	}
-	if payload["error"] == "" {
-		t.Fatalf("tool error payload = %#v, want error field", payload)
+	if payload["code"] == "" || payload["message"] == "" {
+		t.Fatalf("tool error payload = %#v, want code/message fields", payload)
+	}
+}
+
+func TestRunTools_SystemPromptMentionsUntrustedFileContent(t *testing.T) {
+	client := &scriptedRequester{
+		responses: []*llm.ChatCompletionResponse{
+			chatResponse(message("assistant", "ok", nil)),
+		},
+	}
+
+	_, err := RunTools(context.Background(), client, "/tmp/file.txt", "Что в файле?")
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+
+	systemPrompt := client.requests[0].Messages[0].Content
+	if !strings.Contains(systemPrompt, "недоверенные данные") {
+		t.Fatalf("system prompt = %q, want injection hardening instruction", systemPrompt)
 	}
 }
 

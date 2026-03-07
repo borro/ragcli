@@ -1,3 +1,1 @@
 - [ ] проверить на prompt-injection
-- [x] поправить работу с tools
-- [ ] усилить защиту tools prompt/tool loop от prompt-injection

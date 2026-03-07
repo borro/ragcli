@@ -11,25 +11,41 @@ func TestStdinSearch(t *testing.T) {
 	tests := []struct {
 		name          string
 		input         string
-		query         string
+		params        SearchParams
 		expectedMode  string
 		expectedLines []int
 		expectError   bool
 	}{
 		{
-			name: "found match (case insensitive)",
+			name: "found match (case insensitive literal)",
 			input: `первая строка
 вторая строка с текстом
 третья строка`,
-			query:         "ТЕКСТ",
-			expectedMode:  "regex",
+			params: SearchParams{
+				Query: "ТЕКСТ",
+			},
+			expectedMode:  "literal",
 			expectedLines: []int{2},
 		},
 		{
-			name:          "no match",
-			input:         "первая строка\nвторая строка\n",
-			query:         "нет в файле",
-			expectedMode:  "regex",
+			name: "token overlap fallback",
+			input: `retry behaviour is described here
+another line
+policy for retries and backoff`,
+			params: SearchParams{
+				Query: "retry policy",
+			},
+			expectedMode:  "token_overlap",
+			expectedLines: []int{1, 3},
+		},
+		{
+			name: "no match",
+			input: `первая строка
+вторая строка`,
+			params: SearchParams{
+				Query: "нет в файле",
+			},
+			expectedMode:  "token_overlap",
 			expectedLines: []int{},
 		},
 	}
@@ -37,20 +53,20 @@ func TestStdinSearch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			withStdin(t, tt.input, func() {
-				result, err := StdinSearch(tt.query)
+				result, err := SearchFileWithParams("", tt.params)
 
 				if tt.expectError {
 					if err == nil {
-						t.Fatal("StdinSearch() expected error, got nil")
+						t.Fatal("SearchFileWithParams() expected error, got nil")
 					}
 					return
 				}
 
 				if err != nil {
-					t.Fatalf("StdinSearch() error = %v", err)
+					t.Fatalf("SearchFileWithParams() error = %v", err)
 				}
 
-				assertSearchResult(t, result, tt.query, tt.expectedMode, tt.expectedLines)
+				assertSearchResult(t, result, tt.params.Query, tt.params.Mode, tt.expectedMode, tt.expectedLines)
 			})
 		})
 	}
@@ -106,6 +122,24 @@ func TestStdinReadLines(t *testing.T) {
 	}
 }
 
+func TestStdinReadAround(t *testing.T) {
+	withStdin(t, "one\ntwo\nthree\nfour\n", func() {
+		result, err := StdinReadAround(2, 1, 1)
+		if err != nil {
+			t.Fatalf("StdinReadAround() error = %v", err)
+		}
+
+		var parsed ReadAroundResult
+		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+			t.Fatalf("json.Unmarshal() error = %v", err)
+		}
+
+		if parsed.StartLine != 1 || parsed.EndLine != 3 {
+			t.Fatalf("range = %d..%d, want 1..3", parsed.StartLine, parsed.EndLine)
+		}
+	})
+}
+
 func TestSearchFile(t *testing.T) {
 	filePath := writeTempFile(t, `первая строка
 вторая строка с текстом
@@ -117,57 +151,120 @@ func TestSearchFile(t *testing.T) {
 	tests := []struct {
 		name          string
 		filePath      string
-		query         string
+		params        SearchParams
 		expectedMode  string
 		expectedLines []int
 		expectError   bool
+		errorCode     string
 	}{
 		{
-			name:          "found match using regex",
-			filePath:      filePath,
-			query:         "текстом$",
+			name:     "found match using regex",
+			filePath: filePath,
+			params: SearchParams{
+				Query: "текстом$",
+				Mode:  "regex",
+			},
 			expectedMode:  "regex",
 			expectedLines: []int{2, 4},
 		},
 		{
-			name:          "no match",
-			filePath:      filePath,
-			query:         "нет в файле",
-			expectedMode:  "regex",
+			name:     "literal query with regex chars stays literal in auto mode",
+			filePath: filePath,
+			params: SearchParams{
+				Query: "[текст",
+			},
+			expectedMode:  "token_overlap",
 			expectedLines: []int{},
 		},
 		{
-			name:          "invalid regex falls back to substring",
-			filePath:      filePath,
-			query:         "[текст",
-			expectedMode:  "substring",
-			expectedLines: []int{},
+			name:     "invalid regex returns structured error",
+			filePath: filePath,
+			params: SearchParams{
+				Query: "[текст",
+				Mode:  "regex",
+			},
+			expectError: true,
+			errorCode:   "invalid_arguments",
 		},
 		{
 			name:        "non-existent file",
 			filePath:    "/non/existent/file.txt",
-			query:       "test",
+			params:      SearchParams{Query: "test"},
 			expectError: true,
+		},
+		{
+			name:     "paged results expose next_offset",
+			filePath: filePath,
+			params: SearchParams{
+				Query: "строка",
+				Limit: 2,
+			},
+			expectedMode:  "literal",
+			expectedLines: []int{1, 2},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := SearchFile(tt.filePath, tt.query)
+			result, err := SearchFileWithParams(tt.filePath, tt.params)
 
 			if tt.expectError {
 				if err == nil {
-					t.Fatal("SearchFile() expected error, got nil")
+					t.Fatal("SearchFileWithParams() expected error, got nil")
+				}
+
+				if tt.errorCode != "" {
+					var toolErr ToolError
+					if !errorsAs(err, &toolErr) {
+						t.Fatalf("expected ToolError, got %T", err)
+					}
+					if toolErr.Code != tt.errorCode {
+						t.Fatalf("Code = %q, want %q", toolErr.Code, tt.errorCode)
+					}
 				}
 				return
 			}
 
 			if err != nil {
-				t.Fatalf("SearchFile() error = %v", err)
+				t.Fatalf("SearchFileWithParams() error = %v", err)
 			}
 
-			assertSearchResult(t, result, tt.query, tt.expectedMode, tt.expectedLines)
+			assertSearchResult(t, result, tt.params.Query, tt.params.Mode, tt.expectedMode, tt.expectedLines)
+
+			if tt.name == "paged results expose next_offset" {
+				var parsed SearchResult
+				if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+					t.Fatalf("json.Unmarshal() error = %v", err)
+				}
+				if !parsed.HasMore || parsed.NextOffset != 2 || parsed.TotalMatches != 5 {
+					t.Fatalf("pagination = %+v, want has_more=true next_offset=2 total_matches=5", parsed)
+				}
+			}
 		})
+	}
+}
+
+func TestSearchFile_ContextLines(t *testing.T) {
+	filePath := writeTempFile(t, "zero\none match\ntwo\n")
+
+	result, err := SearchFileWithParams(filePath, SearchParams{
+		Query:        "match",
+		ContextLines: 1,
+	})
+	if err != nil {
+		t.Fatalf("SearchFileWithParams() error = %v", err)
+	}
+
+	var parsed SearchResult
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if len(parsed.Matches) != 1 {
+		t.Fatalf("len(Matches) = %d, want 1", len(parsed.Matches))
+	}
+	if len(parsed.Matches[0].ContextBefore) != 1 || len(parsed.Matches[0].ContextAfter) != 1 {
+		t.Fatalf("context lengths = before:%d after:%d, want 1/1", len(parsed.Matches[0].ContextBefore), len(parsed.Matches[0].ContextAfter))
 	}
 }
 
@@ -271,7 +368,61 @@ func TestReadLines_LongLine(t *testing.T) {
 	}
 }
 
-func assertSearchResult(t *testing.T, raw string, query string, expectedMode string, expectedLines []int) {
+func TestReadAround_Bounds(t *testing.T) {
+	filePath := writeTempFile(t, "1\n2\n3\n")
+
+	result, err := ReadAround(filePath, 1, 5, 2)
+	if err != nil {
+		t.Fatalf("ReadAround() error = %v", err)
+	}
+
+	var parsed ReadAroundResult
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if parsed.StartLine != 1 || parsed.EndLine != 3 || parsed.LineCount != 3 {
+		t.Fatalf("result = %+v, want start=1 end=3 count=3", parsed)
+	}
+}
+
+func TestReadAround_InvalidLine(t *testing.T) {
+	filePath := writeTempFile(t, "1\n2\n")
+
+	_, err := ReadAround(filePath, 0, 1, 1)
+	if err == nil {
+		t.Fatal("ReadAround() expected error, got nil")
+	}
+
+	var toolErr ToolError
+	if !errorsAs(err, &toolErr) {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != "invalid_arguments" {
+		t.Fatalf("Code = %q, want invalid_arguments", toolErr.Code)
+	}
+}
+
+func TestCachedLineReader_LoadsOnceAcrossTools(t *testing.T) {
+	filePath := writeTempFile(t, "alpha\nbeta\nalpha beta\n")
+	reader := newFileReader(filePath)
+
+	if _, err := executeTool(toolCall("1", "search_file", `{"query":"alpha","limit":1}`), reader); err != nil {
+		t.Fatalf("executeTool(search_file) error = %v", err)
+	}
+	if _, err := executeTool(toolCall("2", "read_lines", `{"start_line":1,"end_line":2}`), reader); err != nil {
+		t.Fatalf("executeTool(read_lines) error = %v", err)
+	}
+	if _, err := executeTool(toolCall("3", "read_around", `{"line":2,"before":1,"after":1}`), reader); err != nil {
+		t.Fatalf("executeTool(read_around) error = %v", err)
+	}
+
+	if reader.loadCount != 1 {
+		t.Fatalf("loadCount = %d, want 1", reader.loadCount)
+	}
+}
+
+func assertSearchResult(t *testing.T, raw string, query string, requestedMode string, expectedMode string, expectedLines []int) {
 	t.Helper()
 
 	var result SearchResult
@@ -279,8 +430,15 @@ func assertSearchResult(t *testing.T, raw string, query string, expectedMode str
 		t.Fatalf("json.Unmarshal() error = %v, raw=%s", err, raw)
 	}
 
+	wantRequested := requestedMode
+	if wantRequested == "" {
+		wantRequested = "auto"
+	}
 	if result.Query != query {
 		t.Fatalf("Query = %q, want %q", result.Query, query)
+	}
+	if result.RequestedMode != wantRequested {
+		t.Fatalf("RequestedMode = %q, want %q", result.RequestedMode, wantRequested)
 	}
 	if result.Mode != expectedMode {
 		t.Fatalf("Mode = %q, want %q", result.Mode, expectedMode)
@@ -325,13 +483,6 @@ func assertReadLinesResult(t *testing.T, raw string, start int, end int, expecte
 			t.Fatalf("Lines[%d].LineNumber = %d, want %d", i, result.Lines[i].LineNumber, line)
 		}
 	}
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func writeTempFile(t *testing.T, content string) string {
