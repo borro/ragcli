@@ -1,3 +1,3 @@
 - [ ] проверить на prompt-injection
-- [ ] добавить версию через goreleaser
-- [ ] поправить работу с tools
+- [x] поправить работу с tools
+- [ ] усилить защиту rag prompt/tool loop от prompt-injection
