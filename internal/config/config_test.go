@@ -471,6 +471,26 @@ func TestLoadWithFlags(t *testing.T) {
 				_ = os.Unsetenv("HTTP_TLS_TIMEOUT")
 			},
 		},
+		{
+			name:         "version after double dash remains positional argument",
+			args:         []string{"--", "--version"},
+			expectedMode: "map-reduce",
+			expectError:  false,
+			cleanup: func() {
+				_ = os.Unsetenv("INPUT_FILE")
+				_ = os.Unsetenv("MODE")
+				_ = os.Unsetenv("LLM_API_URL")
+				_ = os.Unsetenv("LLM_MODEL")
+				_ = os.Unsetenv("OPENAI_API_KEY")
+				_ = os.Unsetenv("CONCURRENCY")
+				_ = os.Unsetenv("LENGTH")
+				_ = os.Unsetenv("RETRY")
+				_ = os.Unsetenv("VERBOSE")
+				_ = os.Unsetenv("HTTP_REQUEST_TIMEOUT")
+				_ = os.Unsetenv("HTTP_DIAL_TIMEOUT")
+				_ = os.Unsetenv("HTTP_TLS_TIMEOUT")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -499,7 +519,16 @@ func TestLoadWithFlags(t *testing.T) {
 				t.Errorf("LoadWithFlags() mode = %q, want %q", cfg.Mode, tt.expectedMode)
 			}
 
-			if len(positionalArgs) > 0 && !strings.Contains(positionalArgs[0], "question") {
+			if len(tt.args) == 2 && tt.args[0] == "--" && tt.args[1] == "--version" {
+				if cfg.Version {
+					t.Error("LoadWithFlags() marked positional --version as version flag")
+				}
+				if len(positionalArgs) != 1 || positionalArgs[0] != "--version" {
+					t.Errorf("LoadWithFlags() positional args = %q, want [--version]", positionalArgs)
+				}
+			}
+
+			if len(positionalArgs) > 0 && tt.name != "version after double dash remains positional argument" && !strings.Contains(positionalArgs[0], "question") {
 				t.Errorf("LoadWithFlags() positional args = %q, expected combined prompt", positionalArgs)
 			}
 

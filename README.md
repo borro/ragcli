@@ -72,6 +72,9 @@ ragcli/
 # Сборка бинарника
 go build -o ragcli ./cmd/ragcli
 
+# Проверка локальной версии (без ldflags будет dev)
+./ragcli --version
+
 # Или запуск напрямую
 go run ./cmd/ragcli --help
 ```
@@ -89,6 +92,7 @@ go run ./cmd/ragcli --help
 | `-l, --length` | `LENGTH` | `10000` | Макс. размер чанка в байтах (map-reduce) |
 | `-r, --retry` | `RETRY` | `3` | Кол-во повторных попыток при ошибках |
 | `-v, --verbose` | `VERBOSE` | `false` | Включить debug логирование |
+| `--version` | — | `dev` для локальной сборки | Показать версию бинаря и выйти |
 | — | `HTTP_REQUEST_TIMEOUT` | `10m` | Таймаут HTTP запроса (например, 5m, 30s) |
 | — | `HTTP_DIAL_TIMEOUT` | `30s` | Таймаут установления соединения |
 | — | `HTTP_TLS_TIMEOUT` | `30s` | Таймаут TLS рукопожатия |
@@ -263,6 +267,8 @@ lefthook install
 
 При создании тега вида `vX.Y.Z` автоматически создаётся релиз с бинарниками для всех платформ через [goreleaser](https://goreleaser.com/). Конфигурация релиза зафиксирована в `.goreleaser.yml`.
 
+GoReleaser вшивает тег релиза в бинарь, поэтому `./ragcli --version` для релизных артефактов выводит соответствующую версию, например `v1.0.0`. Для локальной сборки без `ldflags` команда выводит `dev`.
+
 Для создания нового релиза:
 ```bash
 git tag v1.0.0 && git push origin v1.0.0
@@ -273,6 +279,7 @@ git tag v1.0.0 && git push origin v1.0.0
 Для локальной сборки бинарника для вашей платформы:
 ```bash
 go build -o ragcli ./cmd/ragcli
+./ragcli --version   # dev
 ```
 
 Для проверки release-конфига без публикации можно использовать dry-run:

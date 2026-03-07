@@ -17,7 +17,13 @@ import (
 	"github.com/borro/ragcli/internal/processor"
 )
 
+var version = "dev"
+
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdout))
+}
+
+func run(args []string, stdout io.Writer) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -35,16 +41,24 @@ func main() {
 	}()
 
 	// Загружаем конфигурацию с CLI флагами и позиционными аргументами
-	cfg, positionalArgs, err := config.LoadWithFlags(os.Args[1:])
+	cfg, positionalArgs, err := config.LoadWithFlags(args)
 	if err != nil {
 		config.Log.Error("failed to load config", "error", err)
-		os.Exit(1)
+		return 1
+	}
+
+	if cfg.Version {
+		if err := printVersion(stdout); err != nil {
+			config.Log.Error("failed to print version", "error", err)
+			return 1
+		}
+		return 0
 	}
 
 	// Проверяем наличие промпта (позиционного аргумента)
 	if len(positionalArgs) == 0 {
 		config.Log.Error("missing required argument: prompt (вопрос пользователя)")
-		os.Exit(1)
+		return 1
 	}
 	prompt := positionalArgs[0]
 
@@ -56,7 +70,7 @@ func main() {
 	inputReader, tempFile, err := getInputReader(cfg.InputPath)
 	if err != nil {
 		config.Log.Error("failed to get input reader", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer func() {
 		if tempFile != "" {
@@ -87,10 +101,20 @@ func main() {
 
 	if err != nil {
 		config.Log.Error("processing failed", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
-	fmt.Println(result)
+	if _, err := fmt.Fprintln(stdout, result); err != nil {
+		config.Log.Error("failed to write result", "error", err)
+		return 1
+	}
+
+	return 0
+}
+
+func printVersion(stdout io.Writer) error {
+	_, err := fmt.Fprintln(stdout, version)
+	return err
 }
 
 // getInputReader открывает файл или читает stdin во временный файл

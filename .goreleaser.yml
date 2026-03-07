@@ -6,6 +6,8 @@ builds:
   - id: ragcli
     main: ./cmd/ragcli
     binary: ragcli
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
     env:
       - CGO_ENABLED=0
     goos:

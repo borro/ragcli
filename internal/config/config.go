@@ -21,6 +21,7 @@ type Config struct {
 	ChunkLength    int           // Максимальный размер чанка в байтах
 	RetryCount     int           // Количество повторных попыток
 	Verbose        bool          // Включить debug логирование
+	Version        bool          // Показать версию и выйти
 	RequestTimeout time.Duration // Таймаут HTTP запроса по умолчанию
 	DialTimeout    time.Duration // Таймаут установления соединения
 	TLSTimeout     time.Duration // Таймаут TLS рукопожатия
@@ -59,6 +60,7 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	retryCount := fs.Int("r", getIntEnv("RETRY", 3), "количество повторных попыток при ошибках LLM")
 	verbose := fs.Bool("v", getBoolEnv("VERBOSE", false), "debug логирование")
 	verboseLong := fs.Bool("verbose", *verbose, "debug логирование (alias for -v)")
+	version := fs.Bool("version", false, "показать версию бинаря и выйти")
 
 	// Parse с оставлением остатка аргументов для positional args
 	if err := fs.Parse(args); err != nil {
@@ -127,6 +129,8 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	} else {
 		cfg.Verbose = getBoolEnv("VERBOSE", false)
 	}
+
+	cfg.Version = *version
 
 	// Таймауты HTTP клиента
 	cfg.RequestTimeout = getTimeDurationEnv("HTTP_REQUEST_TIMEOUT", 10*time.Minute)
