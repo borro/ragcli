@@ -1,6 +1,6 @@
 # RAG CLI — Инструмент для работы с LLM через RAG и Map-Reduce
 
-[![CI main](https://github.com/borro/ragcli/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/borro/ragcli/actions/workflows/ci.yaml)
+[![CI master](https://github.com/borro/ragcli/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/borro/ragcli/actions/workflows/ci.yaml)
 [![Coverage](https://codecov.io/gh/borro/ragcli/graph/badge.svg)](https://codecov.io/gh/borro/ragcli)
 
 Командная строка для обработки больших текстовых файлов с помощью LLM (Large Language Models) двумя режимами: **Map-Reduce** и **Agentic Tool Calling (RAG)**.
