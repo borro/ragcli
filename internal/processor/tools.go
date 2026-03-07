@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -656,10 +657,5 @@ func (e ToolError) Error() string {
 }
 
 func errorsAs(err error, target *ToolError) bool {
-	typed, ok := err.(ToolError)
-	if !ok {
-		return false
-	}
-	*target = typed
-	return true
+	return errors.As(err, target)
 }

@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -54,10 +55,37 @@ func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 	}
 }
 
+func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
+	client := &scriptedRequester{
+		responses: []*llm.ChatCompletionResponse{
+			chatResponse(message("assistant", "", nil)),
+			chatResponse(message("assistant", "Итоговый ответ после retry", nil)),
+		},
+	}
+
+	result, err := RunTools(context.Background(), client, "/tmp/file.txt", "Что в файле?")
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "Итоговый ответ после retry" {
+		t.Fatalf("RunTools() result = %q, want retry answer", result)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(client.requests))
+	}
+	if client.requests[1].ToolChoice != "none" {
+		t.Fatalf("ToolChoice = %#v, want none", client.requests[1].ToolChoice)
+	}
+	lastMessage := client.requests[1].Messages[len(client.requests[1].Messages)-1]
+	if !strings.Contains(lastMessage.Content, "Сформулируй финальный ответ") {
+		t.Fatalf("retry message = %q, want fallback instruction", lastMessage.Content)
+	}
+}
+
 func TestRunTools_MultiStepToolLoop(t *testing.T) {
 	client := &scriptedRequester{
 		responses: []*llm.ChatCompletionResponse{
-			chatResponse(message("assistant", "", []openai.ToolCall{
+			chatResponse(message("assistant", "Сначала найду раздел.", []openai.ToolCall{
 				toolCall("call-1", "search_file", `{"query":"архитектура"}`),
 			})),
 			chatResponse(message("assistant", "", []openai.ToolCall{
@@ -95,22 +123,36 @@ func TestRunTools_MultiStepToolLoop(t *testing.T) {
 	}
 	assertToolMessage(t, client.requests[1].Messages, "call-1", "search_file")
 	assertToolMessage(t, client.requests[2].Messages, "call-2", "read_lines")
+
+	if got := client.requests[1].Messages[2].Content; !strings.Contains(got, "Сначала найду раздел.") {
+		t.Fatalf("assistant plan content missing from history: %q", got)
+	}
+
+	var searchPayload map[string]any
+	toolMsg := client.requests[1].Messages[len(client.requests[1].Messages)-1]
+	if err := json.Unmarshal([]byte(toolMsg.Content), &searchPayload); err != nil {
+		t.Fatalf("json.Unmarshal(search tool message) error = %v", err)
+	}
+	if searchPayload["novel_lines"] == nil || searchPayload["progress_hint"] == nil {
+		t.Fatalf("tool payload = %#v, want orchestration metadata", searchPayload)
+	}
 }
 
 func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
 	responses := make([]*llm.ChatCompletionResponse, 0, toolsMaxTurns)
 	for i := 0; i < toolsMaxTurns; i++ {
 		responses = append(responses, chatResponse(message("assistant", "", []openai.ToolCall{
-			toolCall("loop-call", "search_file", `{"query":"x"}`),
+			toolCall("loop-call", "search_file", fmt.Sprintf(`{"query":"x","limit":1,"offset":%d}`, i)),
 		})))
 	}
 
 	client := &scriptedRequester{responses: responses}
-	filePath := writeTempFile(t, "x\n")
+	filePath := writeTempFile(t, "x1\nx2\nx3\nx4\nx5\nx6\nx7\nx8\nx9\nx10\n")
 
 	_, err := RunTools(context.Background(), client, filePath, "loop?")
-	if err == nil || !strings.Contains(err.Error(), "exceeded") {
-		t.Fatalf("RunTools() error = %v, want max-turns error", err)
+	var orchErr orchestrationError
+	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "orchestration_limit" {
+		t.Fatalf("RunTools() error = %v, want orchestration_limit", err)
 	}
 }
 
@@ -144,7 +186,124 @@ func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 	}
 }
 
-func TestRunTools_SystemPromptMentionsUntrustedFileContent(t *testing.T) {
+func TestRunTools_DuplicateSearchUsesCacheAndStops(t *testing.T) {
+	client := &scriptedRequester{
+		responses: []*llm.ChatCompletionResponse{
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-1", "search_file", `{"query":"alpha"}`),
+			})),
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-2", "search_file", `{"query":"alpha"}`),
+			})),
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-3", "search_file", `{"query":"alpha"}`),
+			})),
+		},
+	}
+
+	filePath := writeTempFile(t, "alpha\nbeta\n")
+	_, err := RunTools(context.Background(), client, filePath, "find alpha")
+	var orchErr orchestrationError
+	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "duplicate_call" {
+		t.Fatalf("RunTools() error = %v, want duplicate_call", err)
+	}
+}
+
+func TestRunTools_DuplicateReadLinesUsesCacheAndStops(t *testing.T) {
+	client := &scriptedRequester{
+		responses: []*llm.ChatCompletionResponse{
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-1", "read_lines", `{"start_line":1,"end_line":2}`),
+			})),
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-2", "read_lines", `{"start_line":1,"end_line":2}`),
+			})),
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-3", "read_lines", `{"start_line":1,"end_line":2}`),
+			})),
+		},
+	}
+
+	filePath := writeTempFile(t, "one\ntwo\nthree\n")
+	_, err := RunTools(context.Background(), client, filePath, "read")
+	var orchErr orchestrationError
+	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "duplicate_call" {
+		t.Fatalf("RunTools() error = %v, want duplicate_call", err)
+	}
+}
+
+func TestRunTools_NoProgressStopsOnSeenLines(t *testing.T) {
+	client := &scriptedRequester{
+		responses: []*llm.ChatCompletionResponse{
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-1", "read_lines", `{"start_line":1,"end_line":3}`),
+			})),
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-2", "read_around", `{"line":2,"before":1,"after":1}`),
+			})),
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-3", "read_around", `{"line":2,"before":1,"after":1}`),
+			})),
+		},
+	}
+
+	filePath := writeTempFile(t, "one\ntwo\nthree\nfour\n")
+	_, err := RunTools(context.Background(), client, filePath, "read same area")
+	var orchErr orchestrationError
+	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "no_progress" {
+		t.Fatalf("RunTools() error = %v, want no_progress", err)
+	}
+}
+
+func TestToolLoopState_DuplicateSearchMarksCachedPayload(t *testing.T) {
+	state := newToolLoopState(writeTempFile(t, "alpha\nbeta\n"))
+
+	first, _, err := state.executeToolCall(toolCall("call-1", "search_file", `{"query":"alpha"}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(first) error = %v", err)
+	}
+	second, meta, err := state.executeToolCall(toolCall("call-2", "search_file", `{"query":"alpha"}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(second) error = %v", err)
+	}
+
+	if first == second {
+		t.Fatalf("expected duplicate payload to be annotated differently")
+	}
+	if !meta.Cached || !meta.Duplicate || meta.NovelLines != 0 {
+		t.Fatalf("meta = %+v, want cached duplicate with no novel lines", meta)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(second), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(tool message) error = %v", err)
+	}
+	if payload["cached"] != true || payload["duplicate"] != true {
+		t.Fatalf("tool payload = %#v, want cached duplicate response", payload)
+	}
+}
+
+func TestToolLoopState_ReadAroundSeenLinesMarksNoProgress(t *testing.T) {
+	state := newToolLoopState(writeTempFile(t, "one\ntwo\nthree\nfour\n"))
+
+	_, firstMeta, err := state.executeToolCall(toolCall("call-1", "read_lines", `{"start_line":1,"end_line":3}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(first) error = %v", err)
+	}
+	_, secondMeta, err := state.executeToolCall(toolCall("call-2", "read_around", `{"line":2,"before":1,"after":1}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(second) error = %v", err)
+	}
+
+	if firstMeta.NovelLines == 0 {
+		t.Fatalf("firstMeta = %+v, want novel lines", firstMeta)
+	}
+	if !secondMeta.AlreadySeen || secondMeta.NovelLines != 0 {
+		t.Fatalf("secondMeta = %+v, want already seen with no novel lines", secondMeta)
+	}
+}
+
+func TestRunTools_SystemPromptMentionsAgentPolicy(t *testing.T) {
 	client := &scriptedRequester{
 		responses: []*llm.ChatCompletionResponse{
 			chatResponse(message("assistant", "ok", nil)),
@@ -157,8 +316,11 @@ func TestRunTools_SystemPromptMentionsUntrustedFileContent(t *testing.T) {
 	}
 
 	systemPrompt := client.requests[0].Messages[0].Content
-	if !strings.Contains(systemPrompt, "недоверенные данные") {
-		t.Fatalf("system prompt = %q, want injection hardening instruction", systemPrompt)
+	if !strings.Contains(systemPrompt, "Сначала сформулируй короткий план") {
+		t.Fatalf("system prompt = %q, want planning instruction", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "Не повторяй один и тот же вызов") {
+		t.Fatalf("system prompt = %q, want duplicate guardrail", systemPrompt)
 	}
 }
 
