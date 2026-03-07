@@ -442,6 +442,54 @@ func TestSendRequestWithMetrics_RetryUsesSuccessfulAttemptMetrics(t *testing.T) 
 	}
 }
 
+func TestNewEmbedder(t *testing.T) {
+	embedder := NewEmbedder("http://localhost:1234/v1", "embed-model", "key", 2)
+	if embedder.Model() != "embed-model" {
+		t.Fatalf("Model() = %q, want embed-model", embedder.Model())
+	}
+	if embedder.retryCount != 2 {
+		t.Fatalf("retryCount = %d, want 2", embedder.retryCount)
+	}
+}
+
+func TestCreateEmbeddingsWithMetrics(t *testing.T) {
+	embedder := NewEmbedder("", "embed-model", "", 0)
+	embedder.doEmbeddings = func(_ context.Context, req openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error) {
+		converted := req.Convert()
+		inputs, ok := converted.Input.([]string)
+		if !ok {
+			t.Fatalf("input type = %T, want []string", converted.Input)
+		}
+		if len(inputs) != 2 {
+			t.Fatalf("len(inputs) = %d, want 2", len(inputs))
+		}
+		return openai.EmbeddingResponse{
+			Data: []openai.Embedding{
+				{Embedding: []float32{1, 0}},
+				{Embedding: []float32{0, 1}},
+			},
+			Usage: openai.Usage{
+				PromptTokens: 12,
+				TotalTokens:  12,
+			},
+		}, nil
+	}
+
+	result, err := embedder.CreateEmbeddingsWithMetrics(context.Background(), []string{"alpha", "beta"})
+	if err != nil {
+		t.Fatalf("CreateEmbeddingsWithMetrics() error = %v", err)
+	}
+	if len(result.Vectors) != 2 {
+		t.Fatalf("len(Vectors) = %d, want 2", len(result.Vectors))
+	}
+	if result.Metrics.InputCount != 2 || result.Metrics.VectorCount != 2 {
+		t.Fatalf("metrics = %+v, want input/vector count 2", result.Metrics)
+	}
+	if result.Metrics.TotalTokens != 12 {
+		t.Fatalf("TotalTokens = %d, want 12", result.Metrics.TotalTokens)
+	}
+}
+
 // isContextError проверяет, является ли ошибка ошибкой отмены контекста
 func isContextError(err error) bool {
 	// Проверка на context deadline exceeded или cancelled

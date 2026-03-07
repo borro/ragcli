@@ -542,3 +542,57 @@ func TestLoadWithFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeModeSupportsRAG(t *testing.T) {
+	if got := normalizeMode("rag"); got != "rag" {
+		t.Fatalf("normalizeMode(rag) = %q, want rag", got)
+	}
+}
+
+func TestLoadWithFlags_RAGOptions(t *testing.T) {
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("RAG_TOP_K", "")
+	t.Setenv("RAG_FINAL_K", "")
+	t.Setenv("RAG_CHUNK_SIZE", "")
+	t.Setenv("RAG_CHUNK_OVERLAP", "")
+	t.Setenv("RAG_INDEX_TTL", "")
+	t.Setenv("RAG_INDEX_DIR", "")
+	t.Setenv("RAG_RERANK", "")
+
+	cfg, _, err := LoadWithFlags([]string{
+		"--mode", "rag",
+		"--embedding-model", "embed-small",
+		"--rag-top-k", "6",
+		"--rag-final-k", "3",
+		"--rag-chunk-size", "4096",
+		"--rag-chunk-overlap", "512",
+		"--rag-index-ttl", "2h",
+		"--rag-index-dir", "/tmp/ragcli-tests",
+		"--rag-rerank", "off",
+	})
+	if err != nil {
+		t.Fatalf("LoadWithFlags() error = %v", err)
+	}
+
+	if cfg.Mode != "rag" {
+		t.Fatalf("Mode = %q, want rag", cfg.Mode)
+	}
+	if cfg.EmbeddingModel != "embed-small" {
+		t.Fatalf("EmbeddingModel = %q, want embed-small", cfg.EmbeddingModel)
+	}
+	if cfg.RAGTopK != 6 || cfg.RAGFinalK != 3 {
+		t.Fatalf("RAGTopK/RAGFinalK = %d/%d, want 6/3", cfg.RAGTopK, cfg.RAGFinalK)
+	}
+	if cfg.RAGChunkSize != 4096 || cfg.RAGChunkOverlap != 512 {
+		t.Fatalf("RAG chunk config = %d/%d, want 4096/512", cfg.RAGChunkSize, cfg.RAGChunkOverlap)
+	}
+	if cfg.RAGIndexTTL != 2*time.Hour {
+		t.Fatalf("RAGIndexTTL = %v, want 2h", cfg.RAGIndexTTL)
+	}
+	if cfg.RAGIndexDir != "/tmp/ragcli-tests" {
+		t.Fatalf("RAGIndexDir = %q, want /tmp/ragcli-tests", cfg.RAGIndexDir)
+	}
+	if cfg.RAGRerank != "off" {
+		t.Fatalf("RAGRerank = %q, want off", cfg.RAGRerank)
+	}
+}

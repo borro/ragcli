@@ -17,6 +17,7 @@ import (
 	"github.com/borro/ragcli/internal/config"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/processor"
+	"github.com/borro/ragcli/internal/rag"
 )
 
 var version = "dev"
@@ -112,6 +113,20 @@ func run(args []string, stdout io.Writer) int {
 		}
 		slog.Debug("starting processor", "mode", "tools", "file_path", filePath)
 		result, err = processor.RunTools(ctx, client, filePath, prompt)
+	case "rag":
+		sourcePath := cfg.InputPath
+		displayName := cfg.InputPath
+		if sourcePath == "" && tempFile != "" {
+			sourcePath = tempFile
+			displayName = "stdin"
+		}
+		slog.Debug("starting processor", "mode", "rag", "source_path", sourcePath, "display_name", displayName)
+		embedder := llm.NewEmbedder(cfg.APIURL, cfg.EmbeddingModel, cfg.APIKey, cfg.RetryCount)
+		result, err = rag.Run(ctx, client, embedder, rag.Source{
+			Path:        sourcePath,
+			DisplayName: displayName,
+			Reader:      inputReader,
+		}, cfg, prompt)
 	default:
 		err = fmt.Errorf("unknown mode: %s", cfg.Mode)
 	}
@@ -208,9 +223,17 @@ func printConfigDebug(cfg *config.Config, prompt string) {
 		"mode", cfg.Mode,
 		"api_url", cfg.APIURL,
 		"model", cfg.Model,
+		"embedding_model", cfg.EmbeddingModel,
 		"concurrency", cfg.Concurrency,
 		"chunk_length", cfg.ChunkLength,
 		"retry_count", cfg.RetryCount,
+		"rag_top_k", cfg.RAGTopK,
+		"rag_final_k", cfg.RAGFinalK,
+		"rag_chunk_size", cfg.RAGChunkSize,
+		"rag_chunk_overlap", cfg.RAGChunkOverlap,
+		"rag_index_ttl", cfg.RAGIndexTTL,
+		"rag_index_dir", cfg.RAGIndexDir,
+		"rag_rerank", cfg.RAGRerank,
 		"request_timeout", cfg.RequestTimeout,
 		"dial_timeout", cfg.DialTimeout,
 		"tls_timeout", cfg.TLSTimeout,

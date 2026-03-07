@@ -17,6 +17,14 @@ type Client struct {
 	doRequest  func(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
 }
 
+// Embedder представляет клиент для embeddings API.
+type Embedder struct {
+	client       *openai.Client
+	model        string
+	retryCount   int
+	doEmbeddings func(ctx context.Context, req openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error)
+}
+
 // Message представляет сообщение в чате
 type Message = openai.ChatCompletionMessage
 
@@ -61,6 +69,23 @@ type RequestResult struct {
 	Metrics  RequestMetrics
 }
 
+// EmbeddingMetrics содержит метрики одного embeddings запроса.
+type EmbeddingMetrics struct {
+	Model        string
+	Attempt      int
+	InputCount   int
+	VectorCount  int
+	Duration     time.Duration
+	PromptTokens int
+	TotalTokens  int
+}
+
+// EmbeddingResult содержит векторы и метрики embeddings запроса.
+type EmbeddingResult struct {
+	Vectors [][]float32
+	Metrics EmbeddingMetrics
+}
+
 // NewClient создаёт новый LLM клиент, используя go-openai библиотеку
 func NewClient(baseURL, model, apiKey string, retryCount int) *Client {
 	config := openai.DefaultConfig(apiKey)
@@ -77,6 +102,24 @@ func NewClient(baseURL, model, apiKey string, retryCount int) *Client {
 		return client.client.CreateChatCompletion(ctx, req)
 	}
 	return client
+}
+
+// NewEmbedder создаёт отдельный embeddings клиент.
+func NewEmbedder(baseURL, model, apiKey string, retryCount int) *Embedder {
+	config := openai.DefaultConfig(apiKey)
+	if baseURL != "" {
+		config.BaseURL = baseURL
+	}
+
+	embedder := &Embedder{
+		client:     openai.NewClientWithConfig(config),
+		model:      model,
+		retryCount: retryCount,
+	}
+	embedder.doEmbeddings = func(ctx context.Context, req openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error) {
+		return embedder.client.CreateEmbeddings(ctx, req)
+	}
+	return embedder
 }
 
 // SendRequest отправляет запрос к LLM API с механизмом retry и exponential backoff
@@ -229,4 +272,89 @@ func toolChoiceLabel(toolChoice interface{}) string {
 	default:
 		return fmt.Sprintf("%T", toolChoice)
 	}
+}
+
+// CreateEmbeddingsWithMetrics отправляет embeddings запрос и возвращает метрики.
+func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []string) (*EmbeddingResult, error) {
+	req := openai.EmbeddingRequestStrings{
+		Input: []string{},
+		Model: openai.EmbeddingModel(e.model),
+	}
+	if len(inputs) > 0 {
+		req.Input = inputs
+	}
+
+	for attempt := 1; attempt <= e.retryCount+1; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		slog.Debug("embedding request started",
+			"model", e.model,
+			"attempt", attempt,
+			"input_count", len(req.Input),
+		)
+
+		startedAt := time.Now()
+		resp, err := e.doEmbeddings(ctx, req)
+		elapsed := time.Since(startedAt)
+		if err == nil {
+			vectors := make([][]float32, 0, len(resp.Data))
+			for _, item := range resp.Data {
+				vectors = append(vectors, item.Embedding)
+			}
+			metrics := EmbeddingMetrics{
+				Model:        e.model,
+				Attempt:      attempt,
+				InputCount:   len(req.Input),
+				VectorCount:  len(vectors),
+				Duration:     elapsed,
+				PromptTokens: resp.Usage.PromptTokens,
+				TotalTokens:  resp.Usage.TotalTokens,
+			}
+			slog.Debug("embedding request finished",
+				"model", metrics.Model,
+				"attempt", metrics.Attempt,
+				"input_count", metrics.InputCount,
+				"vector_count", metrics.VectorCount,
+				"duration_ms", metrics.Duration.Milliseconds(),
+				"prompt_tokens", metrics.PromptTokens,
+				"total_tokens", metrics.TotalTokens,
+			)
+			return &EmbeddingResult{Vectors: vectors, Metrics: metrics}, nil
+		}
+
+		slog.Debug("embedding request failed",
+			"model", e.model,
+			"attempt", attempt,
+			"input_count", len(req.Input),
+			"duration_ms", elapsed.Milliseconds(),
+			"error", err,
+		)
+
+		if attempt <= e.retryCount {
+			delay := 1 << (attempt - 1)
+			slog.Debug("retrying embedding request",
+				"model", e.model,
+				"failed_attempt", attempt,
+				"next_attempt", attempt+1,
+				"delay_seconds", delay,
+				"reason", err,
+			)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(delay) * time.Second):
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("embedding request failed after %d attempts", e.retryCount+1)
+}
+
+// Model возвращает имя embeddings модели.
+func (e *Embedder) Model() string {
+	return e.model
 }

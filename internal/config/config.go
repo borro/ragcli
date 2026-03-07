@@ -12,19 +12,27 @@ import (
 
 // Config содержит все настройки приложения
 type Config struct {
-	InputPath      string        // Путь к входному файлу (пусто = stdin)
-	Mode           string        // Режим работы: "map-reduce" или "tools"
-	APIURL         string        // URL API LLM
-	Model          string        // Имя модели
-	APIKey         string        // Ключ API (опционально)
-	Concurrency    int           // Кол-во параллельных запросов для map-reduce
-	ChunkLength    int           // Максимальный размер чанка в байтах
-	RetryCount     int           // Количество повторных попыток
-	Verbose        bool          // Включить debug логирование
-	Version        bool          // Показать версию и выйти
-	RequestTimeout time.Duration // Таймаут HTTP запроса по умолчанию
-	DialTimeout    time.Duration // Таймаут установления соединения
-	TLSTimeout     time.Duration // Таймаут TLS рукопожатия
+	InputPath       string        // Путь к входному файлу (пусто = stdin)
+	Mode            string        // Режим работы: "map-reduce" или "tools"
+	APIURL          string        // URL API LLM
+	Model           string        // Имя модели
+	EmbeddingModel  string        // Имя embedding модели для mode=rag
+	APIKey          string        // Ключ API (опционально)
+	Concurrency     int           // Кол-во параллельных запросов для map-reduce
+	ChunkLength     int           // Максимальный размер чанка в байтах
+	RetryCount      int           // Количество повторных попыток
+	RAGTopK         int           // Количество кандидатов после retrieval
+	RAGFinalK       int           // Количество чанков в финальном контексте
+	RAGChunkSize    int           // Размер retrieval-чанка в байтах
+	RAGChunkOverlap int           // Перекрытие retrieval-чанков в байтах
+	RAGIndexTTL     time.Duration // TTL локального индекса
+	RAGIndexDir     string        // Базовая директория временного индекса
+	RAGRerank       string        // off|heuristic|model
+	Verbose         bool          // Включить debug логирование
+	Version         bool          // Показать версию и выйти
+	RequestTimeout  time.Duration // Таймаут HTTP запроса по умолчанию
+	DialTimeout     time.Duration // Таймаут установления соединения
+	TLSTimeout      time.Duration // Таймаут TLS рукопожатия
 }
 
 // LoadWithFlags загружает конфигурацию из env и CLI флагов.
@@ -40,12 +48,20 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	mode := fs.String("mode", getEnv("MODE", "map-reduce"), "режим работы: map-reduce или tools")
 	apiURL := fs.String("api-url", getEnv("LLM_API_URL", "http://localhost:1234/v1"), "URL API LLM")
 	model := fs.String("model", getEnv("LLM_MODEL", "local-model"), "имя модели LLM")
+	embeddingModel := fs.String("embedding-model", getEnv("EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5"), "имя embedding модели для mode=rag")
 	apiKey := fs.String("api-key", getEnv("OPENAI_API_KEY", ""), "ключ API (опционально)")
 	concurrency := fs.Int("c", getIntEnv("CONCURRENCY", 1), "количество параллельных запросов для map-reduce")
 	concurrencyLong := fs.Int("concurrency", *concurrency, "количество параллельных запросов для map-reduce (alias for -c)")
 	chunkLength := fs.Int("l", getIntEnv("LENGTH", 10000), "максимальный размер чанка в байтах")
 	lengthLong := fs.Int("length", *chunkLength, "максимальный размер чанка в байтах (alias for -l)")
 	retryCount := fs.Int("r", getIntEnv("RETRY", 3), "количество повторных попыток при ошибках LLM")
+	ragTopK := fs.Int("rag-top-k", getIntEnv("RAG_TOP_K", 8), "количество кандидатов после retrieval в mode=rag")
+	ragFinalK := fs.Int("rag-final-k", getIntEnv("RAG_FINAL_K", 4), "количество чанков в финальном контексте mode=rag")
+	ragChunkSize := fs.Int("rag-chunk-size", getIntEnv("RAG_CHUNK_SIZE", 5000), "размер retrieval чанка в байтах")
+	ragChunkOverlap := fs.Int("rag-chunk-overlap", getIntEnv("RAG_CHUNK_OVERLAP", 750), "перекрытие retrieval чанков в байтах")
+	ragIndexTTL := fs.String("rag-index-ttl", getEnv("RAG_INDEX_TTL", "24h"), "ttl локального индекса mode=rag")
+	ragIndexDir := fs.String("rag-index-dir", getEnv("RAG_INDEX_DIR", defaultRAGIndexDir()), "директория локального индекса mode=rag")
+	ragRerank := fs.String("rag-rerank", getEnv("RAG_RERANK", "heuristic"), "rerank режим для mode=rag: off|heuristic|model")
 	verbose := fs.Bool("v", getBoolEnv("VERBOSE", false), "debug логирование")
 	verboseLong := fs.Bool("verbose", *verbose, "debug логирование (alias for -v)")
 	version := fs.Bool("version", false, "показать версию бинаря и выйти")
@@ -85,6 +101,10 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 
 	// Модель
 	cfg.Model = *model
+	cfg.EmbeddingModel = strings.TrimSpace(*embeddingModel)
+	if cfg.EmbeddingModel == "" {
+		cfg.EmbeddingModel = "text-embedding-3-small"
+	}
 
 	// API Key
 	cfg.APIKey = *apiKey
@@ -110,6 +130,23 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	if cfg.RetryCount < 1 {
 		cfg.RetryCount = 1
 	}
+
+	cfg.RAGTopK = chooseIntAtLeast(*ragTopK, getIntEnv("RAG_TOP_K", 8), 8, 1)
+	cfg.RAGFinalK = chooseIntAtLeast(*ragFinalK, getIntEnv("RAG_FINAL_K", 4), 4, 1)
+	if cfg.RAGFinalK > cfg.RAGTopK {
+		cfg.RAGFinalK = cfg.RAGTopK
+	}
+	cfg.RAGChunkSize = chooseIntAtLeast(*ragChunkSize, getIntEnv("RAG_CHUNK_SIZE", 5000), 5000, 1000)
+	cfg.RAGChunkOverlap = chooseIntAtLeast(*ragChunkOverlap, getIntEnv("RAG_CHUNK_OVERLAP", 750), 750, 0)
+	if cfg.RAGChunkOverlap >= cfg.RAGChunkSize {
+		cfg.RAGChunkOverlap = cfg.RAGChunkSize / 4
+	}
+	cfg.RAGIndexTTL = parsePositiveDurationOrDefault(*ragIndexTTL, getEnv("RAG_INDEX_TTL", "24h"), 24*time.Hour)
+	cfg.RAGIndexDir = strings.TrimSpace(*ragIndexDir)
+	if cfg.RAGIndexDir == "" {
+		cfg.RAGIndexDir = defaultRAGIndexDir()
+	}
+	cfg.RAGRerank = normalizeRAGRerank(*ragRerank)
 
 	// Verbose
 	if *verbose || *verboseLong {
@@ -180,6 +217,8 @@ func normalizeMode(mode string) string {
 		return "map-reduce"
 	case "tools":
 		return "tools"
+	case "rag":
+		return "rag"
 	default:
 		return strings.ToLower(strings.TrimSpace(mode))
 	}
@@ -207,4 +246,34 @@ func getTimeDurationEnv(key string, defaultValue time.Duration) time.Duration {
 		}
 	}
 	return defaultValue
+}
+
+func parsePositiveDurationOrDefault(primary string, fallback string, defaultValue time.Duration) time.Duration {
+	for _, candidate := range []string{primary, fallback} {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		duration, err := time.ParseDuration(candidate)
+		if err == nil && duration > 0 {
+			return duration
+		}
+	}
+	return defaultValue
+}
+
+func normalizeRAGRerank(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "heuristic":
+		return "heuristic"
+	case "off":
+		return "off"
+	case "model":
+		return "model"
+	default:
+		return "heuristic"
+	}
+}
+
+func defaultRAGIndexDir() string {
+	return os.TempDir() + string(os.PathSeparator) + "ragcli-index"
 }
