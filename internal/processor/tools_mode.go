@@ -8,20 +8,20 @@ import (
 	"github.com/borro/ragcli/internal/llm"
 )
 
-const ragMaxTurns = 8
+const toolsMaxTurns = 8
 
 type chatRequester interface {
 	SendRequest(ctx context.Context, req llm.ChatCompletionRequest) (*llm.ChatCompletionResponse, error)
 }
 
-// toolsConfig содержит инструменты и системный промпт для RAG.
+// toolsConfig содержит инструменты и системный промпт для tool-calling режима.
 type toolsConfig struct {
 	tools         []llm.Tool
 	systemMessage llm.Message
 	userQuestion  llm.Message
 }
 
-// NewToolsConfig создаёт конфигурацию инструментов для RAG.
+// NewToolsConfig создаёт конфигурацию инструментов для tool-calling режима.
 func NewToolsConfig(prompt string) toolsConfig {
 	// Определяем инструменты
 	tools := []llm.Tool{
@@ -89,20 +89,20 @@ func NewToolsConfig(prompt string) toolsConfig {
 	}
 }
 
-// RunRAG выполняет обработку в режиме RAG (Agentic Tool Calling).
+// RunTools выполняет обработку в режиме tools (Agentic Tool Calling).
 // filePath должен указывать на файл с данными; stdin уже нормализуется в temp file на уровне CLI.
-func RunRAG(ctx context.Context, client chatRequester, filePath, prompt string) (string, error) {
-	config.Log.Info("starting RAG processing", "file_path", filePath, "prompt", prompt)
+func RunTools(ctx context.Context, client chatRequester, filePath, prompt string) (string, error) {
+	config.Log.Info("starting tools processing", "file_path", filePath, "prompt", prompt)
 
-	ragConfig := NewToolsConfig(prompt)
+	toolsConfig := NewToolsConfig(prompt)
 	messages := make([]llm.Message, 0, 2)
-	messages = append(messages, ragConfig.systemMessage, ragConfig.userQuestion)
+	messages = append(messages, toolsConfig.systemMessage, toolsConfig.userQuestion)
 	var toolChoiceToSend interface{} = "auto"
 
-	for turn := 1; turn <= ragMaxTurns; turn++ {
+	for turn := 1; turn <= toolsMaxTurns; turn++ {
 		req := llm.ChatCompletionRequest{
 			Messages:   messages,
-			Tools:      ragConfig.tools,
+			Tools:      toolsConfig.tools,
 			ToolChoice: toolChoiceToSend,
 		}
 
@@ -112,7 +112,7 @@ func RunRAG(ctx context.Context, client chatRequester, filePath, prompt string) 
 		default:
 		}
 
-		config.Log.Debug("sending RAG request to LLM", "turn", turn)
+		config.Log.Debug("sending tools request to LLM", "turn", turn)
 
 		resp, err := client.SendRequest(ctx, req)
 		if err != nil {
@@ -156,5 +156,5 @@ func RunRAG(ctx context.Context, client chatRequester, filePath, prompt string) 
 		return choice.Message.Content, nil
 	}
 
-	return "", fmt.Errorf("rag orchestration exceeded %d turns without final answer", ragMaxTurns)
+	return "", fmt.Errorf("tools orchestration exceeded %d turns without final answer", toolsMaxTurns)
 }
