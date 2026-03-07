@@ -88,13 +88,13 @@ func run(args []string, stdout io.Writer) int {
 	switch strings.ToLower(cfg.Mode) {
 	case "map-reduce":
 		result, err = processor.RunSRMR(ctx, client, inputReader, cfg, prompt)
-	case "rag":
+	case "tools":
 		// Передаём путь к файлу (или tempFile для stdin режима)
 		filePath := cfg.InputPath
 		if filePath == "" && tempFile != "" {
 			filePath = tempFile
 		}
-		result, err = processor.RunRAG(ctx, client, filePath, prompt)
+		result, err = processor.RunTools(ctx, client, filePath, prompt)
 	default:
 		err = fmt.Errorf("unknown mode: %s", cfg.Mode)
 	}

@@ -325,8 +325,8 @@ func TestLoadWithFlags(t *testing.T) {
 	}{
 		{
 			name:         "valid flags with all parameters",
-			args:         []string{"-f", "test.txt", "-mode", "rag", "-api-url", "http://test.com", "-model", "gpt-4", "-c", "4", "-l", "5000", "-r", "5", "-v"},
-			expectedMode: "rag",
+			args:         []string{"-f", "test.txt", "-mode", "tools", "-api-url", "http://test.com", "-model", "gpt-4", "-c", "4", "-l", "5000", "-r", "5", "-v"},
+			expectedMode: "tools",
 			expectError:  false,
 			cleanup: func() {
 				_ = os.Unsetenv("INPUT_FILE")

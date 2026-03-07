@@ -31,20 +31,20 @@ func (s *scriptedRequester) SendRequest(_ context.Context, req llm.ChatCompletio
 	return s.responses[index], nil
 }
 
-func TestRunRAG_FinalAnswerWithoutTools(t *testing.T) {
+func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 	client := &scriptedRequester{
 		responses: []*llm.ChatCompletionResponse{
 			chatResponse(message("assistant", "Готовый ответ", nil)),
 		},
 	}
 
-	result, err := RunRAG(context.Background(), client, "/tmp/file.txt", "Что в файле?")
+	result, err := RunTools(context.Background(), client, "/tmp/file.txt", "Что в файле?")
 	if err != nil {
-		t.Fatalf("RunRAG() error = %v", err)
+		t.Fatalf("RunTools() error = %v", err)
 	}
 
 	if result != "Готовый ответ" {
-		t.Fatalf("RunRAG() result = %q, want %q", result, "Готовый ответ")
+		t.Fatalf("RunTools() result = %q, want %q", result, "Готовый ответ")
 	}
 	if len(client.requests) != 1 {
 		t.Fatalf("requests = %d, want 1", len(client.requests))
@@ -54,7 +54,7 @@ func TestRunRAG_FinalAnswerWithoutTools(t *testing.T) {
 	}
 }
 
-func TestRunRAG_MultiStepToolLoop(t *testing.T) {
+func TestRunTools_MultiStepToolLoop(t *testing.T) {
 	client := &scriptedRequester{
 		responses: []*llm.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
@@ -82,13 +82,13 @@ func TestRunRAG_MultiStepToolLoop(t *testing.T) {
 		"12: вывод",
 	}, "\n"))
 
-	result, err := RunRAG(context.Background(), client, filePath, "Что сказано про архитектуру?")
+	result, err := RunTools(context.Background(), client, filePath, "Что сказано про архитектуру?")
 	if err != nil {
-		t.Fatalf("RunRAG() error = %v", err)
+		t.Fatalf("RunTools() error = %v", err)
 	}
 
 	if result != "Ответ по найденным строкам" {
-		t.Fatalf("RunRAG() result = %q, want %q", result, "Ответ по найденным строкам")
+		t.Fatalf("RunTools() result = %q, want %q", result, "Ответ по найденным строкам")
 	}
 	if len(client.requests) != 3 {
 		t.Fatalf("requests = %d, want 3", len(client.requests))
@@ -97,7 +97,7 @@ func TestRunRAG_MultiStepToolLoop(t *testing.T) {
 	assertToolMessage(t, client.requests[2].Messages, "call-2", "read_lines")
 }
 
-func TestRunRAG_StopsAfterMaxTurns(t *testing.T) {
+func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
 	responses := make([]*llm.ChatCompletionResponse, 0, ragMaxTurns)
 	for i := 0; i < ragMaxTurns; i++ {
 		responses = append(responses, chatResponse(message("assistant", "", []openai.ToolCall{
@@ -108,13 +108,13 @@ func TestRunRAG_StopsAfterMaxTurns(t *testing.T) {
 	client := &scriptedRequester{responses: responses}
 	filePath := writeTempFile(t, "x\n")
 
-	_, err := RunRAG(context.Background(), client, filePath, "loop?")
+	_, err := RunTools(context.Background(), client, filePath, "loop?")
 	if err == nil || !strings.Contains(err.Error(), "exceeded") {
-		t.Fatalf("RunRAG() error = %v, want max-turns error", err)
+		t.Fatalf("RunTools() error = %v, want max-turns error", err)
 	}
 }
 
-func TestRunRAG_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
+func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 	client := &scriptedRequester{
 		responses: []*llm.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
@@ -125,12 +125,12 @@ func TestRunRAG_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\n")
-	result, err := RunRAG(context.Background(), client, filePath, "test")
+	result, err := RunTools(context.Background(), client, filePath, "test")
 	if err != nil {
-		t.Fatalf("RunRAG() error = %v", err)
+		t.Fatalf("RunTools() error = %v", err)
 	}
 	if !strings.Contains(result, "некоррект") {
-		t.Fatalf("RunRAG() result = %q, want tool-error-based answer", result)
+		t.Fatalf("RunTools() result = %q, want tool-error-based answer", result)
 	}
 
 	lastMessages := client.requests[1].Messages

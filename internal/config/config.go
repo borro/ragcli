@@ -13,7 +13,7 @@ import (
 // Config содержит все настройки приложения
 type Config struct {
 	InputPath      string        // Путь к входному файлу (пусто = stdin)
-	Mode           string        // Режим работы: "map-reduce" или "rag"
+	Mode           string        // Режим работы: "map-reduce" или "tools"
 	APIURL         string        // URL API LLM
 	Model          string        // Имя модели
 	APIKey         string        // Ключ API (опционально)
@@ -49,7 +49,7 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	// Флаги
 	file := fs.String("f", getEnv("INPUT_FILE", ""), "путь к входному файлу")
 	fileLong := fs.String("file", *file, "путь к входному файлу (alias for -f)")
-	mode := fs.String("mode", getEnv("MODE", "map-reduce"), "режим работы: map-reduce или rag")
+	mode := fs.String("mode", getEnv("MODE", "map-reduce"), "режим работы: map-reduce или tools")
 	apiURL := fs.String("api-url", getEnv("LLM_API_URL", "http://localhost:1234/v1"), "URL API LLM")
 	model := fs.String("model", getEnv("LLM_MODEL", "local-model"), "имя модели LLM")
 	apiKey := fs.String("api-key", getEnv("OPENAI_API_KEY", ""), "ключ API (опционально)")
@@ -90,7 +90,7 @@ func LoadWithFlags(args []string) (*Config, []string, error) {
 	if modeVal == "" {
 		modeVal = "map-reduce"
 	}
-	cfg.Mode = strings.ToLower(modeVal)
+	cfg.Mode = normalizeMode(modeVal)
 
 	// API URL
 	cfg.APIURL = *apiURL
@@ -186,6 +186,17 @@ func chooseIntAtLeast(primary int, secondary int, fallback int, min int) int {
 		return secondary
 	}
 	return fallback
+}
+
+func normalizeMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "map-reduce":
+		return "map-reduce"
+	case "tools":
+		return "tools"
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
 }
 
 // getBoolEnv получает булеву переменную окружения
