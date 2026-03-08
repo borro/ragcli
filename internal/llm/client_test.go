@@ -378,7 +378,7 @@ func TestSendRequestWithMetrics_UsageAndTPS(t *testing.T) {
 	}
 }
 
-func TestSendRequestWithMetrics_ZeroCompletionTokensNoTPS(t *testing.T) {
+func TestSendRequestWithMetrics_ZeroTotalTokensNoTPS(t *testing.T) {
 	client := NewClient("", "test-model", "", 0)
 	client.doRequest = func(_ context.Context, _ openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 		return openai.ChatCompletionResponse{
@@ -386,9 +386,9 @@ func TestSendRequestWithMetrics_ZeroCompletionTokensNoTPS(t *testing.T) {
 				{Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}},
 			},
 			Usage: openai.Usage{
-				PromptTokens:     5,
+				PromptTokens:     0,
 				CompletionTokens: 0,
-				TotalTokens:      5,
+				TotalTokens:      0,
 			},
 		}, nil
 	}

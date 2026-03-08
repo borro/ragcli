@@ -132,7 +132,7 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 `map`:
 
 - `--concurrency`, `-c` или `CONCURRENCY`
-- `--length`, `-l` или `LENGTH`
+- `--length`, `-l` или `LENGTH` — приблизительный лимит токенов на chunk; внутри применяется консервативный safety factor
 
 `rag`:
 

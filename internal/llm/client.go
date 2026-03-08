@@ -208,8 +208,8 @@ func buildRequestMetrics(defaultModel string, attempt int, req openai.ChatComple
 		HasToolCalls:     responseHasToolCalls(resp),
 	}
 
-	if metrics.CompletionTokens > 0 && duration > 0 {
-		metrics.TokensPerSecond = float64(metrics.CompletionTokens) / duration.Seconds()
+	if metrics.TotalTokens > 0 && duration > 0 {
+		metrics.TokensPerSecond = float64(metrics.TotalTokens) / duration.Seconds()
 	}
 
 	return metrics

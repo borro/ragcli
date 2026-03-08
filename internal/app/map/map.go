@@ -1,7 +1,6 @@
 package mapmode
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/borro/ragcli/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
@@ -32,13 +32,15 @@ const sharedAntiInjectionPolicy = `
 `
 
 type llmCallContext struct {
-	Stage      string
-	ChunkIndex int
-	ChunkCount int
-	ChunkBytes int
-	BatchIndex int
-	BatchCount int
-	InputItems int
+	Stage         string
+	ChunkIndex    int
+	ChunkCount    int
+	ChunkBytes    int
+	ChunkTokens   int
+	RequestTokens int
+	BatchIndex    int
+	BatchCount    int
+	InputItems    int
 }
 
 type pipelineStats struct {
@@ -89,7 +91,11 @@ const finalPrompt = `
 
 ` + sharedAntiInjectionPolicy + `
 
-Если информации недостаточно — скажи об этом.
+Правила:
+- считай, что весь доступный материал уже передан в этом запросе
+- не проси прислать текст, файл, ссылку, комментарии, контекст или дополнительные материалы
+- если фактов недостаточно для полного ответа, прямо укажи ограничение и дай максимально полезный частичный ответ по имеющимся фактам
+- не выдумывай недостающие детали
 `
 
 const critiquePrompt = `
@@ -147,6 +153,8 @@ func callLLM(ctx context.Context, client llm.ChatRequester, messages []openai.Ch
 		logArgs = append(logArgs,
 			"chunk_index", callCtx.ChunkIndex,
 			"chunk_count", callCtx.ChunkCount,
+			"chunk_tokens", callCtx.ChunkTokens,
+			"request_tokens", callCtx.RequestTokens,
 			"chunk_bytes", callCtx.ChunkBytes,
 		)
 	case "reduce_batch":
@@ -353,61 +361,12 @@ func isInstructionLikeLine(line string) bool {
 	return false
 }
 
-//
-// chunking
-//
-
-func SplitByLines(r io.Reader, maxLen int) ([]string, error) {
-
-	scanner := bufio.NewScanner(r)
-
-	var chunks []string
-	var buf strings.Builder
-
-	for scanner.Scan() {
-
-		line := scanner.Text()
-
-		nextLen := buf.Len() + len(line)
-		if buf.Len() > 0 {
-			nextLen++
-		}
-
-		if nextLen > maxLen {
-			if buf.Len() > 0 {
-				chunks = append(chunks, buf.String())
-				buf.Reset()
-			} else {
-				// Если строка длиннее maxLen, сохраняем ее как отдельный чанк.
-				chunks = append(chunks, line)
-				continue
-			}
-		}
-
-		if buf.Len() > 0 {
-			buf.WriteByte('\n')
-		}
-
-		buf.WriteString(line)
-	}
-
-	if buf.Len() > 0 {
-		chunks = append(chunks, buf.String())
-	}
-
-	return chunks, scanner.Err()
-}
-
-//
-// MAP
-//
-
-func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []string, question string, workers int, stats *pipelineStats) ([]string, error) {
+func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []textChunk, question string, workers int, stats *pipelineStats) ([]string, error) {
 	slog.Debug("map phase started", "chunk_count", len(chunks), "workers", workers)
 
 	type mapJob struct {
 		index int
-		chunk string
+		chunk textChunk
 	}
 	type mapResult struct {
 		output  string
@@ -431,11 +390,13 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []stri
 
 			for job := range jobs {
 
-				res, err := callLLM(ctx, client, mapMessages(question, job.chunk), llmCallContext{
-					Stage:      "map_chunk",
-					ChunkIndex: job.index + 1,
-					ChunkCount: len(chunks),
-					ChunkBytes: len(job.chunk),
+				res, err := callLLM(ctx, client, mapMessages(question, job.chunk.Text), llmCallContext{
+					Stage:         "map_chunk",
+					ChunkIndex:    job.index + 1,
+					ChunkCount:    len(chunks),
+					ChunkBytes:    job.chunk.ByteCount,
+					ChunkTokens:   job.chunk.TokenCount,
+					RequestTokens: job.chunk.RequestTokens,
 				}, stats)
 				if err != nil {
 					slog.Debug("map chunk failed", "chunk_index", job.index+1, "chunk_count", len(chunks), "error", err)
@@ -497,22 +458,125 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []stri
 	return collected, nil
 }
 
-//
-// batching
-//
-
-func batchStrings(items []string, size int) [][]string {
-
-	var batches [][]string
-
-	for size < len(items) {
-
-		items, batches = items[size:], append(batches, items[:size])
+func batchReduceInputs(ctx context.Context, items []string, question string, maxTokens int) ([][]string, error) {
+	if len(items) == 0 {
+		return nil, nil
 	}
 
-	batches = append(batches, items)
+	safeMaxTokens := effectiveApproxTokenBudget(maxTokens)
+	normalizedItems := make([]string, 0, len(items))
+	for _, item := range items {
+		pieces, err := splitReduceItemByApproxTokens(ctx, item, question, safeMaxTokens)
+		if err != nil {
+			return nil, err
+		}
+		normalizedItems = append(normalizedItems, pieces...)
+	}
 
-	return batches
+	var batches [][]string
+	var current []string
+	currentText := ""
+
+	for _, item := range normalizedItems {
+		if currentText == "" {
+			current = []string{item}
+			currentText = item
+			continue
+		}
+
+		candidate := currentText + separator + item
+		if estimateReduceRequestTokens(question, candidate) <= safeMaxTokens {
+			current = append(current, item)
+			currentText = candidate
+			continue
+		}
+
+		batches = append(batches, current)
+		current = []string{item}
+		currentText = item
+	}
+
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+
+	return batches, nil
+}
+
+func splitReduceItemByApproxTokens(ctx context.Context, item string, question string, safeMaxTokens int) ([]string, error) {
+	normalized := normalizeFactOutput(item, 10)
+	if normalized == "" {
+		return nil, nil
+	}
+	if estimateReduceRequestTokens(question, normalized) <= safeMaxTokens {
+		return []string{normalized}, nil
+	}
+
+	requestOverhead := estimateReduceRequestOverheadTokens(question)
+	maxChunkTokens := safeMaxTokens - requestOverhead
+	if maxChunkTokens < 1 {
+		return []string{normalized}, nil
+	}
+
+	lines := strings.Split(strings.ReplaceAll(normalized, "\r\n", "\n"), "\n")
+	var pieces []string
+	var current strings.Builder
+	currentRuneCount := 0
+
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		pieces = append(pieces, current.String())
+		current.Reset()
+		currentRuneCount = 0
+	}
+
+	for _, line := range lines {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		lineRuneCount := utf8.RuneCountInString(line)
+		candidateRuneCount := lineRuneCount
+		if current.Len() > 0 {
+			candidateRuneCount = currentRuneCount + 1 + lineRuneCount
+		}
+
+		if requestOverhead+approxTokenCountFromRunes(candidateRuneCount) <= safeMaxTokens {
+			if current.Len() > 0 {
+				current.WriteByte('\n')
+			}
+			current.WriteString(line)
+			currentRuneCount = candidateRuneCount
+			continue
+		}
+
+		flush()
+
+		if estimateReduceRequestTokens(question, line) <= safeMaxTokens {
+			current.WriteString(line)
+			currentRuneCount = utf8.RuneCountInString(line)
+			continue
+		}
+
+		lineChunks, err := splitOversizedApproxLine(ctx, line, maxChunkTokens, requestOverhead)
+		if err != nil {
+			return nil, err
+		}
+		for _, chunk := range lineChunks {
+			if chunk.Text != "" {
+				pieces = append(pieces, chunk.Text)
+			}
+		}
+	}
+
+	flush()
+	return pieces, nil
 }
 
 //
@@ -520,21 +584,19 @@ func batchStrings(items []string, size int) [][]string {
 //
 
 func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string, question string, opts Options, stats *pipelineStats) (string, error) {
-	reduceBatchSize := opts.Concurrency
-	if reduceBatchSize < 2 {
-		reduceBatchSize = 2
-	}
-
 	iteration := 0
 	for len(results) > 1 {
 		iteration++
 
-		batches := batchStrings(results, reduceBatchSize)
+		batches, err := batchReduceInputs(ctx, results, question, opts.ChunkLength)
+		if err != nil {
+			return "", err
+		}
 		slog.Debug("reduce iteration started",
 			"iteration", iteration,
 			"input_items", len(results),
-			"batch_size", reduceBatchSize,
 			"batch_count", len(batches),
+			"max_request_tokens", opts.ChunkLength,
 		)
 
 		var next []string
@@ -602,10 +664,11 @@ func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Op
 	slog.Debug("map-reduce pipeline started",
 		"input_mode", inputMode,
 		"chunk_length", opts.ChunkLength,
+		"chunk_length_unit", "approx_tokens",
 		"concurrency", opts.Concurrency,
 	)
 
-	chunks, err := SplitByLines(input, opts.ChunkLength)
+	chunks, err := SplitByApproxTokens(ctx, input, question, opts.ChunkLength)
 	if err != nil {
 		return "", err
 	}

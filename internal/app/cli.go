@@ -64,7 +64,7 @@ func buildCLICommands(cfg cliConfig) []*cli.Command {
 				&cli.IntFlag{
 					Name:    "length",
 					Aliases: []string{"l"},
-					Usage:   "Длина чанка входного текста в байтах.",
+					Usage:   "Приблизительный лимит токенов на chunk; внутри используется консервативно.",
 					Value:   10000,
 					Sources: cli.EnvVars("LENGTH"),
 				},
