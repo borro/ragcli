@@ -13,40 +13,37 @@ import (
 )
 
 type scriptedRequester struct {
-	responses []*llm.ChatCompletionResponse
+	responses []*openai.ChatCompletionResponse
 	errs      []error
-	requests  []llm.ChatCompletionRequest
+	requests  []openai.ChatCompletionRequest
 }
 
-func (s *scriptedRequester) SendRequestWithMetrics(_ context.Context, req llm.ChatCompletionRequest) (*llm.RequestResult, error) {
+func (s *scriptedRequester) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
 	s.requests = append(s.requests, req)
 	index := len(s.requests) - 1
 
 	if index < len(s.errs) && s.errs[index] != nil {
-		return nil, s.errs[index]
+		return nil, llm.RequestMetrics{}, s.errs[index]
 	}
 
 	if index >= len(s.responses) {
-		return nil, context.DeadlineExceeded
+		return nil, llm.RequestMetrics{}, context.DeadlineExceeded
 	}
 
-	return &llm.RequestResult{
-		Response: s.responses[index],
-		Metrics: llm.RequestMetrics{
-			Attempt:          1,
-			MessageCount:     len(req.Messages),
-			ToolCount:        len(req.Tools),
-			PromptTokens:     10,
-			CompletionTokens: 5,
-			TotalTokens:      15,
-			TokensPerSecond:  50,
-		},
+	return s.responses[index], llm.RequestMetrics{
+		Attempt:          1,
+		MessageCount:     len(req.Messages),
+		ToolCount:        len(req.Tools),
+		PromptTokens:     10,
+		CompletionTokens: 5,
+		TotalTokens:      15,
+		TokensPerSecond:  50,
 	}, nil
 }
 
 func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "Готовый ответ", nil)),
 		},
 	}
@@ -69,7 +66,7 @@ func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 
 func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", nil)),
 			chatResponse(message("assistant", "Итоговый ответ после retry", nil)),
 		},
@@ -96,7 +93,7 @@ func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
 
 func TestRunTools_MultiStepToolLoop(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "Сначала найду раздел.", []openai.ToolCall{
 				toolCall("call-1", "search_file", `{"query":"архитектура"}`),
 			})),
@@ -151,7 +148,7 @@ func TestRunTools_MultiStepToolLoop(t *testing.T) {
 }
 
 func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
-	responses := make([]*llm.ChatCompletionResponse, 0, toolsMaxTurns)
+	responses := make([]*openai.ChatCompletionResponse, 0, toolsMaxTurns)
 	for i := 0; i < toolsMaxTurns; i++ {
 		responses = append(responses, chatResponse(message("assistant", "", []openai.ToolCall{
 			toolCall("loop-call", "search_file", fmt.Sprintf(`{"query":"x","limit":1,"offset":%d}`, i)),
@@ -170,7 +167,7 @@ func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
 
 func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("bad-call", "read_lines", `{"start_line":"bad","end_line":2}`),
 			})),
@@ -200,7 +197,7 @@ func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 
 func TestRunTools_DuplicateSearchUsesCacheAndStops(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("call-1", "search_file", `{"query":"alpha"}`),
 			})),
@@ -223,7 +220,7 @@ func TestRunTools_DuplicateSearchUsesCacheAndStops(t *testing.T) {
 
 func TestRunTools_DuplicateReadLinesUsesCacheAndStops(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("call-1", "read_lines", `{"start_line":1,"end_line":2}`),
 			})),
@@ -246,7 +243,7 @@ func TestRunTools_DuplicateReadLinesUsesCacheAndStops(t *testing.T) {
 
 func TestRunTools_NoProgressStopsOnSeenLines(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("call-1", "read_lines", `{"start_line":1,"end_line":3}`),
 			})),
@@ -317,7 +314,7 @@ func TestToolLoopState_ReadAroundSeenLinesMarksNoProgress(t *testing.T) {
 
 func TestRunTools_SystemPromptMentionsAgentPolicy(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "ok", nil)),
 		},
 	}
@@ -336,7 +333,7 @@ func TestRunTools_SystemPromptMentionsAgentPolicy(t *testing.T) {
 	}
 }
 
-func assertToolMessage(t *testing.T, messages []llm.Message, toolCallID string, name string) {
+func assertToolMessage(t *testing.T, messages []openai.ChatCompletionMessage, toolCallID string, name string) {
 	t.Helper()
 
 	foundAssistant := false
@@ -362,8 +359,8 @@ func assertToolMessage(t *testing.T, messages []llm.Message, toolCallID string, 
 	}
 }
 
-func chatResponse(msg llm.Message) *llm.ChatCompletionResponse {
-	return &llm.ChatCompletionResponse{
+func chatResponse(msg openai.ChatCompletionMessage) *openai.ChatCompletionResponse {
+	return &openai.ChatCompletionResponse{
 		Choices: []openai.ChatCompletionChoice{
 			{
 				Message: msg,
@@ -372,8 +369,8 @@ func chatResponse(msg llm.Message) *llm.ChatCompletionResponse {
 	}
 }
 
-func message(role string, content string, toolCalls []openai.ToolCall) llm.Message {
-	return llm.Message{
+func message(role string, content string, toolCalls []openai.ToolCall) openai.ChatCompletionMessage {
+	return openai.ChatCompletionMessage{
 		Role:      role,
 		Content:   content,
 		ToolCalls: toolCalls,

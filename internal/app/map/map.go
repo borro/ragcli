@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/borro/ragcli/internal/llm"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 type Options struct {
@@ -123,21 +124,21 @@ const refinePrompt = `
 // LLM helper
 //
 
-func callLLM(ctx context.Context, client *llm.Client, messages []llm.Message, callCtx llmCallContext, stats *pipelineStats) (string, error) {
-	req := llm.ChatCompletionRequest{
+func callLLM(ctx context.Context, client llm.ChatRequester, messages []openai.ChatCompletionMessage, callCtx llmCallContext, stats *pipelineStats) (string, error) {
+	req := openai.ChatCompletionRequest{
 		Messages: messages,
 	}
 
-	result, err := client.SendRequestWithMetrics(ctx, req)
+	resp, metrics, err := client.SendRequestWithMetrics(ctx, req)
 	if err != nil {
 		return "", err
 	}
 
 	if stats != nil {
 		stats.LLMCalls++
-		stats.PromptTokens += result.Metrics.PromptTokens
-		stats.CompletionTokens += result.Metrics.CompletionTokens
-		stats.TotalTokens += result.Metrics.TotalTokens
+		stats.PromptTokens += metrics.PromptTokens
+		stats.CompletionTokens += metrics.CompletionTokens
+		stats.TotalTokens += metrics.TotalTokens
 	}
 
 	logArgs := []any{"stage", callCtx.Stage}
@@ -157,7 +158,6 @@ func callLLM(ctx context.Context, client *llm.Client, messages []llm.Message, ca
 	}
 	slog.Debug("map-reduce llm call completed", logArgs...)
 
-	resp := result.Response
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("empty response")
 	}
@@ -169,10 +169,10 @@ func callLLM(ctx context.Context, client *llm.Client, messages []llm.Message, ca
 // message builders
 //
 
-func mapMessages(question, chunk string) []llm.Message {
+func mapMessages(question, chunk string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeChunk := sanitizeUntrustedBlock(chunk)
-	return []llm.Message{
+	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: mapPrompt},
 		{
 			Role: "user",
@@ -184,10 +184,10 @@ func mapMessages(question, chunk string) []llm.Message {
 	}
 }
 
-func reduceMessages(question, facts string) []llm.Message {
+func reduceMessages(question, facts string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeFacts := normalizeFactOutput(facts, 10)
-	return []llm.Message{
+	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: reducePrompt},
 		{
 			Role: "user",
@@ -199,10 +199,10 @@ func reduceMessages(question, facts string) []llm.Message {
 	}
 }
 
-func finalMessages(question, facts string) []llm.Message {
+func finalMessages(question, facts string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeFacts := normalizeFactOutput(facts, 10)
-	return []llm.Message{
+	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: finalPrompt},
 		{
 			Role: "user",
@@ -214,11 +214,11 @@ func finalMessages(question, facts string) []llm.Message {
 	}
 }
 
-func critiqueMessages(question, facts, answer string) []llm.Message {
+func critiqueMessages(question, facts, answer string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeFacts := normalizeFactOutput(facts, 10)
 	safeAnswer := sanitizeUntrustedBlock(answer)
-	return []llm.Message{
+	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: critiquePrompt},
 		{
 			Role: "user",
@@ -231,12 +231,12 @@ func critiqueMessages(question, facts, answer string) []llm.Message {
 	}
 }
 
-func refineMessages(question, facts, answer, critique string) []llm.Message {
+func refineMessages(question, facts, answer, critique string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeFacts := normalizeFactOutput(facts, 10)
 	safeAnswer := sanitizeUntrustedBlock(answer)
 	safeCritique := sanitizeUntrustedBlock(critique)
-	return []llm.Message{
+	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: refinePrompt},
 		{
 			Role: "user",
@@ -402,7 +402,7 @@ func SplitByLines(r io.Reader, maxLen int) ([]string, error) {
 // MAP
 //
 
-func runMapParallel(ctx context.Context, client *llm.Client, chunks []string, question string, workers int, stats *pipelineStats) ([]string, error) {
+func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []string, question string, workers int, stats *pipelineStats) ([]string, error) {
 	slog.Debug("map phase started", "chunk_count", len(chunks), "workers", workers)
 
 	type mapJob struct {
@@ -519,7 +519,7 @@ func batchStrings(items []string, size int) [][]string {
 // REDUCE
 //
 
-func fanInReduce(ctx context.Context, client *llm.Client, results []string, question string, opts Options, stats *pipelineStats) (string, error) {
+func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string, question string, opts Options, stats *pipelineStats) (string, error) {
 	reduceBatchSize := opts.Concurrency
 	if reduceBatchSize < 2 {
 		reduceBatchSize = 2
@@ -570,7 +570,7 @@ func fanInReduce(ctx context.Context, client *llm.Client, results []string, ques
 // SELF REFINEMENT
 //
 
-func selfRefine(ctx context.Context, client *llm.Client, question, facts, answer string, stats *pipelineStats) (string, error) {
+func selfRefine(ctx context.Context, client llm.ChatRequester, question, facts, answer string, stats *pipelineStats) (string, error) {
 	slog.Debug("self-refine critique started")
 
 	critique, err := callLLM(ctx, client, critiqueMessages(question, facts, answer), llmCallContext{Stage: "self_refine_critique"}, stats)
@@ -591,7 +591,7 @@ func selfRefine(ctx context.Context, client *llm.Client, question, facts, answer
 // PIPELINE
 //
 
-func Run(ctx context.Context, client *llm.Client, input io.Reader, opts Options, question string) (string, error) {
+func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Options, question string) (string, error) {
 	startedAt := time.Now()
 	inputMode := "stdin"
 	if opts.InputPath != "" {

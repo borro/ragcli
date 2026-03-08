@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/borro/ragcli/internal/llm"
 	"io"
 	"log/slog"
 	"math"
@@ -16,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	openai "github.com/sashabaranov/go-openai"
 )
 
 const (
@@ -540,7 +541,7 @@ func StdinReadAround(line, before, after int) (string, error) {
 	return ReadAround("", line, before, after)
 }
 
-func ExecuteTool(call llm.ToolCall, reader LineReader) (string, error) {
+func ExecuteTool(call openai.ToolCall, reader LineReader) (string, error) {
 	switch call.Function.Name {
 	case "search_file":
 		var params struct {
@@ -601,7 +602,7 @@ func ExecuteTool(call llm.ToolCall, reader LineReader) (string, error) {
 	}
 }
 
-func LogToolCallStarted(call llm.ToolCall, args map[string]any) {
+func LogToolCallStarted(call openai.ToolCall, args map[string]any) {
 	logArgs := []any{
 		"tool_name", call.Function.Name,
 		"tool_call_id", call.ID,
@@ -612,7 +613,7 @@ func LogToolCallStarted(call llm.ToolCall, args map[string]any) {
 	slog.Debug("tool call started", logArgs...)
 }
 
-func LogToolCallFinished(call llm.ToolCall, duration time.Duration, status string, summary map[string]any) {
+func LogToolCallFinished(call openai.ToolCall, duration time.Duration, status string, summary map[string]any) {
 	logArgs := []any{
 		"tool_name", call.Function.Name,
 		"tool_call_id", call.ID,
@@ -625,7 +626,7 @@ func LogToolCallFinished(call llm.ToolCall, duration time.Duration, status strin
 	slog.Debug("tool call finished", logArgs...)
 }
 
-func LogToolCallError(call llm.ToolCall, duration time.Duration, err error) {
+func LogToolCallError(call openai.ToolCall, duration time.Duration, err error) {
 	toolErr := AsToolError(err)
 	logArgs := []any{
 		"tool_name", call.Function.Name,
@@ -641,7 +642,7 @@ func LogToolCallError(call llm.ToolCall, duration time.Duration, err error) {
 	slog.Debug("tool call failed", logArgs...)
 }
 
-func SummarizeToolArguments(call llm.ToolCall) map[string]any {
+func SummarizeToolArguments(call openai.ToolCall) map[string]any {
 	if strings.TrimSpace(call.Function.Arguments) == "" {
 		return nil
 	}
@@ -748,7 +749,7 @@ func SummarizeToolResult(toolName string, raw string) map[string]any {
 	}
 }
 
-func ExecuteToolCalls(ctx context.Context, toolCalls []llm.ToolCall, path string) ([]string, error) {
+func ExecuteToolCalls(ctx context.Context, toolCalls []openai.ToolCall, path string) ([]string, error) {
 	slog.Debug("ExecuteToolCalls called", "path_length", len(path), "path_is_empty", path == "", "tool_calls_count", len(toolCalls))
 
 	reader := NewFileReader(path)

@@ -18,50 +18,44 @@ type fakeEmbedder struct {
 	totalTokens int
 }
 
-func (f *fakeEmbedder) CreateEmbeddingsWithMetrics(_ context.Context, inputs []string) (*llm.EmbeddingResult, error) {
+func (f *fakeEmbedder) CreateEmbeddingsWithMetrics(_ context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
 	f.calls++
 	vectors := make([][]float32, 0, len(inputs))
 	for _, input := range inputs {
 		vectors = append(vectors, vectorFor(input))
 	}
 	f.totalTokens += len(inputs) * 7
-	return &llm.EmbeddingResult{
-		Vectors: vectors,
-		Metrics: llm.EmbeddingMetrics{
-			Attempt:      1,
-			InputCount:   len(inputs),
-			VectorCount:  len(vectors),
-			TotalTokens:  len(inputs) * 7,
-			PromptTokens: len(inputs) * 7,
-		},
+	return vectors, llm.EmbeddingMetrics{
+		Attempt:      1,
+		InputCount:   len(inputs),
+		VectorCount:  len(vectors),
+		TotalTokens:  len(inputs) * 7,
+		PromptTokens: len(inputs) * 7,
 	}, nil
 }
 
 type fakeChat struct {
-	requests []llm.ChatCompletionRequest
+	requests []openai.ChatCompletionRequest
 	answer   string
 }
 
-func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req llm.ChatCompletionRequest) (*llm.RequestResult, error) {
+func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
 	f.requests = append(f.requests, req)
-	return &llm.RequestResult{
-		Response: &llm.ChatCompletionResponse{
+	return &openai.ChatCompletionResponse{
 			Choices: []openai.ChatCompletionChoice{
 				{
-					Message: llm.Message{
+					Message: openai.ChatCompletionMessage{
 						Role:    "assistant",
 						Content: f.answer,
 					},
 				},
 			},
-		},
-		Metrics: llm.RequestMetrics{
+		}, llm.RequestMetrics{
 			Attempt:          1,
 			PromptTokens:     11,
 			CompletionTokens: 5,
 			TotalTokens:      16,
-		},
-	}, nil
+		}, nil
 }
 
 func TestChunkTextPreservesLineRanges(t *testing.T) {
