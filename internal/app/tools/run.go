@@ -18,6 +18,7 @@ const (
 	toolsMaxConsecutiveNoProgress = 2
 	toolsMaxConsecutiveDuplicates = 2
 	emptyFinalAnswerRetryLimit    = 1
+	stalledToolRetryLimit         = 1
 )
 
 type Options struct{}
@@ -195,6 +196,7 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 	loopState := newToolLoopState(filePath)
 	var toolChoiceToSend interface{} = "auto"
 	emptyFinalAnswerRetries := 0
+	stalledToolRetries := 0
 
 	logStop := func(reason string, turns int) {
 		slog.Debug("tools processing finished",
@@ -262,17 +264,7 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 			slog.Debug("received tool calls from model", "turn", turn, "count", len(choice.Message.ToolCalls))
 
 			results, err := loopState.executeToolCalls(ctx, choice.Message.ToolCalls)
-			if err != nil {
-				var orchErr orchestrationError
-				if errorsAsOrchestration(err, &orchErr) {
-					logStop(orchErr.Code, turn)
-				} else {
-					logStop("tool_error", turn)
-				}
-				return "", fmt.Errorf("failed to execute tool calls: %w", err)
-			}
-
-			slog.Debug("tool calls finished", "turn", turn, "result_count", len(results))
+			slog.Debug("tool calls finished", "turn", turn, "result_count", len(results), "has_error", err != nil)
 			for i, result := range results {
 				messages = append(messages, openai.ChatCompletionMessage{
 					Role:       "tool",
@@ -280,6 +272,30 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 					Content:    result,
 					ToolCallID: choice.Message.ToolCalls[i].ID,
 				})
+			}
+			if err != nil {
+				var orchErr orchestrationError
+				if errorsAsOrchestration(err, &orchErr) && shouldRetryWithoutTools(orchErr) && stalledToolRetries < stalledToolRetryLimit {
+					stalledToolRetries++
+					slog.Warn("tool loop stalled, retrying without tools",
+						"turn", turn,
+						"code", orchErr.Code,
+						"attempt", stalledToolRetries,
+					)
+					messages = append(messages, openai.ChatCompletionMessage{
+						Role: "user",
+						Content: "Останови вызовы инструментов и дай финальный ответ обычным текстом на основе уже найденных данных и результатов инструментов. " +
+							"Если данных недостаточно, прямо так и скажи.",
+					})
+					toolChoiceToSend = "none"
+					continue
+				}
+				if errorsAsOrchestration(err, &orchErr) {
+					logStop(orchErr.Code, turn)
+				} else {
+					logStop("tool_error", turn)
+				}
+				return "", fmt.Errorf("failed to execute tool calls: %w", err)
 			}
 
 			continue
@@ -369,7 +385,7 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 	}
 
 	if s.consecutiveDuplicates >= toolsMaxConsecutiveDuplicates {
-		return nil, orchestrationError{
+		return results, orchestrationError{
 			Code:    "duplicate_call",
 			Message: "model repeated duplicate tool calls without new information",
 			Details: map[string]any{"threshold": toolsMaxConsecutiveDuplicates},
@@ -377,7 +393,7 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 	}
 
 	if s.consecutiveNoProgress >= toolsMaxConsecutiveNoProgress {
-		return nil, orchestrationError{
+		return results, orchestrationError{
 			Code:    "no_progress",
 			Message: "tool loop stopped because repeated calls produced no new lines",
 			Details: map[string]any{"threshold": toolsMaxConsecutiveNoProgress},
@@ -655,4 +671,13 @@ func suggestedNextOffset(toolName, raw string) int {
 
 func errorsAsOrchestration(err error, target *orchestrationError) bool {
 	return errors.As(err, target)
+}
+
+func shouldRetryWithoutTools(err orchestrationError) bool {
+	switch err.Code {
+	case "duplicate_call", "no_progress":
+		return true
+	default:
+		return false
+	}
 }

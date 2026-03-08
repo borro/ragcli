@@ -195,7 +195,7 @@ func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 	}
 }
 
-func TestRunTools_DuplicateSearchUsesCacheAndStops(t *testing.T) {
+func TestRunTools_DuplicateSearchUsesCacheAndFinalizesWithoutTools(t *testing.T) {
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
@@ -207,18 +207,31 @@ func TestRunTools_DuplicateSearchUsesCacheAndStops(t *testing.T) {
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("call-3", "search_file", `{"query":"alpha"}`),
 			})),
+			chatResponse(message("assistant", "alpha найдена в первой строке", nil)),
 		},
 	}
 
 	filePath := writeTempFile(t, "alpha\nbeta\n")
-	_, err := Run(context.Background(), client, filePath, "find alpha", Options{})
-	var orchErr orchestrationError
-	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "duplicate_call" {
-		t.Fatalf("RunTools() error = %v, want duplicate_call", err)
+	result, err := Run(context.Background(), client, filePath, "find alpha", Options{})
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "alpha найдена в первой строке" {
+		t.Fatalf("RunTools() result = %q, want fallback answer", result)
+	}
+	if len(client.requests) != 4 {
+		t.Fatalf("requests = %d, want 4", len(client.requests))
+	}
+	if client.requests[3].ToolChoice != "none" {
+		t.Fatalf("ToolChoice = %#v, want none", client.requests[3].ToolChoice)
+	}
+	lastMessage := client.requests[3].Messages[len(client.requests[3].Messages)-1]
+	if !strings.Contains(lastMessage.Content, "Останови вызовы инструментов") {
+		t.Fatalf("fallback message = %q, want stop-tools instruction", lastMessage.Content)
 	}
 }
 
-func TestRunTools_DuplicateReadLinesUsesCacheAndStops(t *testing.T) {
+func TestRunTools_DuplicateReadLinesUsesCacheAndFinalizesWithoutTools(t *testing.T) {
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
@@ -230,18 +243,21 @@ func TestRunTools_DuplicateReadLinesUsesCacheAndStops(t *testing.T) {
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("call-3", "read_lines", `{"start_line":1,"end_line":2}`),
 			})),
+			chatResponse(message("assistant", "В строках 1-2: one, two", nil)),
 		},
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\nthree\n")
-	_, err := Run(context.Background(), client, filePath, "read", Options{})
-	var orchErr orchestrationError
-	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "duplicate_call" {
-		t.Fatalf("RunTools() error = %v, want duplicate_call", err)
+	result, err := Run(context.Background(), client, filePath, "read", Options{})
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "В строках 1-2: one, two" {
+		t.Fatalf("RunTools() result = %q, want fallback answer", result)
 	}
 }
 
-func TestRunTools_NoProgressStopsOnSeenLines(t *testing.T) {
+func TestRunTools_NoProgressFinalizesWithoutTools(t *testing.T) {
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
@@ -253,14 +269,17 @@ func TestRunTools_NoProgressStopsOnSeenLines(t *testing.T) {
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("call-3", "read_around", `{"line":2,"before":1,"after":1}`),
 			})),
+			chatResponse(message("assistant", "Повторное чтение не добавило новых строк", nil)),
 		},
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\nthree\nfour\n")
-	_, err := Run(context.Background(), client, filePath, "read same area", Options{})
-	var orchErr orchestrationError
-	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "no_progress" {
-		t.Fatalf("RunTools() error = %v, want no_progress", err)
+	result, err := Run(context.Background(), client, filePath, "read same area", Options{})
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "Повторное чтение не добавило новых строк" {
+		t.Fatalf("RunTools() result = %q, want fallback answer", result)
 	}
 }
 
