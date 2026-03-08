@@ -279,6 +279,8 @@ lefthook install
 - `gofmt` для staged `.go` файлов с автоматическим добавлением исправлений в индекс
 - `golangci-lint run --timeout=5m ./cmd/... ./internal/...`
 - `go test ./...`
+- `go test ./... -coverprofile=coverage.out`
+- `go tool cover -func=coverage.out`
 
 Эти хуки дублируют базовые проверки CI, но не заменяют GitHub Actions.
 

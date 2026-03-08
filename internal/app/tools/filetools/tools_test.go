@@ -1,7 +1,11 @@
 package filetools
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -139,6 +143,24 @@ func TestStdinReadAround(t *testing.T) {
 		if parsed.StartLine != 1 || parsed.EndLine != 3 {
 			t.Fatalf("range = %d..%d, want 1..3", parsed.StartLine, parsed.EndLine)
 		}
+	})
+}
+
+func TestThinWrappersAndDefaults(t *testing.T) {
+	filePath := writeTempFile(t, "alpha\nbeta\n")
+
+	searchResult, err := SearchFile(filePath, "alpha")
+	if err != nil {
+		t.Fatalf("SearchFile() error = %v", err)
+	}
+	assertSearchResult(t, searchResult, "alpha", "", "literal", []int{1})
+
+	withStdin(t, "gamma\ndelta\n", func() {
+		result, err := StdinSearch("gamma")
+		if err != nil {
+			t.Fatalf("StdinSearch() error = %v", err)
+		}
+		assertSearchResult(t, result, "gamma", "", "literal", []int{1})
 	})
 }
 
@@ -405,6 +427,23 @@ func TestReadAround_InvalidLine(t *testing.T) {
 	}
 }
 
+func TestReadAround_DefaultsForNegativeWindow(t *testing.T) {
+	filePath := writeTempFile(t, "1\n2\n3\n4\n5\n")
+
+	result, err := ReadAround(filePath, 3, -1, -1)
+	if err != nil {
+		t.Fatalf("ReadAround() error = %v", err)
+	}
+
+	var parsed ReadAroundResult
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if parsed.Before != DefaultReadAroundBefore || parsed.After != DefaultReadAroundAfter {
+		t.Fatalf("window = %d/%d, want defaults %d/%d", parsed.Before, parsed.After, DefaultReadAroundBefore, DefaultReadAroundAfter)
+	}
+}
+
 func TestCachedLineReader_LoadsOnceAcrossTools(t *testing.T) {
 	filePath := writeTempFile(t, "alpha\nbeta\nalpha beta\n")
 	reader := NewFileReader(filePath)
@@ -435,6 +474,32 @@ func TestSummarizeToolArguments_NormalizesSearchParams(t *testing.T) {
 	}
 	if summary["offset"] != 0 {
 		t.Fatalf("offset = %#v, want 0", summary["offset"])
+	}
+}
+
+func TestSummarizeToolArguments_OtherToolsAndErrors(t *testing.T) {
+	readLinesSummary := SummarizeToolArguments(toolCall("1", "read_lines", `{"start_line":3,"end_line":7}`))
+	if readLinesSummary["start_line"] != float64(3) && readLinesSummary["start_line"] != 3 {
+		t.Fatalf("start_line = %#v, want 3", readLinesSummary["start_line"])
+	}
+
+	readAroundSummary := SummarizeToolArguments(toolCall("2", "read_around", `{"line":10,"before":2,"after":4}`))
+	if readAroundSummary["line"] != float64(10) && readAroundSummary["line"] != 10 {
+		t.Fatalf("line = %#v, want 10", readAroundSummary["line"])
+	}
+
+	if summary := SummarizeToolArguments(toolCall("3", "search_file", "")); summary != nil {
+		t.Fatalf("summary = %#v, want nil for empty args", summary)
+	}
+
+	decodeErr := SummarizeToolArguments(toolCall("4", "read_lines", `{"start_line":`))
+	if _, ok := decodeErr["decode_error"]; !ok {
+		t.Fatalf("summary = %#v, want decode_error", decodeErr)
+	}
+
+	unknown := SummarizeToolArguments(toolCall("5", "custom", `{"x":1}`))
+	if unknown["raw_arguments"] != `{"x":1}` {
+		t.Fatalf("raw_arguments = %#v, want original payload", unknown["raw_arguments"])
 	}
 }
 
@@ -494,6 +559,122 @@ func TestSummarizeToolResult_ReadRanges(t *testing.T) {
 	}
 	if readAroundSummary["end_line"] != float64(12) && readAroundSummary["end_line"] != 12 {
 		t.Fatalf("end_line = %#v, want 12", readAroundSummary["end_line"])
+	}
+}
+
+func TestSummarizeToolResult_DecodeErrorAndUnknownTool(t *testing.T) {
+	decodeErr := SummarizeToolResult("search_file", "{")
+	if _, ok := decodeErr["decode_error"]; !ok {
+		t.Fatalf("summary = %#v, want decode_error", decodeErr)
+	}
+	if summary := SummarizeToolResult("custom", "{}"); summary != nil {
+		t.Fatalf("summary = %#v, want nil", summary)
+	}
+}
+
+func TestExecuteTool_ErrorPaths(t *testing.T) {
+	reader := NewFileReader(writeTempFile(t, "alpha\nbeta\n"))
+
+	tests := []struct {
+		name     string
+		call     openai.ToolCall
+		wantCode string
+	}{
+		{
+			name:     "invalid search args",
+			call:     toolCall("1", "search_file", `{"query":`),
+			wantCode: "invalid_arguments",
+		},
+		{
+			name:     "invalid read_lines args",
+			call:     toolCall("2", "read_lines", `{"start_line":`),
+			wantCode: "invalid_arguments",
+		},
+		{
+			name:     "invalid read_around args",
+			call:     toolCall("3", "read_around", `{"line":`),
+			wantCode: "invalid_arguments",
+		},
+		{
+			name:     "unknown tool",
+			call:     toolCall("4", "boom", `{}`),
+			wantCode: "unknown_tool",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ExecuteTool(tt.call, reader)
+			if err == nil {
+				t.Fatal("ExecuteTool() error = nil, want error")
+			}
+			toolErr := AsToolError(err)
+			if toolErr.Code != tt.wantCode {
+				t.Fatalf("Code = %q, want %q", toolErr.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestExecuteToolCalls_ContextDoneAndToolErrorJSON(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := ExecuteToolCalls(ctx, []openai.ToolCall{toolCall("1", "search_file", `{"query":"x"}`)}, writeTempFile(t, "x\n"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+
+	results, err := ExecuteToolCalls(context.Background(), []openai.ToolCall{
+		toolCall("2", "search_file", `{"query":""}`),
+	}, writeTempFile(t, "alpha\n"))
+	if err != nil {
+		t.Fatalf("ExecuteToolCalls() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	var toolErr ToolError
+	if err := json.Unmarshal([]byte(results[0]), &toolErr); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if toolErr.Code != "invalid_arguments" {
+		t.Fatalf("Code = %q, want invalid_arguments", toolErr.Code)
+	}
+}
+
+func TestToolErrorHelpersAndLogging(t *testing.T) {
+	baseErr := errors.New("boom")
+	if got := AsToolError(baseErr); got.Code != "tool_execution_failed" || got.Message != "boom" {
+		t.Fatalf("AsToolError(baseErr) = %+v, want fallback tool error", got)
+	}
+
+	toolErr := NewToolError("invalid_arguments", "bad input", false, map[string]any{"line": 1})
+	if toolErr.Error() != "bad input" {
+		t.Fatalf("toolErr.Error() = %q, want bad input", toolErr.Error())
+	}
+	if got := AsToolError(toolErr); got.Code != "invalid_arguments" {
+		t.Fatalf("AsToolError(toolErr).Code = %q, want invalid_arguments", got.Code)
+	}
+
+	var buf bytes.Buffer
+	original := slog.Default()
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() {
+		slog.SetDefault(original)
+	})
+
+	call := toolCall("1", "search_file", `{"query":"alpha"}`)
+	LogToolCallStarted(call, map[string]any{"query": "alpha"})
+	LogToolCallFinished(call, 1500000000, "ok", map[string]any{"match_count": 1})
+	LogToolCallError(call, 200000000, toolErr)
+
+	logs := buf.String()
+	for _, want := range []string{"tool call started", "tool call finished", "tool call failed", "tool_name=search_file"} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("logs = %q, want substring %q", logs, want)
+		}
 	}
 }
 

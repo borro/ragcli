@@ -513,6 +513,55 @@ func TestCreateEmbeddingsWithMetrics(t *testing.T) {
 	}
 }
 
+func TestResponseHasToolCallsAndToolChoiceLabel(t *testing.T) {
+	resp := openai.ChatCompletionResponse{
+		Choices: []openai.ChatCompletionChoice{
+			{Message: openai.ChatCompletionMessage{Role: "assistant"}},
+			{Message: openai.ChatCompletionMessage{Role: "assistant", ToolCalls: []openai.ToolCall{{ID: "1"}}}},
+		},
+	}
+	if !responseHasToolCalls(resp) {
+		t.Fatal("responseHasToolCalls() = false, want true")
+	}
+	if responseHasToolCalls(openai.ChatCompletionResponse{}) {
+		t.Fatal("responseHasToolCalls(empty) = true, want false")
+	}
+
+	tests := []struct {
+		name  string
+		input interface{}
+		want  string
+	}{
+		{name: "nil", input: nil, want: "auto"},
+		{name: "empty string", input: "", want: "auto"},
+		{name: "string", input: "required", want: "required"},
+		{name: "non string", input: map[string]any{"type": "function"}, want: "map[string]interface {}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := toolChoiceLabel(tt.input); got != tt.want {
+				t.Fatalf("toolChoiceLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCreateEmbeddingsWithMetrics_ContextCancelled(t *testing.T) {
+	embedder := NewEmbedder("", "embed-model", "", 2)
+	embedder.doEmbeddings = func(ctx context.Context, _ openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error) {
+		<-ctx.Done()
+		return openai.EmbeddingResponse{}, ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := embedder.CreateEmbeddingsWithMetrics(ctx, []string{"alpha"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CreateEmbeddingsWithMetrics() err = %v, want context.Canceled", err)
+	}
+}
+
 // isContextError проверяет, является ли ошибка ошибкой отмены контекста
 func isContextError(err error) bool {
 	// Проверка на context deadline exceeded или cancelled

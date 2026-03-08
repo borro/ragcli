@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -345,6 +346,102 @@ func TestBuildOrLoadIndexConcurrentWritersSharePublishedIndex(t *testing.T) {
 			t.Fatalf("expected published index file %s: %v", name, err)
 		}
 	}
+}
+
+func TestNormalizeSourcePath(t *testing.T) {
+	if got := normalizeSourcePath(Source{DisplayName: "stdin"}); got != "stdin" {
+		t.Fatalf("normalizeSourcePath(stdin) = %q, want stdin", got)
+	}
+	if got := normalizeSourcePath(Source{Path: "/tmp/a.txt", DisplayName: "a.txt"}); got != "a.txt" {
+		t.Fatalf("normalizeSourcePath(file) = %q, want a.txt", got)
+	}
+}
+
+func TestEmbedQueryAndHelpers(t *testing.T) {
+	vector, metrics, err := embedQuery(context.Background(), &fakeEmbedder{}, " retry\n policy ")
+	if err != nil {
+		t.Fatalf("embedQuery() error = %v", err)
+	}
+	if len(vector) == 0 {
+		t.Fatal("embedQuery() vector empty, want non-empty")
+	}
+	if metrics.InputCount != 1 {
+		t.Fatalf("metrics.InputCount = %d, want 1", metrics.InputCount)
+	}
+	if got := normalizeEmbeddingInput(" a \n b\tc "); got != "a b c" {
+		t.Fatalf("normalizeEmbeddingInput() = %q, want %q", got, "a b c")
+	}
+}
+
+func TestEmbedQueryErrors(t *testing.T) {
+	embedderErr := embeddingRequesterFunc(func(_ context.Context, _ []string) ([][]float32, llm.EmbeddingMetrics, error) {
+		return nil, llm.EmbeddingMetrics{}, errors.New("embed failed")
+	})
+	_, _, err := embedQuery(context.Background(), embedderErr, "question")
+	if err == nil || !strings.Contains(err.Error(), "failed to embed query") {
+		t.Fatalf("embedQuery() error = %v, want wrapped embed error", err)
+	}
+
+	badCount := embeddingRequesterFunc(func(_ context.Context, _ []string) ([][]float32, llm.EmbeddingMetrics, error) {
+		return [][]float32{{1}, {2}}, llm.EmbeddingMetrics{}, nil
+	})
+	_, _, err = embedQuery(context.Background(), badCount, "question")
+	if err == nil || !strings.Contains(err.Error(), "query embeddings count = 2, want 1") {
+		t.Fatalf("embedQuery() error = %v, want count mismatch", err)
+	}
+}
+
+func TestSelectionHelpersAndAppendSources(t *testing.T) {
+	a0 := candidate{Chunk: Chunk{SourcePath: "a.txt", ChunkID: 0, StartLine: 1, EndLine: 2}, Score: 0.9}
+	a1 := candidate{Chunk: Chunk{SourcePath: "a.txt", ChunkID: 1, StartLine: 3, EndLine: 4}, Score: 0.8}
+	a3 := candidate{Chunk: Chunk{SourcePath: "a.txt", ChunkID: 3, StartLine: 9, EndLine: 10}, Score: 0.7}
+	b0 := candidate{Chunk: Chunk{SourcePath: "b.txt", ChunkID: 0, StartLine: 1, EndLine: 1}, Score: 0.6}
+
+	selected := selectEvidence([]candidate{a0, a1, a3}, 2)
+	if len(selected) != 2 {
+		t.Fatalf("len(selected) = %d, want 2", len(selected))
+	}
+	if selected[0].Chunk.ChunkID != 0 || selected[1].Chunk.ChunkID != 3 {
+		t.Fatalf("selected chunk IDs = %d,%d, want 0,3", selected[0].Chunk.ChunkID, selected[1].Chunk.ChunkID)
+	}
+
+	fallback := selectEvidence([]candidate{a0, a1}, 2)
+	if len(fallback) != 2 {
+		t.Fatalf("len(fallback) = %d, want 2", len(fallback))
+	}
+	if fallback[1].Chunk.ChunkID != 1 {
+		t.Fatalf("fallback second chunk = %d, want 1", fallback[1].Chunk.ChunkID)
+	}
+
+	if !containsChunk(selected, a0.Chunk) {
+		t.Fatal("containsChunk() = false, want true")
+	}
+	if containsChunk(selected, b0.Chunk) {
+		t.Fatal("containsChunk() = true, want false")
+	}
+	if got := cmpChunkOrder(a0.Chunk, b0.Chunk); got >= 0 {
+		t.Fatalf("cmpChunkOrder(a,b) = %d, want < 0", got)
+	}
+	if got := cmpChunkOrder(a1.Chunk, a0.Chunk); got <= 0 {
+		t.Fatalf("cmpChunkOrder(a1,a0) = %d, want > 0", got)
+	}
+
+	answer := appendSources("Answer", []candidate{a0, a0, b0})
+	if strings.Count(answer, "- a.txt:1-2") != 1 {
+		t.Fatalf("appendSources() = %q, want deduped citation", answer)
+	}
+	if !strings.Contains(answer, "- b.txt:1-1") {
+		t.Fatalf("appendSources() = %q, want second source", answer)
+	}
+	if got := appendSources("Answer", nil); !strings.Contains(got, "Sources:\n- none") {
+		t.Fatalf("appendSources(nil) = %q, want none source", got)
+	}
+}
+
+type embeddingRequesterFunc func(context.Context, []string) ([][]float32, llm.EmbeddingMetrics, error)
+
+func (f embeddingRequesterFunc) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
+	return f(ctx, inputs)
 }
 
 func vectorFor(input string) []float32 {
