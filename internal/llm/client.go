@@ -17,6 +17,11 @@ type Client struct {
 	doRequest  func(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
 }
 
+// ChatRequester describes chat completion clients used by application packages.
+type ChatRequester interface {
+	SendRequestWithMetrics(ctx context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, RequestMetrics, error)
+}
+
 // Embedder представляет клиент для embeddings API.
 type Embedder struct {
 	client       *openai.Client
@@ -25,27 +30,10 @@ type Embedder struct {
 	doEmbeddings func(ctx context.Context, req openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error)
 }
 
-// Message представляет сообщение в чате
-type Message = openai.ChatCompletionMessage
-
-// ChatCompletionRequest представляет запрос к chat completion API
-type ChatCompletionRequest struct {
-	Messages   []openai.ChatCompletionMessage `json:"messages"`
-	Tools      []Tool                         `json:"tools,omitempty"`
-	ToolChoice interface{}                    `json:"tool_choice,omitempty"`
+// EmbeddingRequester describes embeddings clients used by application packages.
+type EmbeddingRequester interface {
+	CreateEmbeddingsWithMetrics(ctx context.Context, inputs []string) ([][]float32, EmbeddingMetrics, error)
 }
-
-// FunctionDefinition represents function definition for tool calling
-type FunctionDefinition = openai.FunctionDefinition
-
-// Tool представляет собой определение инструмента
-type Tool = openai.Tool
-
-// ChatCompletionResponse представляет ответ от API
-type ChatCompletionResponse = openai.ChatCompletionResponse
-
-// ToolCall represents a tool call from the model
-type ToolCall = openai.ToolCall
 
 // RequestMetrics содержит метаданные и наблюдаемость по одному запросу к LLM.
 type RequestMetrics struct {
@@ -63,12 +51,6 @@ type RequestMetrics struct {
 	HasToolCalls     bool
 }
 
-// RequestResult содержит ответ LLM и собранные метрики запроса.
-type RequestResult struct {
-	Response *ChatCompletionResponse
-	Metrics  RequestMetrics
-}
-
 // EmbeddingMetrics содержит метрики одного embeddings запроса.
 type EmbeddingMetrics struct {
 	Model        string
@@ -78,12 +60,6 @@ type EmbeddingMetrics struct {
 	Duration     time.Duration
 	PromptTokens int
 	TotalTokens  int
-}
-
-// EmbeddingResult содержит векторы и метрики embeddings запроса.
-type EmbeddingResult struct {
-	Vectors [][]float32
-	Metrics EmbeddingMetrics
 }
 
 // NewClient создаёт новый LLM клиент, используя go-openai библиотеку
@@ -123,28 +99,28 @@ func NewEmbedder(baseURL, model, apiKey string, retryCount int) *Embedder {
 }
 
 // SendRequest отправляет запрос к LLM API с механизмом retry и exponential backoff
-func (c *Client) SendRequest(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
-	result, err := c.SendRequestWithMetrics(ctx, req)
+func (c *Client) SendRequest(ctx context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, error) {
+	resp, _, err := c.SendRequestWithMetrics(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
-	return result.Response, nil
+	return resp, nil
 }
 
 // SendRequestWithMetrics отправляет запрос к LLM API и возвращает ответ вместе с метриками.
-func (c *Client) SendRequestWithMetrics(ctx context.Context, req ChatCompletionRequest) (*RequestResult, error) {
+func (c *Client) SendRequestWithMetrics(ctx context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, RequestMetrics, error) {
 	toolChoice := toolChoiceLabel(req.ToolChoice)
 
 	for attempt := 1; attempt <= c.retryCount+1; attempt++ {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, RequestMetrics{}, ctx.Err()
 		default:
 		}
 
 		slog.Debug("llm request started",
-			"model", c.model,
+			"model", requestModel(c.model, req.Model),
 			"attempt", attempt,
 			"message_count", len(req.Messages),
 			"tool_count", len(req.Tools),
@@ -162,7 +138,7 @@ func (c *Client) SendRequestWithMetrics(ctx context.Context, req ChatCompletionR
 				"message_count", metrics.MessageCount,
 				"tool_count", metrics.ToolCount,
 				"tool_choice", metrics.ToolChoice,
-				"duration_ms", metrics.Duration.Milliseconds(),
+				"duration", float64(metrics.Duration.Round(time.Millisecond))/float64(time.Second),
 				"choice_count", metrics.ChoiceCount,
 				"has_tool_calls", metrics.HasToolCalls,
 				"prompt_tokens", metrics.PromptTokens,
@@ -170,19 +146,16 @@ func (c *Client) SendRequestWithMetrics(ctx context.Context, req ChatCompletionR
 				"total_tokens", metrics.TotalTokens,
 				"tokens_per_second", metrics.TokensPerSecond,
 			)
-			return &RequestResult{
-				Response: &resp,
-				Metrics:  metrics,
-			}, nil
+			return &resp, metrics, nil
 		}
 
 		slog.Debug("llm request failed",
-			"model", c.model,
+			"model", requestModel(c.model, req.Model),
 			"attempt", attempt,
 			"message_count", len(req.Messages),
 			"tool_count", len(req.Tools),
 			"tool_choice", toolChoice,
-			"duration_ms", elapsed.Milliseconds(),
+			"duration", float64(elapsed.Round(time.Millisecond))/float64(time.Second),
 			"error", err,
 		)
 
@@ -198,28 +171,21 @@ func (c *Client) SendRequestWithMetrics(ctx context.Context, req ChatCompletionR
 			)
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, RequestMetrics{}, ctx.Err()
 			case <-time.After(time.Duration(delay) * time.Second):
 			}
 		}
 	}
 
-	return nil, fmt.Errorf("request failed after %d attempts", c.retryCount+1)
+	return nil, RequestMetrics{}, fmt.Errorf("request failed after %d attempts", c.retryCount+1)
 }
 
 // doRequestOnce выполняет один HTTP запрос к API через go-openai.
-func (c *Client) doRequestOnce(ctx context.Context, req ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
-	openaiReq := openai.ChatCompletionRequest{
-		Model:    c.model,
-		Messages: req.Messages,
-		Tools:    req.Tools,
+func (c *Client) doRequestOnce(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+	if req.Model == "" {
+		req.Model = c.model
 	}
-
-	if req.ToolChoice != nil {
-		openaiReq.ToolChoice = req.ToolChoice
-	}
-
-	return c.doRequest(ctx, openaiReq)
+	return c.doRequest(ctx, req)
 }
 
 // Model возвращает имя модели
@@ -227,9 +193,9 @@ func (c *Client) Model() string {
 	return c.model
 }
 
-func buildRequestMetrics(model string, attempt int, req ChatCompletionRequest, resp openai.ChatCompletionResponse, duration time.Duration) RequestMetrics {
+func buildRequestMetrics(defaultModel string, attempt int, req openai.ChatCompletionRequest, resp openai.ChatCompletionResponse, duration time.Duration) RequestMetrics {
 	metrics := RequestMetrics{
-		Model:            model,
+		Model:            requestModel(defaultModel, req.Model),
 		Attempt:          attempt,
 		MessageCount:     len(req.Messages),
 		ToolCount:        len(req.Tools),
@@ -247,6 +213,13 @@ func buildRequestMetrics(model string, attempt int, req ChatCompletionRequest, r
 	}
 
 	return metrics
+}
+
+func requestModel(defaultModel string, reqModel string) string {
+	if reqModel != "" {
+		return reqModel
+	}
+	return defaultModel
 }
 
 func responseHasToolCalls(resp openai.ChatCompletionResponse) bool {
@@ -275,7 +248,7 @@ func toolChoiceLabel(toolChoice interface{}) string {
 }
 
 // CreateEmbeddingsWithMetrics отправляет embeddings запрос и возвращает метрики.
-func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []string) (*EmbeddingResult, error) {
+func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []string) ([][]float32, EmbeddingMetrics, error) {
 	req := openai.EmbeddingRequestStrings{
 		Input: []string{},
 		Model: openai.EmbeddingModel(e.model),
@@ -287,7 +260,7 @@ func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []str
 	for attempt := 1; attempt <= e.retryCount+1; attempt++ {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, EmbeddingMetrics{}, ctx.Err()
 		default:
 		}
 
@@ -319,18 +292,18 @@ func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []str
 				"attempt", metrics.Attempt,
 				"input_count", metrics.InputCount,
 				"vector_count", metrics.VectorCount,
-				"duration_ms", metrics.Duration.Milliseconds(),
+				"duration", float64(metrics.Duration.Round(time.Millisecond))/float64(time.Second),
 				"prompt_tokens", metrics.PromptTokens,
 				"total_tokens", metrics.TotalTokens,
 			)
-			return &EmbeddingResult{Vectors: vectors, Metrics: metrics}, nil
+			return vectors, metrics, nil
 		}
 
 		slog.Debug("embedding request failed",
 			"model", e.model,
 			"attempt", attempt,
 			"input_count", len(req.Input),
-			"duration_ms", elapsed.Milliseconds(),
+			"duration", float64(elapsed.Round(time.Millisecond))/float64(time.Second),
 			"error", err,
 		)
 
@@ -345,13 +318,13 @@ func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []str
 			)
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, EmbeddingMetrics{}, ctx.Err()
 			case <-time.After(time.Duration(delay) * time.Second):
 			}
 		}
 	}
 
-	return nil, fmt.Errorf("embedding request failed after %d attempts", e.retryCount+1)
+	return nil, EmbeddingMetrics{}, fmt.Errorf("embedding request failed after %d attempts", e.retryCount+1)
 }
 
 // Model возвращает имя embeddings модели.

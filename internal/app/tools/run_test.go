@@ -1,9 +1,10 @@
-package processor
+package tools
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,45 +13,42 @@ import (
 )
 
 type scriptedRequester struct {
-	responses []*llm.ChatCompletionResponse
+	responses []*openai.ChatCompletionResponse
 	errs      []error
-	requests  []llm.ChatCompletionRequest
+	requests  []openai.ChatCompletionRequest
 }
 
-func (s *scriptedRequester) SendRequestWithMetrics(_ context.Context, req llm.ChatCompletionRequest) (*llm.RequestResult, error) {
+func (s *scriptedRequester) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
 	s.requests = append(s.requests, req)
 	index := len(s.requests) - 1
 
 	if index < len(s.errs) && s.errs[index] != nil {
-		return nil, s.errs[index]
+		return nil, llm.RequestMetrics{}, s.errs[index]
 	}
 
 	if index >= len(s.responses) {
-		return nil, context.DeadlineExceeded
+		return nil, llm.RequestMetrics{}, context.DeadlineExceeded
 	}
 
-	return &llm.RequestResult{
-		Response: s.responses[index],
-		Metrics: llm.RequestMetrics{
-			Attempt:          1,
-			MessageCount:     len(req.Messages),
-			ToolCount:        len(req.Tools),
-			PromptTokens:     10,
-			CompletionTokens: 5,
-			TotalTokens:      15,
-			TokensPerSecond:  50,
-		},
+	return s.responses[index], llm.RequestMetrics{
+		Attempt:          1,
+		MessageCount:     len(req.Messages),
+		ToolCount:        len(req.Tools),
+		PromptTokens:     10,
+		CompletionTokens: 5,
+		TotalTokens:      15,
+		TokensPerSecond:  50,
 	}, nil
 }
 
 func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "Готовый ответ", nil)),
 		},
 	}
 
-	result, err := RunTools(context.Background(), client, "/tmp/file.txt", "Что в файле?")
+	result, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", Options{})
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -68,13 +66,13 @@ func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 
 func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", nil)),
 			chatResponse(message("assistant", "Итоговый ответ после retry", nil)),
 		},
 	}
 
-	result, err := RunTools(context.Background(), client, "/tmp/file.txt", "Что в файле?")
+	result, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", Options{})
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -95,7 +93,7 @@ func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
 
 func TestRunTools_MultiStepToolLoop(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "Сначала найду раздел.", []openai.ToolCall{
 				toolCall("call-1", "search_file", `{"query":"архитектура"}`),
 			})),
@@ -121,7 +119,7 @@ func TestRunTools_MultiStepToolLoop(t *testing.T) {
 		"12: вывод",
 	}, "\n"))
 
-	result, err := RunTools(context.Background(), client, filePath, "Что сказано про архитектуру?")
+	result, err := Run(context.Background(), client, filePath, "Что сказано про архитектуру?", Options{})
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -150,7 +148,7 @@ func TestRunTools_MultiStepToolLoop(t *testing.T) {
 }
 
 func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
-	responses := make([]*llm.ChatCompletionResponse, 0, toolsMaxTurns)
+	responses := make([]*openai.ChatCompletionResponse, 0, toolsMaxTurns)
 	for i := 0; i < toolsMaxTurns; i++ {
 		responses = append(responses, chatResponse(message("assistant", "", []openai.ToolCall{
 			toolCall("loop-call", "search_file", fmt.Sprintf(`{"query":"x","limit":1,"offset":%d}`, i)),
@@ -160,7 +158,7 @@ func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
 	client := &scriptedRequester{responses: responses}
 	filePath := writeTempFile(t, "x1\nx2\nx3\nx4\nx5\nx6\nx7\nx8\nx9\nx10\n")
 
-	_, err := RunTools(context.Background(), client, filePath, "loop?")
+	_, err := Run(context.Background(), client, filePath, "loop?", Options{})
 	var orchErr orchestrationError
 	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "orchestration_limit" {
 		t.Fatalf("RunTools() error = %v, want orchestration_limit", err)
@@ -169,7 +167,7 @@ func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
 
 func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("bad-call", "read_lines", `{"start_line":"bad","end_line":2}`),
 			})),
@@ -178,7 +176,7 @@ func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\n")
-	result, err := RunTools(context.Background(), client, filePath, "test")
+	result, err := Run(context.Background(), client, filePath, "test", Options{})
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -199,7 +197,7 @@ func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 
 func TestRunTools_DuplicateSearchUsesCacheAndStops(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("call-1", "search_file", `{"query":"alpha"}`),
 			})),
@@ -213,7 +211,7 @@ func TestRunTools_DuplicateSearchUsesCacheAndStops(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "alpha\nbeta\n")
-	_, err := RunTools(context.Background(), client, filePath, "find alpha")
+	_, err := Run(context.Background(), client, filePath, "find alpha", Options{})
 	var orchErr orchestrationError
 	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "duplicate_call" {
 		t.Fatalf("RunTools() error = %v, want duplicate_call", err)
@@ -222,7 +220,7 @@ func TestRunTools_DuplicateSearchUsesCacheAndStops(t *testing.T) {
 
 func TestRunTools_DuplicateReadLinesUsesCacheAndStops(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("call-1", "read_lines", `{"start_line":1,"end_line":2}`),
 			})),
@@ -236,7 +234,7 @@ func TestRunTools_DuplicateReadLinesUsesCacheAndStops(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\nthree\n")
-	_, err := RunTools(context.Background(), client, filePath, "read")
+	_, err := Run(context.Background(), client, filePath, "read", Options{})
 	var orchErr orchestrationError
 	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "duplicate_call" {
 		t.Fatalf("RunTools() error = %v, want duplicate_call", err)
@@ -245,7 +243,7 @@ func TestRunTools_DuplicateReadLinesUsesCacheAndStops(t *testing.T) {
 
 func TestRunTools_NoProgressStopsOnSeenLines(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
 				toolCall("call-1", "read_lines", `{"start_line":1,"end_line":3}`),
 			})),
@@ -259,7 +257,7 @@ func TestRunTools_NoProgressStopsOnSeenLines(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\nthree\nfour\n")
-	_, err := RunTools(context.Background(), client, filePath, "read same area")
+	_, err := Run(context.Background(), client, filePath, "read same area", Options{})
 	var orchErr orchestrationError
 	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "no_progress" {
 		t.Fatalf("RunTools() error = %v, want no_progress", err)
@@ -316,12 +314,12 @@ func TestToolLoopState_ReadAroundSeenLinesMarksNoProgress(t *testing.T) {
 
 func TestRunTools_SystemPromptMentionsAgentPolicy(t *testing.T) {
 	client := &scriptedRequester{
-		responses: []*llm.ChatCompletionResponse{
+		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "ok", nil)),
 		},
 	}
 
-	_, err := RunTools(context.Background(), client, "/tmp/file.txt", "Что в файле?")
+	_, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", Options{})
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -335,7 +333,7 @@ func TestRunTools_SystemPromptMentionsAgentPolicy(t *testing.T) {
 	}
 }
 
-func assertToolMessage(t *testing.T, messages []llm.Message, toolCallID string, name string) {
+func assertToolMessage(t *testing.T, messages []openai.ChatCompletionMessage, toolCallID string, name string) {
 	t.Helper()
 
 	foundAssistant := false
@@ -361,8 +359,8 @@ func assertToolMessage(t *testing.T, messages []llm.Message, toolCallID string, 
 	}
 }
 
-func chatResponse(msg llm.Message) *llm.ChatCompletionResponse {
-	return &llm.ChatCompletionResponse{
+func chatResponse(msg openai.ChatCompletionMessage) *openai.ChatCompletionResponse {
+	return &openai.ChatCompletionResponse{
 		Choices: []openai.ChatCompletionChoice{
 			{
 				Message: msg,
@@ -371,8 +369,8 @@ func chatResponse(msg llm.Message) *llm.ChatCompletionResponse {
 	}
 }
 
-func message(role string, content string, toolCalls []openai.ToolCall) llm.Message {
-	return llm.Message{
+func message(role string, content string, toolCalls []openai.ToolCall) openai.ChatCompletionMessage {
+	return openai.ChatCompletionMessage{
 		Role:      role,
 		Content:   content,
 		ToolCalls: toolCalls,
@@ -388,4 +386,14 @@ func toolCall(id string, name string, arguments string) openai.ToolCall {
 			Arguments: arguments,
 		},
 	}
+}
+
+func writeTempFile(t *testing.T, content string) string {
+	t.Helper()
+
+	path := t.TempDir() + "/input.txt"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
 }

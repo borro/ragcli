@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/borro/ragcli/internal/config"
 	"github.com/borro/ragcli/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -19,50 +18,44 @@ type fakeEmbedder struct {
 	totalTokens int
 }
 
-func (f *fakeEmbedder) CreateEmbeddingsWithMetrics(_ context.Context, inputs []string) (*llm.EmbeddingResult, error) {
+func (f *fakeEmbedder) CreateEmbeddingsWithMetrics(_ context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
 	f.calls++
 	vectors := make([][]float32, 0, len(inputs))
 	for _, input := range inputs {
 		vectors = append(vectors, vectorFor(input))
 	}
 	f.totalTokens += len(inputs) * 7
-	return &llm.EmbeddingResult{
-		Vectors: vectors,
-		Metrics: llm.EmbeddingMetrics{
-			Attempt:      1,
-			InputCount:   len(inputs),
-			VectorCount:  len(vectors),
-			TotalTokens:  len(inputs) * 7,
-			PromptTokens: len(inputs) * 7,
-		},
+	return vectors, llm.EmbeddingMetrics{
+		Attempt:      1,
+		InputCount:   len(inputs),
+		VectorCount:  len(vectors),
+		TotalTokens:  len(inputs) * 7,
+		PromptTokens: len(inputs) * 7,
 	}, nil
 }
 
 type fakeChat struct {
-	requests []llm.ChatCompletionRequest
+	requests []openai.ChatCompletionRequest
 	answer   string
 }
 
-func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req llm.ChatCompletionRequest) (*llm.RequestResult, error) {
+func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
 	f.requests = append(f.requests, req)
-	return &llm.RequestResult{
-		Response: &llm.ChatCompletionResponse{
+	return &openai.ChatCompletionResponse{
 			Choices: []openai.ChatCompletionChoice{
 				{
-					Message: llm.Message{
+					Message: openai.ChatCompletionMessage{
 						Role:    "assistant",
 						Content: f.answer,
 					},
 				},
 			},
-		},
-		Metrics: llm.RequestMetrics{
+		}, llm.RequestMetrics{
 			Attempt:          1,
 			PromptTokens:     11,
 			CompletionTokens: 5,
 			TotalTokens:      16,
-		},
-	}, nil
+		}, nil
 }
 
 func TestChunkTextPreservesLineRanges(t *testing.T) {
@@ -104,12 +97,12 @@ func TestChunkTextIgnoresTrailingNewlinePhantomLine(t *testing.T) {
 
 func TestBuildOrLoadIndexUsesCacheAndInvalidatesByModel(t *testing.T) {
 	tempDir := t.TempDir()
-	cfg := &config.Config{
-		EmbeddingModel:  "embed-v1",
-		RAGChunkSize:    40,
-		RAGChunkOverlap: 8,
-		RAGIndexTTL:     time.Hour,
-		RAGIndexDir:     tempDir,
+	cfg := Options{
+		EmbeddingModel: "embed-v1",
+		ChunkSize:      40,
+		ChunkOverlap:   8,
+		IndexTTL:       time.Hour,
+		IndexDir:       tempDir,
 	}
 	embedder := &fakeEmbedder{}
 	source := Source{
@@ -160,15 +153,15 @@ func TestBuildOrLoadIndexUsesCacheAndInvalidatesByModel(t *testing.T) {
 }
 
 func TestRunReturnsAnswerWithCitations(t *testing.T) {
-	cfg := &config.Config{
-		EmbeddingModel:  "embed",
-		RAGTopK:         3,
-		RAGFinalK:       2,
-		RAGChunkSize:    55,
-		RAGChunkOverlap: 10,
-		RAGIndexTTL:     time.Hour,
-		RAGIndexDir:     t.TempDir(),
-		RAGRerank:       "heuristic",
+	cfg := Options{
+		EmbeddingModel: "embed",
+		TopK:           3,
+		FinalK:         2,
+		ChunkSize:      55,
+		ChunkOverlap:   10,
+		IndexTTL:       time.Hour,
+		IndexDir:       t.TempDir(),
+		Rerank:         "heuristic",
 	}
 	embedder := &fakeEmbedder{}
 	chat := &fakeChat{answer: "Retry policy is enabled for failed requests [source 1]."}
@@ -204,15 +197,15 @@ func TestRunReturnsAnswerWithCitations(t *testing.T) {
 }
 
 func TestRunReturnsHonestInsufficientAnswer(t *testing.T) {
-	cfg := &config.Config{
-		EmbeddingModel:  "embed",
-		RAGTopK:         3,
-		RAGFinalK:       2,
-		RAGChunkSize:    80,
-		RAGChunkOverlap: 10,
-		RAGIndexTTL:     time.Hour,
-		RAGIndexDir:     t.TempDir(),
-		RAGRerank:       "heuristic",
+	cfg := Options{
+		EmbeddingModel: "embed",
+		TopK:           3,
+		FinalK:         2,
+		ChunkSize:      80,
+		ChunkOverlap:   10,
+		IndexTTL:       time.Hour,
+		IndexDir:       t.TempDir(),
+		Rerank:         "heuristic",
 	}
 	answer, err := Run(context.Background(), &fakeChat{answer: "should not be used"}, &fakeEmbedder{}, Source{
 		DisplayName: "stdin",
@@ -231,15 +224,15 @@ func TestRunReturnsHonestInsufficientAnswer(t *testing.T) {
 
 func TestPersistedIndexFilesExist(t *testing.T) {
 	tempDir := t.TempDir()
-	cfg := &config.Config{
-		EmbeddingModel:  "embed",
-		RAGTopK:         2,
-		RAGFinalK:       1,
-		RAGChunkSize:    40,
-		RAGChunkOverlap: 8,
-		RAGIndexTTL:     time.Hour,
-		RAGIndexDir:     tempDir,
-		RAGRerank:       "off",
+	cfg := Options{
+		EmbeddingModel: "embed",
+		TopK:           2,
+		FinalK:         1,
+		ChunkSize:      40,
+		ChunkOverlap:   8,
+		IndexTTL:       time.Hour,
+		IndexDir:       tempDir,
+		Rerank:         "off",
 	}
 	source := Source{
 		Path:        "/tmp/source.txt",
@@ -307,15 +300,15 @@ func TestPersistIndexUsesPrivatePermissions(t *testing.T) {
 }
 
 func TestBuildOrLoadIndexConcurrentWritersSharePublishedIndex(t *testing.T) {
-	cfg := &config.Config{
-		EmbeddingModel:  "embed",
-		RAGTopK:         2,
-		RAGFinalK:       1,
-		RAGChunkSize:    40,
-		RAGChunkOverlap: 8,
-		RAGIndexTTL:     time.Hour,
-		RAGIndexDir:     t.TempDir(),
-		RAGRerank:       "off",
+	cfg := Options{
+		EmbeddingModel: "embed",
+		TopK:           2,
+		FinalK:         1,
+		ChunkSize:      40,
+		ChunkOverlap:   8,
+		IndexTTL:       time.Hour,
+		IndexDir:       t.TempDir(),
+		Rerank:         "off",
 	}
 
 	embedder := &fakeEmbedder{}
@@ -346,7 +339,7 @@ func TestBuildOrLoadIndexConcurrentWritersSharePublishedIndex(t *testing.T) {
 	}
 
 	hash := hashInput([]byte(content), "source.txt", cfg)
-	indexDir := filepath.Join(cfg.RAGIndexDir, hash)
+	indexDir := filepath.Join(cfg.IndexDir, hash)
 	for _, name := range []string{manifestFilename, chunksFilename, embeddingsFilename} {
 		if _, err := os.Stat(filepath.Join(indexDir, name)); err != nil {
 			t.Fatalf("expected published index file %s: %v", name, err)

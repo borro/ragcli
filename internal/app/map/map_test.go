@@ -1,4 +1,4 @@
-package processor
+package mapmode
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/borro/ragcli/internal/config"
 	"github.com/borro/ragcli/internal/llm"
 )
 
@@ -212,7 +211,7 @@ func TestSplitByLines_LargeInput(t *testing.T) {
 	}
 }
 
-func TestRunSRMR_EndToEndWithRefine(t *testing.T) {
+func TestRun_EndToEndWithRefine(t *testing.T) {
 	client := newSequencedLLMClient(t, []string{
 		"fact from chunk 1",
 		"fact from chunk 2",
@@ -222,69 +221,65 @@ func TestRunSRMR_EndToEndWithRefine(t *testing.T) {
 		"refined answer",
 	}, nil)
 
-	result, err := RunSRMR(context.Background(), client, strings.NewReader("aaa\nbbb\n"), &config.Config{
+	result, err := Run(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
 		InputPath:   "input.txt",
 		ChunkLength: 3,
 		Concurrency: 1,
-		RetryCount:  0,
 	}, "Что в файле?")
 	if err != nil {
-		t.Fatalf("RunSRMR() error = %v", err)
+		t.Fatalf("Run() error = %v", err)
 	}
 	if result != "refined answer" {
-		t.Fatalf("RunSRMR() result = %q, want %q", result, "refined answer")
+		t.Fatalf("Run() result = %q, want %q", result, "refined answer")
 	}
 }
 
-func TestRunSRMR_EmptyInput(t *testing.T) {
+func TestRun_EmptyInput(t *testing.T) {
 	client := newSequencedLLMClient(t, nil, nil)
 
-	result, err := RunSRMR(context.Background(), client, strings.NewReader(""), &config.Config{
+	result, err := Run(context.Background(), client, strings.NewReader(""), Options{
 		InputPath:   "input.txt",
 		ChunkLength: 10,
 		Concurrency: 1,
-		RetryCount:  0,
 	}, "Что в файле?")
 	if err != nil {
-		t.Fatalf("RunSRMR() error = %v", err)
+		t.Fatalf("Run() error = %v", err)
 	}
 	if result != "Файл пустой" {
-		t.Fatalf("RunSRMR() result = %q, want %q", result, "Файл пустой")
+		t.Fatalf("Run() result = %q, want %q", result, "Файл пустой")
 	}
 }
 
-func TestRunSRMR_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
+func TestRun_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
 	t.Run("all map requests skip", func(t *testing.T) {
 		client := newSequencedLLMClient(t, []string{"SKIP", "SKIP"}, nil)
 
-		result, err := RunSRMR(context.Background(), client, strings.NewReader("aaa\nbbb\n"), &config.Config{
+		result, err := Run(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
 			InputPath:   "input.txt",
 			ChunkLength: 3,
 			Concurrency: 1,
-			RetryCount:  0,
 		}, "Что в файле?")
 		if err != nil {
-			t.Fatalf("RunSRMR() error = %v", err)
+			t.Fatalf("Run() error = %v", err)
 		}
 		if result != "Нет информации для ответа" {
-			t.Fatalf("RunSRMR() result = %q, want %q", result, "Нет информации для ответа")
+			t.Fatalf("Run() result = %q, want %q", result, "Нет информации для ответа")
 		}
 	})
 
 	t.Run("map requests fail", func(t *testing.T) {
 		client := newSequencedLLMClient(t, nil, []int{http.StatusInternalServerError, http.StatusInternalServerError})
 
-		result, err := RunSRMR(context.Background(), client, strings.NewReader("aaa\nbbb\n"), &config.Config{
+		result, err := Run(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
 			InputPath:   "input.txt",
 			ChunkLength: 3,
 			Concurrency: 1,
-			RetryCount:  0,
 		}, "Что в файле?")
 		if err != nil {
-			t.Fatalf("RunSRMR() error = %v", err)
+			t.Fatalf("Run() error = %v", err)
 		}
 		if result != "Нет информации для ответа" {
-			t.Fatalf("RunSRMR() result = %q, want %q", result, "Нет информации для ответа")
+			t.Fatalf("Run() result = %q, want %q", result, "Нет информации для ответа")
 		}
 	})
 }

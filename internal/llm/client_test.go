@@ -134,7 +134,7 @@ func TestSendRequest_CreatesRequest(t *testing.T) {
 				})
 			}
 
-			req := ChatCompletionRequest{
+			req := openai.ChatCompletionRequest{
 				Messages: messages,
 			}
 
@@ -186,7 +186,7 @@ func TestSendRequest_ContextCancelled(t *testing.T) {
 				},
 			}
 
-			req := ChatCompletionRequest{
+			req := openai.ChatCompletionRequest{
 				Messages: messages,
 			}
 
@@ -250,7 +250,7 @@ func TestSendRequest_ExhaustedRetries(t *testing.T) {
 				},
 			}
 
-			req := ChatCompletionRequest{
+			req := openai.ChatCompletionRequest{
 				Messages: messages,
 			}
 
@@ -269,12 +269,12 @@ func TestSendRequest_ExhaustedRetries(t *testing.T) {
 func TestChatCompletionRequest_Structure(t *testing.T) {
 	tests := []struct {
 		name string
-		req  ChatCompletionRequest
+		req  openai.ChatCompletionRequest
 		want int
 	}{
 		{
 			name: "simple request",
-			req: ChatCompletionRequest{
+			req: openai.ChatCompletionRequest{
 				Messages: []openai.ChatCompletionMessage{
 					{
 						Role:    "user",
@@ -286,7 +286,7 @@ func TestChatCompletionRequest_Structure(t *testing.T) {
 		},
 		{
 			name: "request with tools",
-			req: ChatCompletionRequest{
+			req: openai.ChatCompletionRequest{
 				Messages: []openai.ChatCompletionMessage{
 					{
 						Role:    "user",
@@ -307,7 +307,7 @@ func TestChatCompletionRequest_Structure(t *testing.T) {
 		},
 		{
 			name: "request with tool choice",
-			req: ChatCompletionRequest{
+			req: openai.ChatCompletionRequest{
 				Messages: []openai.ChatCompletionMessage{},
 				Tools: []openai.Tool{
 					{
@@ -360,21 +360,21 @@ func TestSendRequestWithMetrics_UsageAndTPS(t *testing.T) {
 		}, nil
 	}
 
-	result, err := client.SendRequestWithMetrics(context.Background(), ChatCompletionRequest{
+	_, metrics, err := client.SendRequestWithMetrics(context.Background(), openai.ChatCompletionRequest{
 		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
 	})
 	if err != nil {
 		t.Fatalf("SendRequestWithMetrics() error = %v", err)
 	}
 
-	if result.Metrics.PromptTokens != 10 || result.Metrics.CompletionTokens != 20 || result.Metrics.TotalTokens != 30 {
-		t.Fatalf("metrics token usage = %+v, want 10/20/30", result.Metrics)
+	if metrics.PromptTokens != 10 || metrics.CompletionTokens != 20 || metrics.TotalTokens != 30 {
+		t.Fatalf("metrics token usage = %+v, want 10/20/30", metrics)
 	}
-	if result.Metrics.TokensPerSecond <= 0 {
-		t.Fatalf("TokensPerSecond = %v, want > 0", result.Metrics.TokensPerSecond)
+	if metrics.TokensPerSecond <= 0 {
+		t.Fatalf("TokensPerSecond = %v, want > 0", metrics.TokensPerSecond)
 	}
-	if result.Metrics.Attempt != 1 {
-		t.Fatalf("Attempt = %d, want 1", result.Metrics.Attempt)
+	if metrics.Attempt != 1 {
+		t.Fatalf("Attempt = %d, want 1", metrics.Attempt)
 	}
 }
 
@@ -393,14 +393,14 @@ func TestSendRequestWithMetrics_ZeroCompletionTokensNoTPS(t *testing.T) {
 		}, nil
 	}
 
-	result, err := client.SendRequestWithMetrics(context.Background(), ChatCompletionRequest{
+	_, metrics, err := client.SendRequestWithMetrics(context.Background(), openai.ChatCompletionRequest{
 		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
 	})
 	if err != nil {
 		t.Fatalf("SendRequestWithMetrics() error = %v", err)
 	}
-	if result.Metrics.TokensPerSecond != 0 {
-		t.Fatalf("TokensPerSecond = %v, want 0", result.Metrics.TokensPerSecond)
+	if metrics.TokensPerSecond != 0 {
+		t.Fatalf("TokensPerSecond = %v, want 0", metrics.TokensPerSecond)
 	}
 }
 
@@ -424,7 +424,7 @@ func TestSendRequestWithMetrics_RetryUsesSuccessfulAttemptMetrics(t *testing.T) 
 		}, nil
 	}
 
-	result, err := client.SendRequestWithMetrics(context.Background(), ChatCompletionRequest{
+	_, metrics, err := client.SendRequestWithMetrics(context.Background(), openai.ChatCompletionRequest{
 		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
 	})
 	if err != nil {
@@ -434,11 +434,34 @@ func TestSendRequestWithMetrics_RetryUsesSuccessfulAttemptMetrics(t *testing.T) 
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
 	}
-	if result.Metrics.Attempt != 2 {
-		t.Fatalf("Attempt = %d, want 2", result.Metrics.Attempt)
+	if metrics.Attempt != 2 {
+		t.Fatalf("Attempt = %d, want 2", metrics.Attempt)
 	}
-	if result.Metrics.TotalTokens != 10 {
-		t.Fatalf("TotalTokens = %d, want 10", result.Metrics.TotalTokens)
+	if metrics.TotalTokens != 10 {
+		t.Fatalf("TotalTokens = %d, want 10", metrics.TotalTokens)
+	}
+}
+
+func TestSendRequestWithMetrics_ExplicitModelOverridesDefault(t *testing.T) {
+	client := NewClient("", "default-model", "", 0)
+	client.doRequest = func(_ context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+		if req.Model != "override-model" {
+			t.Fatalf("Model = %q, want override-model", req.Model)
+		}
+		return openai.ChatCompletionResponse{
+			Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}}},
+		}, nil
+	}
+
+	_, metrics, err := client.SendRequestWithMetrics(context.Background(), openai.ChatCompletionRequest{
+		Model:    "override-model",
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("SendRequestWithMetrics() error = %v", err)
+	}
+	if metrics.Model != "override-model" {
+		t.Fatalf("metrics.Model = %q, want override-model", metrics.Model)
 	}
 }
 
@@ -475,18 +498,18 @@ func TestCreateEmbeddingsWithMetrics(t *testing.T) {
 		}, nil
 	}
 
-	result, err := embedder.CreateEmbeddingsWithMetrics(context.Background(), []string{"alpha", "beta"})
+	vectors, metrics, err := embedder.CreateEmbeddingsWithMetrics(context.Background(), []string{"alpha", "beta"})
 	if err != nil {
 		t.Fatalf("CreateEmbeddingsWithMetrics() error = %v", err)
 	}
-	if len(result.Vectors) != 2 {
-		t.Fatalf("len(Vectors) = %d, want 2", len(result.Vectors))
+	if len(vectors) != 2 {
+		t.Fatalf("len(Vectors) = %d, want 2", len(vectors))
 	}
-	if result.Metrics.InputCount != 2 || result.Metrics.VectorCount != 2 {
-		t.Fatalf("metrics = %+v, want input/vector count 2", result.Metrics)
+	if metrics.InputCount != 2 || metrics.VectorCount != 2 {
+		t.Fatalf("metrics = %+v, want input/vector count 2", metrics)
 	}
-	if result.Metrics.TotalTokens != 12 {
-		t.Fatalf("TotalTokens = %d, want 12", result.Metrics.TotalTokens)
+	if metrics.TotalTokens != 12 {
+		t.Fatalf("TotalTokens = %d, want 12", metrics.TotalTokens)
 	}
 }
 

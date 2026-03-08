@@ -1,4 +1,4 @@
-package processor
+package mapmode
 
 import (
 	"bufio"
@@ -11,9 +11,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/borro/ragcli/internal/config"
 	"github.com/borro/ragcli/internal/llm"
+	openai "github.com/sashabaranov/go-openai"
 )
+
+type Options struct {
+	InputPath   string
+	Concurrency int
+	ChunkLength int
+}
 
 const separator = "\n\n---\n\n"
 
@@ -118,21 +124,21 @@ const refinePrompt = `
 // LLM helper
 //
 
-func callLLM(ctx context.Context, client *llm.Client, messages []llm.Message, callCtx llmCallContext, stats *pipelineStats) (string, error) {
-	req := llm.ChatCompletionRequest{
+func callLLM(ctx context.Context, client llm.ChatRequester, messages []openai.ChatCompletionMessage, callCtx llmCallContext, stats *pipelineStats) (string, error) {
+	req := openai.ChatCompletionRequest{
 		Messages: messages,
 	}
 
-	result, err := client.SendRequestWithMetrics(ctx, req)
+	resp, metrics, err := client.SendRequestWithMetrics(ctx, req)
 	if err != nil {
 		return "", err
 	}
 
 	if stats != nil {
 		stats.LLMCalls++
-		stats.PromptTokens += result.Metrics.PromptTokens
-		stats.CompletionTokens += result.Metrics.CompletionTokens
-		stats.TotalTokens += result.Metrics.TotalTokens
+		stats.PromptTokens += metrics.PromptTokens
+		stats.CompletionTokens += metrics.CompletionTokens
+		stats.TotalTokens += metrics.TotalTokens
 	}
 
 	logArgs := []any{"stage", callCtx.Stage}
@@ -152,7 +158,6 @@ func callLLM(ctx context.Context, client *llm.Client, messages []llm.Message, ca
 	}
 	slog.Debug("map-reduce llm call completed", logArgs...)
 
-	resp := result.Response
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("empty response")
 	}
@@ -164,10 +169,10 @@ func callLLM(ctx context.Context, client *llm.Client, messages []llm.Message, ca
 // message builders
 //
 
-func mapMessages(question, chunk string) []llm.Message {
+func mapMessages(question, chunk string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeChunk := sanitizeUntrustedBlock(chunk)
-	return []llm.Message{
+	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: mapPrompt},
 		{
 			Role: "user",
@@ -179,10 +184,10 @@ func mapMessages(question, chunk string) []llm.Message {
 	}
 }
 
-func reduceMessages(question, facts string) []llm.Message {
+func reduceMessages(question, facts string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeFacts := normalizeFactOutput(facts, 10)
-	return []llm.Message{
+	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: reducePrompt},
 		{
 			Role: "user",
@@ -194,10 +199,10 @@ func reduceMessages(question, facts string) []llm.Message {
 	}
 }
 
-func finalMessages(question, facts string) []llm.Message {
+func finalMessages(question, facts string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeFacts := normalizeFactOutput(facts, 10)
-	return []llm.Message{
+	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: finalPrompt},
 		{
 			Role: "user",
@@ -209,11 +214,11 @@ func finalMessages(question, facts string) []llm.Message {
 	}
 }
 
-func critiqueMessages(question, facts, answer string) []llm.Message {
+func critiqueMessages(question, facts, answer string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeFacts := normalizeFactOutput(facts, 10)
 	safeAnswer := sanitizeUntrustedBlock(answer)
-	return []llm.Message{
+	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: critiquePrompt},
 		{
 			Role: "user",
@@ -226,12 +231,12 @@ func critiqueMessages(question, facts, answer string) []llm.Message {
 	}
 }
 
-func refineMessages(question, facts, answer, critique string) []llm.Message {
+func refineMessages(question, facts, answer, critique string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeFacts := normalizeFactOutput(facts, 10)
 	safeAnswer := sanitizeUntrustedBlock(answer)
 	safeCritique := sanitizeUntrustedBlock(critique)
-	return []llm.Message{
+	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: refinePrompt},
 		{
 			Role: "user",
@@ -397,7 +402,7 @@ func SplitByLines(r io.Reader, maxLen int) ([]string, error) {
 // MAP
 //
 
-func runMapParallel(ctx context.Context, client *llm.Client, chunks []string, question string, workers int, stats *pipelineStats) ([]string, error) {
+func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []string, question string, workers int, stats *pipelineStats) ([]string, error) {
 	slog.Debug("map phase started", "chunk_count", len(chunks), "workers", workers)
 
 	type mapJob struct {
@@ -514,8 +519,8 @@ func batchStrings(items []string, size int) [][]string {
 // REDUCE
 //
 
-func fanInReduce(ctx context.Context, client *llm.Client, results []string, question string, cfg *config.Config, stats *pipelineStats) (string, error) {
-	reduceBatchSize := cfg.Concurrency
+func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string, question string, opts Options, stats *pipelineStats) (string, error) {
+	reduceBatchSize := opts.Concurrency
 	if reduceBatchSize < 2 {
 		reduceBatchSize = 2
 	}
@@ -565,7 +570,7 @@ func fanInReduce(ctx context.Context, client *llm.Client, results []string, ques
 // SELF REFINEMENT
 //
 
-func selfRefine(ctx context.Context, client *llm.Client, question, facts, answer string, stats *pipelineStats) (string, error) {
+func selfRefine(ctx context.Context, client llm.ChatRequester, question, facts, answer string, stats *pipelineStats) (string, error) {
 	slog.Debug("self-refine critique started")
 
 	critique, err := callLLM(ctx, client, critiqueMessages(question, facts, answer), llmCallContext{Stage: "self_refine_critique"}, stats)
@@ -586,32 +591,32 @@ func selfRefine(ctx context.Context, client *llm.Client, question, facts, answer
 // PIPELINE
 //
 
-func RunSRMR(ctx context.Context, client *llm.Client, input io.Reader, cfg *config.Config, question string) (string, error) {
+func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Options, question string) (string, error) {
 	startedAt := time.Now()
 	inputMode := "stdin"
-	if cfg.InputPath != "" {
+	if opts.InputPath != "" {
 		inputMode = "file"
 	}
 	stats := &pipelineStats{}
 
 	slog.Debug("map-reduce pipeline started",
 		"input_mode", inputMode,
-		"chunk_length", cfg.ChunkLength,
-		"concurrency", cfg.Concurrency,
+		"chunk_length", opts.ChunkLength,
+		"concurrency", opts.Concurrency,
 	)
 
-	chunks, err := SplitByLines(input, cfg.ChunkLength)
+	chunks, err := SplitByLines(input, opts.ChunkLength)
 	if err != nil {
 		return "", err
 	}
 	slog.Debug("split into chunks", "chunk_count", len(chunks))
 
 	if len(chunks) == 0 {
-		slog.Debug("map-reduce pipeline finished", "reason", "empty_input", "duration_ms", time.Since(startedAt).Milliseconds())
+		slog.Debug("map-reduce pipeline finished", "reason", "empty_input", "duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second))
 		return "Файл пустой", nil
 	}
 
-	mapResults, err := runMapParallel(ctx, client, chunks, question, cfg.Concurrency, stats)
+	mapResults, err := runMapParallel(ctx, client, chunks, question, opts.Concurrency, stats)
 	if err != nil {
 		return "", err
 	}
@@ -619,7 +624,7 @@ func RunSRMR(ctx context.Context, client *llm.Client, input io.Reader, cfg *conf
 	if len(mapResults) == 0 {
 		slog.Debug("map-reduce pipeline finished",
 			"reason", "no_map_results",
-			"duration_ms", time.Since(startedAt).Milliseconds(),
+			"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
 			"llm_calls", stats.LLMCalls,
 			"prompt_tokens", stats.PromptTokens,
 			"completion_tokens", stats.CompletionTokens,
@@ -632,7 +637,7 @@ func RunSRMR(ctx context.Context, client *llm.Client, input io.Reader, cfg *conf
 	}
 
 	slog.Debug("reduce phase started", "input_items", len(mapResults))
-	facts, err := fanInReduce(ctx, client, mapResults, question, cfg, stats)
+	facts, err := fanInReduce(ctx, client, mapResults, question, opts, stats)
 	if err != nil {
 		return "", err
 	}
@@ -650,7 +655,7 @@ func RunSRMR(ctx context.Context, client *llm.Client, input io.Reader, cfg *conf
 
 	slog.Debug("map-reduce pipeline finished",
 		"reason", "success",
-		"duration_ms", time.Since(startedAt).Milliseconds(),
+		"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
 		"llm_calls", stats.LLMCalls,
 		"prompt_tokens", stats.PromptTokens,
 		"completion_tokens", stats.CompletionTokens,

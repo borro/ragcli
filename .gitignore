@@ -1,5 +1,7 @@
 ragcli
 REQUIREMENTS.md
+.idea/
+.kilocode/
 
 # Package managers
 */.go/
