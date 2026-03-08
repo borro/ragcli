@@ -122,7 +122,7 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 	ranked := retrieve(index, queryEmbedding, question, opts)
 	if len(ranked) == 0 || retrievalTooWeak(ranked) {
 		slog.Debug("rag retrieval insufficient",
-			"duration_ms", time.Since(startedAt).Milliseconds(),
+			"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
 			"chunk_count", stats.ChunkCount,
 			"embedding_calls", stats.EmbeddingCalls,
 			"embedding_tokens", stats.EmbeddingTokens,
@@ -142,7 +142,7 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 	}
 
 	slog.Debug("rag processing finished",
-		"duration_ms", time.Since(startedAt).Milliseconds(),
+		"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
 		"chunk_count", stats.ChunkCount,
 		"embedding_calls", stats.EmbeddingCalls,
 		"embedding_tokens", stats.EmbeddingTokens,

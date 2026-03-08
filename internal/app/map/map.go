@@ -612,7 +612,7 @@ func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Op
 	slog.Debug("split into chunks", "chunk_count", len(chunks))
 
 	if len(chunks) == 0 {
-		slog.Debug("map-reduce pipeline finished", "reason", "empty_input", "duration_ms", time.Since(startedAt).Milliseconds())
+		slog.Debug("map-reduce pipeline finished", "reason", "empty_input", "duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second))
 		return "Файл пустой", nil
 	}
 
@@ -624,7 +624,7 @@ func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Op
 	if len(mapResults) == 0 {
 		slog.Debug("map-reduce pipeline finished",
 			"reason", "no_map_results",
-			"duration_ms", time.Since(startedAt).Milliseconds(),
+			"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
 			"llm_calls", stats.LLMCalls,
 			"prompt_tokens", stats.PromptTokens,
 			"completion_tokens", stats.CompletionTokens,
@@ -655,7 +655,7 @@ func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Op
 
 	slog.Debug("map-reduce pipeline finished",
 		"reason", "success",
-		"duration_ms", time.Since(startedAt).Milliseconds(),
+		"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
 		"llm_calls", stats.LLMCalls,
 		"prompt_tokens", stats.PromptTokens,
 		"completion_tokens", stats.CompletionTokens,

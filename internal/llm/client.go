@@ -138,7 +138,7 @@ func (c *Client) SendRequestWithMetrics(ctx context.Context, req openai.ChatComp
 				"message_count", metrics.MessageCount,
 				"tool_count", metrics.ToolCount,
 				"tool_choice", metrics.ToolChoice,
-				"duration_ms", metrics.Duration.Milliseconds(),
+				"duration", float64(metrics.Duration.Round(time.Millisecond))/float64(time.Second),
 				"choice_count", metrics.ChoiceCount,
 				"has_tool_calls", metrics.HasToolCalls,
 				"prompt_tokens", metrics.PromptTokens,
@@ -155,7 +155,7 @@ func (c *Client) SendRequestWithMetrics(ctx context.Context, req openai.ChatComp
 			"message_count", len(req.Messages),
 			"tool_count", len(req.Tools),
 			"tool_choice", toolChoice,
-			"duration_ms", elapsed.Milliseconds(),
+			"duration", float64(elapsed.Round(time.Millisecond))/float64(time.Second),
 			"error", err,
 		)
 
@@ -292,7 +292,7 @@ func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []str
 				"attempt", metrics.Attempt,
 				"input_count", metrics.InputCount,
 				"vector_count", metrics.VectorCount,
-				"duration_ms", metrics.Duration.Milliseconds(),
+				"duration", float64(metrics.Duration.Round(time.Millisecond))/float64(time.Second),
 				"prompt_tokens", metrics.PromptTokens,
 				"total_tokens", metrics.TotalTokens,
 			)
@@ -303,7 +303,7 @@ func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []str
 			"model", e.model,
 			"attempt", attempt,
 			"input_count", len(req.Input),
-			"duration_ms", elapsed.Milliseconds(),
+			"duration", float64(elapsed.Round(time.Millisecond))/float64(time.Second),
 			"error", err,
 		)
 

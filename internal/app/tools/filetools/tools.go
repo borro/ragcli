@@ -618,7 +618,7 @@ func LogToolCallFinished(call openai.ToolCall, duration time.Duration, status st
 		"tool_name", call.Function.Name,
 		"tool_call_id", call.ID,
 		"status", status,
-		"duration_ms", duration.Milliseconds(),
+		"duration", float64(duration.Round(time.Millisecond)) / float64(time.Second),
 	}
 	for key, value := range summary {
 		logArgs = append(logArgs, key, value)
@@ -631,7 +631,7 @@ func LogToolCallError(call openai.ToolCall, duration time.Duration, err error) {
 	logArgs := []any{
 		"tool_name", call.Function.Name,
 		"tool_call_id", call.ID,
-		"duration_ms", duration.Milliseconds(),
+		"duration", float64(duration.Round(time.Millisecond)) / float64(time.Second),
 		"error_code", toolErr.Code,
 		"retryable", toolErr.Retryable,
 		"error", toolErr.Message,
