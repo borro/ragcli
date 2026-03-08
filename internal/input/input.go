@@ -6,6 +6,23 @@ import (
 	"os"
 )
 
+type readCloser interface {
+	io.Reader
+	io.Closer
+}
+
+type tempFile interface {
+	io.Writer
+	io.Closer
+	Name() string
+}
+
+var (
+	openFile     = func(path string) (readCloser, error) { return os.Open(path) }
+	createTemp   = func(dir, pattern string) (tempFile, error) { return os.CreateTemp(dir, pattern) }
+	defaultStdin = func() io.Reader { return os.Stdin }
+)
+
 type Handle struct {
 	Reader      io.Reader
 	Path        string
@@ -16,7 +33,7 @@ type Handle struct {
 
 func Open(path string, stdin io.Reader) (*Handle, error) {
 	if path != "" {
-		file, err := os.Open(path)
+		file, err := openFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open file: %w", err)
 		}
@@ -29,10 +46,10 @@ func Open(path string, stdin io.Reader) (*Handle, error) {
 	}
 
 	if stdin == nil {
-		stdin = os.Stdin
+		stdin = defaultStdin()
 	}
 
-	tmpFile, err := os.CreateTemp("", "ragcli-stdin-*.txt")
+	tmpFile, err := createTemp("", "ragcli-stdin-*.txt")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
@@ -47,7 +64,7 @@ func Open(path string, stdin io.Reader) (*Handle, error) {
 		return nil, fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	reader, err := os.Open(tmpFile.Name())
+	reader, err := openFile(tmpFile.Name())
 	if err != nil {
 		_ = os.Remove(tmpFile.Name())
 		return nil, fmt.Errorf("failed to reopen temp file: %w", err)
