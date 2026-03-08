@@ -1,9 +1,11 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -349,6 +351,69 @@ func TestRunTools_SystemPromptMentionsAgentPolicy(t *testing.T) {
 	}
 	if !strings.Contains(systemPrompt, "Не повторяй один и тот же вызов") {
 		t.Fatalf("system prompt = %q, want duplicate guardrail", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "нельзя просить пользователя повторно прислать файл") {
+		t.Fatalf("system prompt = %q, want no re-upload instruction", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "инструменты не были использованы") {
+		t.Fatalf("system prompt = %q, want backend limitation guidance", systemPrompt)
+	}
+}
+
+func TestRunTools_UserPromptMentionsToolsFileContext(t *testing.T) {
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "ok", nil)),
+		},
+	}
+
+	filePath := "/tmp/rest2push.log"
+	_, err := Run(context.Background(), client, filePath, "Есть ли тут явные критические ошибки?", Options{})
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+
+	userPrompt := client.requests[0].Messages[1].Content
+	if !strings.Contains(userPrompt, "Файл уже доступен через инструменты") {
+		t.Fatalf("user prompt = %q, want tools file context", userPrompt)
+	}
+	if !strings.Contains(userPrompt, `Имя файла для анализа: "rest2push.log".`) {
+		t.Fatalf("user prompt = %q, want file name", userPrompt)
+	}
+	if !strings.Contains(userPrompt, `Вопрос: "Есть ли тут явные критические ошибки?"`) {
+		t.Fatalf("user prompt = %q, want original question", userPrompt)
+	}
+}
+
+func TestRunTools_WarnsWhenFirstAnswerSkipsTools(t *testing.T) {
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "Не вижу файла, пришлите его.", nil)),
+		},
+	}
+
+	original := slog.Default()
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() {
+		slog.SetDefault(original)
+	})
+
+	result, err := Run(context.Background(), client, "/tmp/rest2push.log", "Есть ли тут явные критические ошибки?", Options{})
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "Не вижу файла, пришлите его." {
+		t.Fatalf("RunTools() result = %q, want direct answer preserved", result)
+	}
+
+	output := logs.String()
+	if !strings.Contains(output, "tools backend returned a direct answer without using file tools") {
+		t.Fatalf("logs = %q, want warning about skipped tools", output)
+	}
+	if !strings.Contains(output, "file_path=/tmp/rest2push.log") {
+		t.Fatalf("logs = %q, want file path in warning", output)
 	}
 }
 

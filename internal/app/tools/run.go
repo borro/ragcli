@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/borro/ragcli/internal/app/tools/filetools"
@@ -74,7 +76,7 @@ type toolExecutionMeta struct {
 	SuggestedNextOffset int    `json:"suggested_next_offset,omitempty"`
 }
 
-func NewToolsConfig(prompt string) toolsConfig {
+func NewToolsConfig(prompt string, filePath string) toolsConfig {
 	tools := []openai.Tool{
 		{
 			Type: "function",
@@ -161,6 +163,10 @@ func NewToolsConfig(prompt string) toolsConfig {
 	systemMessage := openai.ChatCompletionMessage{
 		Role: "system",
 		Content: `Ты — ИИ-агент по исследованию большого файла.
+Файл уже подключён к текущей сессии через инструменты, поэтому нельзя просить пользователя повторно прислать файл, вставить его содержимое или уточнить, какой файл анализировать.
+Если для ответа нужен доступ к содержимому файла, ты обязан использовать инструменты search_file, read_lines и read_around.
+Ответы вида "уточните файл", "пришлите файл" или "вставьте содержимое" считаются некорректными.
+Если backend или модель не дали возможности использовать инструменты и данных недостаточно, честно скажи, что инструменты не были использованы и поэтому ты не смог проверить файл.
 Отвечай на вопрос пользователя только на основе информации, найденной через инструменты search_file, read_lines и read_around.
 Сначала сформулируй короткий план поиска одним предложением, затем вызывай инструменты.
 Стратегия: сначала делай узкий поиск, затем дочитывай локальный контекст, и только потом расширяй поиск или переходи к следующей странице.
@@ -176,7 +182,7 @@ func NewToolsConfig(prompt string) toolsConfig {
 
 	userQuestion := openai.ChatCompletionMessage{
 		Role:    "user",
-		Content: fmt.Sprintf("Вопрос: \"%s\"", prompt),
+		Content: buildToolsUserPrompt(prompt, filePath),
 	}
 
 	return toolsConfig{
@@ -186,11 +192,22 @@ func NewToolsConfig(prompt string) toolsConfig {
 	}
 }
 
+func buildToolsUserPrompt(prompt string, filePath string) string {
+	lines := []string{
+		"Файл уже доступен через инструменты; его содержимое специально не вставлено в чат целиком.",
+	}
+	if fileName := strings.TrimSpace(filepath.Base(strings.TrimSpace(filePath))); fileName != "" && fileName != "." {
+		lines = append(lines, fmt.Sprintf("Имя файла для анализа: %q.", fileName))
+	}
+	lines = append(lines, fmt.Sprintf("Вопрос: %q", prompt))
+	return strings.Join(lines, "\n")
+}
+
 func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string, _ Options) (string, error) {
 	startedAt := time.Now()
 	slog.Debug("tools processing started", "file_path", filePath, "has_file_path", filePath != "")
 
-	toolsConfig := NewToolsConfig(prompt)
+	toolsConfig := NewToolsConfig(prompt, filePath)
 	messages := make([]openai.ChatCompletionMessage, 0, 2)
 	messages = append(messages, toolsConfig.systemMessage, toolsConfig.userQuestion)
 	loopState := newToolLoopState(filePath)
@@ -259,6 +276,14 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 			"tool_calls_count", len(choice.Message.ToolCalls),
 			"has_content", choice.Message.Content != "",
 		)
+
+		if turn == 1 && strings.TrimSpace(filePath) != "" && len(choice.Message.ToolCalls) == 0 && strings.TrimSpace(choice.Message.Content) != "" {
+			slog.Warn("tools backend returned a direct answer without using file tools",
+				"turn", turn,
+				"file_path", filePath,
+				"message_role", choice.Message.Role,
+			)
+		}
 
 		if len(choice.Message.ToolCalls) > 0 {
 			slog.Debug("received tool calls from model", "turn", turn, "count", len(choice.Message.ToolCalls))
