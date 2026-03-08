@@ -19,8 +19,7 @@ import (
 )
 
 func Run(args []string, stdout io.Writer, stdin io.Reader, version string) int {
-	logging.InitProjectRoot("")
-	logging.ConfigureLogger(false)
+	logging.Configure(false)
 
 	if err := godotenv.Load(); err != nil {
 		slog.Warn("failed to load .env file, using system environment variables", "error", err)
@@ -44,7 +43,7 @@ func Run(args []string, stdout io.Writer, stdin io.Reader, version string) int {
 		return 1
 	}
 
-	logging.ConfigureLogger(cmd.Common.Verbose)
+	logging.Configure(cmd.Common.Verbose)
 
 	if cmd.Common.Version {
 		if _, err := fmt.Fprintln(stdout, version); err != nil {

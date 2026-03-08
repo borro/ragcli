@@ -7,58 +7,30 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
-var projectRootPath string
+var (
+	projectRootPath string
+	projectRootOnce sync.Once
+)
 
-type LoggerConfig struct {
-	Level     slog.Level
-	Writer    io.Writer
-	AddSource bool
+func Configure(verbose bool) {
+	slog.SetDefault(newLogger(os.Stderr, verbose))
 }
 
-func InitProjectRoot(root string) {
-	if strings.TrimSpace(root) == "" {
-		root = defaultProjectRoot()
-	}
-	projectRootPath = filepath.Clean(root)
-}
-
-func DefaultLoggerConfig() LoggerConfig {
-	return LoggerConfig{
-		Level:     slog.LevelError,
-		Writer:    os.Stderr,
-		AddSource: true,
-	}
-}
-
-func NewLogger(cfg LoggerConfig) *slog.Logger {
-	writer := cfg.Writer
-	if writer == nil {
-		writer = os.Stderr
+func newLogger(writer io.Writer, verbose bool) *slog.Logger {
+	level := slog.LevelError
+	if verbose {
+		level = slog.LevelDebug
 	}
 
 	handler := slog.NewTextHandler(writer, &slog.HandlerOptions{
-		Level:       cfg.Level,
-		AddSource:   cfg.AddSource,
+		Level:       level,
+		AddSource:   true,
 		ReplaceAttr: replaceSourceAttr,
 	})
 	return slog.New(handler)
-}
-
-func SetLogger(logger *slog.Logger) {
-	if logger == nil {
-		logger = NewLogger(DefaultLoggerConfig())
-	}
-	slog.SetDefault(logger)
-}
-
-func ConfigureLogger(verbose bool) {
-	cfg := DefaultLoggerConfig()
-	if verbose {
-		cfg.Level = slog.LevelDebug
-	}
-	SetLogger(NewLogger(cfg))
 }
 
 func replaceSourceAttr(_ []string, attr slog.Attr) slog.Attr {
@@ -89,13 +61,20 @@ func shortenSourcePath(file string) string {
 	}
 
 	cleanFile := filepath.Clean(file)
-	if projectRootPath != "" {
-		if rel, err := filepath.Rel(projectRootPath, cleanFile); err == nil && !strings.HasPrefix(rel, "..") {
+	if root := projectRoot(); root != "" {
+		if rel, err := filepath.Rel(root, cleanFile); err == nil && !strings.HasPrefix(rel, "..") {
 			return filepath.ToSlash(rel)
 		}
 	}
 
 	return filepath.Base(cleanFile)
+}
+
+func projectRoot() string {
+	projectRootOnce.Do(func() {
+		projectRootPath = defaultProjectRoot()
+	})
+	return projectRootPath
 }
 
 func defaultProjectRoot() string {

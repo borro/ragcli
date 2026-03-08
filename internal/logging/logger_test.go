@@ -8,61 +8,33 @@ import (
 	"testing"
 )
 
-func TestDefaultLoggerConfig(t *testing.T) {
-	cfg := DefaultLoggerConfig()
-
-	if cfg.Level != slog.LevelError {
-		t.Fatalf("DefaultLoggerConfig().Level = %v, want %v", cfg.Level, slog.LevelError)
-	}
-	if cfg.Writer == nil {
-		t.Fatal("DefaultLoggerConfig().Writer = nil, want stderr writer")
-	}
-	if !cfg.AddSource {
-		t.Fatal("DefaultLoggerConfig().AddSource = false, want true")
-	}
-}
-
-func TestConfigureLoggerSetsDebugLevelWhenVerbose(t *testing.T) {
+func TestConfigureEnablesDebugLevelWhenVerbose(t *testing.T) {
 	original := slog.Default()
 	t.Cleanup(func() {
 		slog.SetDefault(original)
 	})
 
-	ConfigureLogger(true)
+	Configure(true)
 	if !slog.Default().Enabled(context.TODO(), slog.LevelDebug) {
-		t.Fatal("default logger should be enabled for debug after ConfigureLogger(true)")
-	}
-
-	ConfigureLogger(false)
-	if slog.Default().Enabled(context.TODO(), slog.LevelDebug) {
-		t.Fatal("default logger should not be enabled for debug after ConfigureLogger(false)")
+		t.Fatal("default logger should be enabled for debug after Configure(true)")
 	}
 }
 
-func TestSetLoggerNilFallsBackToDefault(t *testing.T) {
+func TestConfigureDisablesDebugLevelByDefault(t *testing.T) {
 	original := slog.Default()
 	t.Cleanup(func() {
 		slog.SetDefault(original)
 	})
 
-	SetLogger(nil)
-	if slog.Default() == nil {
-		t.Fatal("slog.Default() = nil, want default logger")
-	}
+	Configure(false)
 	if slog.Default().Enabled(context.TODO(), slog.LevelDebug) {
 		t.Fatal("default logger should not enable debug")
 	}
 }
 
-func TestNewLoggerFormatsSourceRelativeToRepoRoot(t *testing.T) {
-	InitProjectRoot("")
-
+func TestLoggerFormatsSourceRelativeToRepoRoot(t *testing.T) {
 	var buf bytes.Buffer
-	logger := NewLogger(LoggerConfig{
-		Level:     slog.LevelDebug,
-		Writer:    &buf,
-		AddSource: true,
-	})
+	logger := newTestLogger(&buf, true)
 
 	logger.Debug("test message")
 
@@ -73,4 +45,18 @@ func TestNewLoggerFormatsSourceRelativeToRepoRoot(t *testing.T) {
 	if strings.Contains(output, "/home/") || strings.Contains(output, "\\") {
 		t.Fatalf("output = %q, want shortened source path", output)
 	}
+}
+
+func newTestLogger(buf *bytes.Buffer, verbose bool) *slog.Logger {
+	level := slog.LevelError
+	if verbose {
+		level = slog.LevelDebug
+	}
+
+	handler := slog.NewTextHandler(buf, &slog.HandlerOptions{
+		Level:       level,
+		AddSource:   true,
+		ReplaceAttr: replaceSourceAttr,
+	})
+	return slog.New(handler)
 }
