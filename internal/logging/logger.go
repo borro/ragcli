@@ -1,4 +1,4 @@
-package config
+package logging
 
 import (
 	"io"
@@ -11,19 +11,19 @@ import (
 
 var projectRootPath string
 
-// LoggerConfig описывает настройки runtime-логгера.
 type LoggerConfig struct {
 	Level     slog.Level
 	Writer    io.Writer
 	AddSource bool
 }
 
-func init() {
-	initProjectRoot()
-	ConfigureLogger(false)
+func InitProjectRoot(root string) {
+	if strings.TrimSpace(root) == "" {
+		root = defaultProjectRoot()
+	}
+	projectRootPath = filepath.Clean(root)
 }
 
-// DefaultLoggerConfig возвращает стандартные настройки логгера приложения.
 func DefaultLoggerConfig() LoggerConfig {
 	return LoggerConfig{
 		Level:     slog.LevelError,
@@ -32,7 +32,6 @@ func DefaultLoggerConfig() LoggerConfig {
 	}
 }
 
-// NewLogger создаёт slog.Logger на основе переданной конфигурации.
 func NewLogger(cfg LoggerConfig) *slog.Logger {
 	writer := cfg.Writer
 	if writer == nil {
@@ -47,7 +46,6 @@ func NewLogger(cfg LoggerConfig) *slog.Logger {
 	return slog.New(handler)
 }
 
-// SetLogger централизованно обновляет глобальный logger.
 func SetLogger(logger *slog.Logger) {
 	if logger == nil {
 		logger = NewLogger(DefaultLoggerConfig())
@@ -55,7 +53,6 @@ func SetLogger(logger *slog.Logger) {
 	slog.SetDefault(logger)
 }
 
-// ConfigureLogger применяет runtime-настройки уровня логирования.
 func ConfigureLogger(verbose bool) {
 	cfg := DefaultLoggerConfig()
 	if verbose {
@@ -101,11 +98,11 @@ func shortenSourcePath(file string) string {
 	return filepath.Base(cleanFile)
 }
 
-func initProjectRoot() {
+func defaultProjectRoot() string {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		return
+		return ""
 	}
 
-	projectRootPath = filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }

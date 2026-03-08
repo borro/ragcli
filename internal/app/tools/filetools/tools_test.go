@@ -1,10 +1,12 @@
-package processor
+package filetools
 
 import (
 	"encoding/json"
 	"os"
 	"strings"
 	"testing"
+
+	openai "github.com/sashabaranov/go-openai"
 )
 
 func TestStdinSearch(t *testing.T) {
@@ -405,15 +407,15 @@ func TestReadAround_InvalidLine(t *testing.T) {
 
 func TestCachedLineReader_LoadsOnceAcrossTools(t *testing.T) {
 	filePath := writeTempFile(t, "alpha\nbeta\nalpha beta\n")
-	reader := newFileReader(filePath)
+	reader := NewFileReader(filePath)
 
-	if _, err := executeTool(toolCall("1", "search_file", `{"query":"alpha","limit":1}`), reader); err != nil {
+	if _, err := ExecuteTool(toolCall("1", "search_file", `{"query":"alpha","limit":1}`), reader); err != nil {
 		t.Fatalf("executeTool(search_file) error = %v", err)
 	}
-	if _, err := executeTool(toolCall("2", "read_lines", `{"start_line":1,"end_line":2}`), reader); err != nil {
+	if _, err := ExecuteTool(toolCall("2", "read_lines", `{"start_line":1,"end_line":2}`), reader); err != nil {
 		t.Fatalf("executeTool(read_lines) error = %v", err)
 	}
-	if _, err := executeTool(toolCall("3", "read_around", `{"line":2,"before":1,"after":1}`), reader); err != nil {
+	if _, err := ExecuteTool(toolCall("3", "read_around", `{"line":2,"before":1,"after":1}`), reader); err != nil {
 		t.Fatalf("executeTool(read_around) error = %v", err)
 	}
 
@@ -423,7 +425,7 @@ func TestCachedLineReader_LoadsOnceAcrossTools(t *testing.T) {
 }
 
 func TestSummarizeToolArguments_NormalizesSearchParams(t *testing.T) {
-	summary := summarizeToolArguments(toolCall("1", "search_file", `{"query":"alpha","limit":50,"offset":-1}`))
+	summary := SummarizeToolArguments(toolCall("1", "search_file", `{"query":"alpha","limit":50,"offset":-1}`))
 
 	if summary["mode"] != "auto" {
 		t.Fatalf("mode = %#v, want auto", summary["mode"])
@@ -437,7 +439,7 @@ func TestSummarizeToolArguments_NormalizesSearchParams(t *testing.T) {
 }
 
 func TestSummarizeToolResult_SearchPagination(t *testing.T) {
-	raw, err := marshalJSON(SearchResult{
+	raw, err := MarshalJSON(SearchResult{
 		Mode:         "literal",
 		MatchCount:   2,
 		TotalMatches: 5,
@@ -448,7 +450,7 @@ func TestSummarizeToolResult_SearchPagination(t *testing.T) {
 		t.Fatalf("marshalJSON() error = %v", err)
 	}
 
-	summary := summarizeToolResult("search_file", raw)
+	summary := SummarizeToolResult("search_file", raw)
 	if summary["mode"] != "literal" {
 		t.Fatalf("mode = %#v, want literal", summary["mode"])
 	}
@@ -461,7 +463,7 @@ func TestSummarizeToolResult_SearchPagination(t *testing.T) {
 }
 
 func TestSummarizeToolResult_ReadRanges(t *testing.T) {
-	readLinesRaw, err := marshalJSON(ReadLinesResult{
+	readLinesRaw, err := MarshalJSON(ReadLinesResult{
 		StartLine: 10,
 		EndLine:   12,
 		LineCount: 3,
@@ -469,7 +471,7 @@ func TestSummarizeToolResult_ReadRanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalJSON(ReadLinesResult) error = %v", err)
 	}
-	readLinesSummary := summarizeToolResult("read_lines", readLinesRaw)
+	readLinesSummary := SummarizeToolResult("read_lines", readLinesRaw)
 	if readLinesSummary["start_line"] != float64(10) && readLinesSummary["start_line"] != 10 {
 		t.Fatalf("start_line = %#v, want 10", readLinesSummary["start_line"])
 	}
@@ -477,7 +479,7 @@ func TestSummarizeToolResult_ReadRanges(t *testing.T) {
 		t.Fatalf("line_count = %#v, want 3", readLinesSummary["line_count"])
 	}
 
-	readAroundRaw, err := marshalJSON(ReadAroundResult{
+	readAroundRaw, err := MarshalJSON(ReadAroundResult{
 		Line:      11,
 		StartLine: 10,
 		EndLine:   12,
@@ -486,7 +488,7 @@ func TestSummarizeToolResult_ReadRanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalJSON(ReadAroundResult) error = %v", err)
 	}
-	readAroundSummary := summarizeToolResult("read_around", readAroundRaw)
+	readAroundSummary := SummarizeToolResult("read_around", readAroundRaw)
 	if readAroundSummary["line"] != float64(11) && readAroundSummary["line"] != 11 {
 		t.Fatalf("line = %#v, want 11", readAroundSummary["line"])
 	}
@@ -527,6 +529,17 @@ func assertSearchResult(t *testing.T, raw string, query string, requestedMode st
 		if result.Matches[i].LineNumber != line {
 			t.Fatalf("Matches[%d].LineNumber = %d, want %d", i, result.Matches[i].LineNumber, line)
 		}
+	}
+}
+
+func toolCall(id string, name string, arguments string) openai.ToolCall {
+	return openai.ToolCall{
+		ID:   id,
+		Type: "function",
+		Function: openai.FunctionCall{
+			Name:      name,
+			Arguments: arguments,
+		},
 	}
 }
 

@@ -1,4 +1,4 @@
-package processor
+package tools
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/borro/ragcli/internal/app/tools/filetools"
 	"github.com/borro/ragcli/internal/llm"
 )
 
@@ -21,6 +22,8 @@ const (
 type chatRequester interface {
 	SendRequestWithMetrics(ctx context.Context, req llm.ChatCompletionRequest) (*llm.RequestResult, error)
 }
+
+type Options struct{}
 
 type toolsConfig struct {
 	tools         []llm.Tool
@@ -56,7 +59,7 @@ type toolExecutionRecord struct {
 }
 
 type toolLoopState struct {
-	reader                lineReader
+	reader                filetools.LineReader
 	callCache             map[string]toolExecutionRecord
 	seenLines             map[int]struct{}
 	consecutiveNoProgress int
@@ -185,7 +188,7 @@ func NewToolsConfig(prompt string) toolsConfig {
 	}
 }
 
-func RunTools(ctx context.Context, client chatRequester, filePath, prompt string) (string, error) {
+func Run(ctx context.Context, client chatRequester, filePath, prompt string, _ Options) (string, error) {
 	startedAt := time.Now()
 	slog.Debug("tools processing started", "file_path", filePath, "has_file_path", filePath != "")
 
@@ -317,7 +320,7 @@ func RunTools(ctx context.Context, client chatRequester, filePath, prompt string
 
 func newToolLoopState(filePath string) *toolLoopState {
 	return &toolLoopState{
-		reader:    newFileReader(filePath),
+		reader:    filetools.NewFileReader(filePath),
 		callCache: make(map[string]toolExecutionRecord),
 		seenLines: make(map[int]struct{}),
 	}
@@ -338,7 +341,7 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []llm.To
 		result, meta, err := s.executeToolCall(call)
 		if err != nil {
 			slog.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
-			toolErr, marshalErr := marshalJSON(asToolError(err))
+			toolErr, marshalErr := filetools.MarshalJSON(filetools.AsToolError(err))
 			if marshalErr != nil {
 				return nil, marshalErr
 			}
@@ -390,10 +393,10 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []llm.To
 }
 
 func (s *toolLoopState) executeToolCall(call llm.ToolCall) (string, toolExecutionMeta, error) {
-	logToolCallStarted(call, summarizeToolArguments(call))
+	filetools.LogToolCallStarted(call, filetools.SummarizeToolArguments(call))
 	signature, err := canonicalToolSignature(call)
 	if err != nil {
-		logToolCallError(call, 0, err)
+		filetools.LogToolCallError(call, 0, err)
 		return "", toolExecutionMeta{}, err
 	}
 
@@ -414,24 +417,24 @@ func (s *toolLoopState) executeToolCall(call llm.ToolCall) (string, toolExecutio
 
 		annotated, err := annotateToolPayload(cached.raw, meta)
 		if err != nil {
-			logToolCallError(call, 0, err)
+			filetools.LogToolCallError(call, 0, err)
 			return "", toolExecutionMeta{}, err
 		}
-		summary := summarizeToolResult(call.Function.Name, cached.raw)
+		summary := filetools.SummarizeToolResult(call.Function.Name, cached.raw)
 		if summary == nil {
 			summary = map[string]any{}
 		}
 		summary["cached"] = true
 		summary["duplicate"] = true
 		summary["novel_lines"] = meta.NovelLines
-		logToolCallFinished(call, 0, "cached", summary)
+		filetools.LogToolCallFinished(call, 0, "cached", summary)
 		return annotated, meta, err
 	}
 
 	startedAt := time.Now()
-	raw, err := executeTool(call, s.reader)
+	raw, err := filetools.ExecuteTool(call, s.reader)
 	if err != nil {
-		logToolCallError(call, time.Since(startedAt), err)
+		filetools.LogToolCallError(call, time.Since(startedAt), err)
 		return "", toolExecutionMeta{}, err
 	}
 
@@ -464,7 +467,7 @@ func (s *toolLoopState) executeToolCall(call llm.ToolCall) (string, toolExecutio
 
 	annotated, err := annotateToolPayload(raw, meta)
 	if err != nil {
-		logToolCallError(call, time.Since(startedAt), err)
+		filetools.LogToolCallError(call, time.Since(startedAt), err)
 		return "", toolExecutionMeta{}, err
 	}
 
@@ -480,13 +483,13 @@ func (s *toolLoopState) executeToolCall(call llm.ToolCall) (string, toolExecutio
 		s.stats.uniqueReads++
 	}
 
-	summary := summarizeToolResult(call.Function.Name, raw)
+	summary := filetools.SummarizeToolResult(call.Function.Name, raw)
 	if summary == nil {
 		summary = map[string]any{}
 	}
 	summary["novel_lines"] = meta.NovelLines
 	summary["already_seen"] = meta.AlreadySeen
-	logToolCallFinished(call, time.Since(startedAt), "ok", summary)
+	filetools.LogToolCallFinished(call, time.Since(startedAt), "ok", summary)
 
 	return annotated, meta, nil
 }
@@ -502,20 +505,20 @@ func canonicalToolSignature(call llm.ToolCall) (string, error) {
 			ContextLines int    `json:"context_lines"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", newToolError("invalid_arguments", "invalid arguments for search_file", false, map[string]any{
+			return "", filetools.NewToolError("invalid_arguments", "invalid arguments for search_file", false, map[string]any{
 				"tool":  "search_file",
 				"error": err.Error(),
 			})
 		}
 
-		normalized := normalizeSearchParams(SearchParams{
+		normalized := filetools.NormalizeSearchParams(filetools.SearchParams{
 			Query:        params.Query,
 			Mode:         params.Mode,
 			Limit:        params.Limit,
 			Offset:       params.Offset,
 			ContextLines: params.ContextLines,
 		})
-		body, err := marshalJSON(normalized)
+		body, err := filetools.MarshalJSON(normalized)
 		if err != nil {
 			return "", err
 		}
@@ -527,7 +530,7 @@ func canonicalToolSignature(call llm.ToolCall) (string, error) {
 			EndLine   int `json:"end_line"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", newToolError("invalid_arguments", "invalid arguments for read_lines", false, map[string]any{
+			return "", filetools.NewToolError("invalid_arguments", "invalid arguments for read_lines", false, map[string]any{
 				"tool":  "read_lines",
 				"error": err.Error(),
 			})
@@ -535,7 +538,7 @@ func canonicalToolSignature(call llm.ToolCall) (string, error) {
 		if params.StartLine < 1 {
 			params.StartLine = 1
 		}
-		body, err := marshalJSON(params)
+		body, err := filetools.MarshalJSON(params)
 		if err != nil {
 			return "", err
 		}
@@ -548,24 +551,24 @@ func canonicalToolSignature(call llm.ToolCall) (string, error) {
 			After  int `json:"after"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", newToolError("invalid_arguments", "invalid arguments for read_around", false, map[string]any{
+			return "", filetools.NewToolError("invalid_arguments", "invalid arguments for read_around", false, map[string]any{
 				"tool":  "read_around",
 				"error": err.Error(),
 			})
 		}
 		if params.Before < 0 {
-			params.Before = defaultReadAroundBefore
+			params.Before = filetools.DefaultReadAroundBefore
 		}
 		if params.After < 0 {
-			params.After = defaultReadAroundAfter
+			params.After = filetools.DefaultReadAroundAfter
 		}
-		body, err := marshalJSON(params)
+		body, err := filetools.MarshalJSON(params)
 		if err != nil {
 			return "", err
 		}
 		return call.Function.Name + ":" + body, nil
 	default:
-		return "", newToolError("unknown_tool", "unknown tool requested", false, map[string]any{"tool": call.Function.Name})
+		return "", filetools.NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{"tool": call.Function.Name})
 	}
 }
 
@@ -596,7 +599,7 @@ func annotateToolPayload(raw string, meta toolExecutionMeta) (string, error) {
 		payload["suggested_next_offset"] = meta.SuggestedNextOffset
 	}
 
-	return marshalJSON(payload)
+	return filetools.MarshalJSON(payload)
 }
 
 func extractLineNumbers(toolName, raw string) (map[int]struct{}, error) {
@@ -604,7 +607,7 @@ func extractLineNumbers(toolName, raw string) (map[int]struct{}, error) {
 
 	switch toolName {
 	case "search_file":
-		var result SearchResult
+		var result filetools.SearchResult
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return nil, fmt.Errorf("failed to decode search result: %w", err)
 		}
@@ -618,7 +621,7 @@ func extractLineNumbers(toolName, raw string) (map[int]struct{}, error) {
 			}
 		}
 	case "read_lines":
-		var result ReadLinesResult
+		var result filetools.ReadLinesResult
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return nil, fmt.Errorf("failed to decode read_lines result: %w", err)
 		}
@@ -626,7 +629,7 @@ func extractLineNumbers(toolName, raw string) (map[int]struct{}, error) {
 			lines[line.LineNumber] = struct{}{}
 		}
 	case "read_around":
-		var result ReadAroundResult
+		var result filetools.ReadAroundResult
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return nil, fmt.Errorf("failed to decode read_around result: %w", err)
 		}
@@ -645,7 +648,7 @@ func suggestedNextOffset(toolName, raw string) int {
 		return 0
 	}
 
-	var result SearchResult
+	var result filetools.SearchResult
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		return 0
 	}

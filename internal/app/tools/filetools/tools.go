@@ -1,4 +1,4 @@
-package processor
+package filetools
 
 import (
 	"bufio"
@@ -21,8 +21,8 @@ import (
 const (
 	defaultSearchLimit      = 5
 	maxSearchLimit          = 20
-	defaultReadAroundBefore = 3
-	defaultReadAroundAfter  = 3
+	DefaultReadAroundBefore = 3
+	DefaultReadAroundAfter  = 3
 )
 
 type LineSlice struct {
@@ -87,7 +87,7 @@ type SearchParams struct {
 	ContextLines int
 }
 
-type lineReader interface {
+type LineReader interface {
 	Search(params SearchParams) (string, error)
 	ReadLines(start, end int) (string, error)
 	ReadAround(line, before, after int) (string, error)
@@ -103,7 +103,7 @@ type cachedLineReader struct {
 	loadCount int
 }
 
-func newFileReader(path string) *cachedLineReader {
+func NewFileReader(path string) *cachedLineReader {
 	return &cachedLineReader{
 		sourceName: path,
 		sourceKind: "file",
@@ -113,7 +113,7 @@ func newFileReader(path string) *cachedLineReader {
 	}
 }
 
-func newStdinReader() *cachedLineReader {
+func NewStdinReader() *cachedLineReader {
 	return &cachedLineReader{
 		sourceName: "stdin",
 		sourceKind: "stdin",
@@ -174,7 +174,7 @@ func (r *cachedLineReader) ReadAround(line, before, after int) (string, error) {
 	return readAroundFromLines(r.lines, line, before, after)
 }
 
-func marshalJSON(v any) (string, error) {
+func MarshalJSON(v any) (string, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal tool result: %w", err)
@@ -205,7 +205,7 @@ func readAllLines(reader io.Reader) ([]string, error) {
 	return lines, nil
 }
 
-func normalizeSearchParams(params SearchParams) SearchParams {
+func NormalizeSearchParams(params SearchParams) SearchParams {
 	params.Query = strings.TrimSpace(params.Query)
 
 	if params.Mode == "" {
@@ -235,10 +235,10 @@ func normalizeSearchParams(params SearchParams) SearchParams {
 }
 
 func searchInLines(lines []string, params SearchParams) (string, error) {
-	params = normalizeSearchParams(params)
+	params = NormalizeSearchParams(params)
 
 	if params.Query == "" {
-		return "", newToolError("invalid_arguments", "query must not be empty", false, map[string]any{
+		return "", NewToolError("invalid_arguments", "query must not be empty", false, map[string]any{
 			"tool":  "search_file",
 			"field": "query",
 		})
@@ -288,7 +288,7 @@ func searchInLines(lines []string, params SearchParams) (string, error) {
 		result.NextOffset = end
 	}
 
-	return marshalJSON(result)
+	return MarshalJSON(result)
 }
 
 func literalMatches(lines []string, query string, contextLines int) []SearchMatch {
@@ -305,7 +305,7 @@ func literalMatches(lines []string, query string, contextLines int) []SearchMatc
 func regexMatches(lines []string, query string, contextLines int) ([]SearchMatch, error) {
 	re, err := regexp.Compile("(?i)" + query)
 	if err != nil {
-		return nil, newToolError("invalid_arguments", "invalid regex for search_file", false, map[string]any{
+		return nil, NewToolError("invalid_arguments", "invalid regex for search_file", false, map[string]any{
 			"tool":  "search_file",
 			"field": "query",
 			"mode":  "regex",
@@ -426,27 +426,27 @@ func readLinesFromLines(lines []string, start int, end int) (string, error) {
 	}
 
 	if end < start {
-		return marshalJSON(result)
+		return MarshalJSON(result)
 	}
 
 	result.Lines = buildLineSlices(lines, start, end)
 	result.LineCount = len(result.Lines)
-	return marshalJSON(result)
+	return MarshalJSON(result)
 }
 
 func readAroundFromLines(lines []string, line, before, after int) (string, error) {
 	if line < 1 {
-		return "", newToolError("invalid_arguments", "line must be >= 1", false, map[string]any{
+		return "", NewToolError("invalid_arguments", "line must be >= 1", false, map[string]any{
 			"tool":  "read_around",
 			"field": "line",
 			"value": line,
 		})
 	}
 	if before < 0 {
-		before = defaultReadAroundBefore
+		before = DefaultReadAroundBefore
 	}
 	if after < 0 {
-		after = defaultReadAroundAfter
+		after = DefaultReadAroundAfter
 	}
 
 	start := max(line-before, 1)
@@ -470,7 +470,7 @@ func readAroundFromLines(lines []string, line, before, after int) (string, error
 	}
 	result.LineCount = len(result.Lines)
 
-	return marshalJSON(result)
+	return MarshalJSON(result)
 }
 
 func buildLineSlices(lines []string, start int, end int) []LineSlice {
@@ -501,9 +501,9 @@ func SearchFile(path, query string) (string, error) {
 func SearchFileWithParams(path string, params SearchParams) (string, error) {
 	var reader *cachedLineReader
 	if path == "" {
-		reader = newStdinReader()
+		reader = NewStdinReader()
 	} else {
-		reader = newFileReader(path)
+		reader = NewFileReader(path)
 	}
 	return reader.Search(params)
 }
@@ -511,9 +511,9 @@ func SearchFileWithParams(path string, params SearchParams) (string, error) {
 func ReadLines(path string, startLine, endLine int) (string, error) {
 	var reader *cachedLineReader
 	if path == "" {
-		reader = newStdinReader()
+		reader = NewStdinReader()
 	} else {
-		reader = newFileReader(path)
+		reader = NewFileReader(path)
 	}
 	return reader.ReadLines(startLine, endLine)
 }
@@ -521,9 +521,9 @@ func ReadLines(path string, startLine, endLine int) (string, error) {
 func ReadAround(path string, line, before, after int) (string, error) {
 	var reader *cachedLineReader
 	if path == "" {
-		reader = newStdinReader()
+		reader = NewStdinReader()
 	} else {
-		reader = newFileReader(path)
+		reader = NewFileReader(path)
 	}
 	return reader.ReadAround(line, before, after)
 }
@@ -540,7 +540,7 @@ func StdinReadAround(line, before, after int) (string, error) {
 	return ReadAround("", line, before, after)
 }
 
-func executeTool(call llm.ToolCall, reader lineReader) (string, error) {
+func ExecuteTool(call llm.ToolCall, reader LineReader) (string, error) {
 	switch call.Function.Name {
 	case "search_file":
 		var params struct {
@@ -551,7 +551,7 @@ func executeTool(call llm.ToolCall, reader lineReader) (string, error) {
 			ContextLines int    `json:"context_lines"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", newToolError("invalid_arguments", "invalid arguments for search_file", false, map[string]any{
+			return "", NewToolError("invalid_arguments", "invalid arguments for search_file", false, map[string]any{
 				"tool":  "search_file",
 				"error": err.Error(),
 			})
@@ -571,7 +571,7 @@ func executeTool(call llm.ToolCall, reader lineReader) (string, error) {
 			EndLine   int `json:"end_line"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", newToolError("invalid_arguments", "invalid arguments for read_lines", false, map[string]any{
+			return "", NewToolError("invalid_arguments", "invalid arguments for read_lines", false, map[string]any{
 				"tool":  "read_lines",
 				"error": err.Error(),
 			})
@@ -586,7 +586,7 @@ func executeTool(call llm.ToolCall, reader lineReader) (string, error) {
 			After  int `json:"after"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", newToolError("invalid_arguments", "invalid arguments for read_around", false, map[string]any{
+			return "", NewToolError("invalid_arguments", "invalid arguments for read_around", false, map[string]any{
 				"tool":  "read_around",
 				"error": err.Error(),
 			})
@@ -595,13 +595,13 @@ func executeTool(call llm.ToolCall, reader lineReader) (string, error) {
 		return reader.ReadAround(params.Line, params.Before, params.After)
 
 	default:
-		return "", newToolError("unknown_tool", "unknown tool requested", false, map[string]any{
+		return "", NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
 			"tool": call.Function.Name,
 		})
 	}
 }
 
-func logToolCallStarted(call llm.ToolCall, args map[string]any) {
+func LogToolCallStarted(call llm.ToolCall, args map[string]any) {
 	logArgs := []any{
 		"tool_name", call.Function.Name,
 		"tool_call_id", call.ID,
@@ -612,7 +612,7 @@ func logToolCallStarted(call llm.ToolCall, args map[string]any) {
 	slog.Debug("tool call started", logArgs...)
 }
 
-func logToolCallFinished(call llm.ToolCall, duration time.Duration, status string, summary map[string]any) {
+func LogToolCallFinished(call llm.ToolCall, duration time.Duration, status string, summary map[string]any) {
 	logArgs := []any{
 		"tool_name", call.Function.Name,
 		"tool_call_id", call.ID,
@@ -625,8 +625,8 @@ func logToolCallFinished(call llm.ToolCall, duration time.Duration, status strin
 	slog.Debug("tool call finished", logArgs...)
 }
 
-func logToolCallError(call llm.ToolCall, duration time.Duration, err error) {
-	toolErr := asToolError(err)
+func LogToolCallError(call llm.ToolCall, duration time.Duration, err error) {
+	toolErr := AsToolError(err)
 	logArgs := []any{
 		"tool_name", call.Function.Name,
 		"tool_call_id", call.ID,
@@ -641,7 +641,7 @@ func logToolCallError(call llm.ToolCall, duration time.Duration, err error) {
 	slog.Debug("tool call failed", logArgs...)
 }
 
-func summarizeToolArguments(call llm.ToolCall) map[string]any {
+func SummarizeToolArguments(call llm.ToolCall) map[string]any {
 	if strings.TrimSpace(call.Function.Arguments) == "" {
 		return nil
 	}
@@ -658,7 +658,7 @@ func summarizeToolArguments(call llm.ToolCall) map[string]any {
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
 			return map[string]any{"decode_error": err.Error()}
 		}
-		normalized := normalizeSearchParams(SearchParams{
+		normalized := NormalizeSearchParams(SearchParams{
 			Query:        params.Query,
 			Mode:         params.Mode,
 			Limit:        params.Limit,
@@ -705,7 +705,7 @@ func summarizeToolArguments(call llm.ToolCall) map[string]any {
 	}
 }
 
-func summarizeToolResult(toolName string, raw string) map[string]any {
+func SummarizeToolResult(toolName string, raw string) map[string]any {
 	switch toolName {
 	case "search_file":
 		var result SearchResult
@@ -751,7 +751,7 @@ func summarizeToolResult(toolName string, raw string) map[string]any {
 func ExecuteToolCalls(ctx context.Context, toolCalls []llm.ToolCall, path string) ([]string, error) {
 	slog.Debug("ExecuteToolCalls called", "path_length", len(path), "path_is_empty", path == "", "tool_calls_count", len(toolCalls))
 
-	reader := newFileReader(path)
+	reader := NewFileReader(path)
 
 	var results []string
 	for _, call := range toolCalls {
@@ -761,10 +761,10 @@ func ExecuteToolCalls(ctx context.Context, toolCalls []llm.ToolCall, path string
 		default:
 		}
 
-		result, err := executeTool(call, reader)
+		result, err := ExecuteTool(call, reader)
 		if err != nil {
 			slog.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
-			toolErr, marshalErr := marshalJSON(asToolError(err))
+			toolErr, marshalErr := MarshalJSON(AsToolError(err))
 			if marshalErr != nil {
 				return nil, marshalErr
 			}
@@ -777,7 +777,7 @@ func ExecuteToolCalls(ctx context.Context, toolCalls []llm.ToolCall, path string
 	return results, nil
 }
 
-func asToolError(err error) ToolError {
+func AsToolError(err error) ToolError {
 	var toolErr ToolError
 	if ok := errorsAs(err, &toolErr); ok {
 		return toolErr
@@ -790,7 +790,7 @@ func asToolError(err error) ToolError {
 	}
 }
 
-func newToolError(code, message string, retryable bool, details map[string]any) error {
+func NewToolError(code, message string, retryable bool, details map[string]any) error {
 	return ToolError{
 		Code:      code,
 		Message:   message,

@@ -18,9 +18,19 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/borro/ragcli/internal/config"
 	"github.com/borro/ragcli/internal/llm"
 )
+
+type Options struct {
+	TopK           int
+	FinalK         int
+	ChunkSize      int
+	ChunkOverlap   int
+	IndexTTL       time.Duration
+	IndexDir       string
+	Rerank         string
+	EmbeddingModel string
+}
 
 const (
 	indexSchemaVersion = 1
@@ -95,7 +105,7 @@ type candidate struct {
 	Score      float64
 }
 
-func Run(ctx context.Context, chat chatRequester, embedder embeddingRequester, source Source, cfg *config.Config, question string) (string, error) {
+func Run(ctx context.Context, chat chatRequester, embedder embeddingRequester, source Source, opts Options, question string) (string, error) {
 	startedAt := time.Now()
 	stats := pipelineStats{}
 
@@ -103,7 +113,7 @@ func Run(ctx context.Context, chat chatRequester, embedder embeddingRequester, s
 		return "", errors.New("rag source reader is required")
 	}
 
-	index, err := buildOrLoadIndex(ctx, embedder, source, cfg, &stats)
+	index, err := buildOrLoadIndex(ctx, embedder, source, opts, &stats)
 	if err != nil {
 		return "", err
 	}
@@ -116,7 +126,7 @@ func Run(ctx context.Context, chat chatRequester, embedder embeddingRequester, s
 	stats.EmbeddingCalls += 1
 	stats.EmbeddingTokens += metrics.TotalTokens
 
-	ranked := retrieve(index, queryEmbedding, question, cfg)
+	ranked := retrieve(index, queryEmbedding, question, opts)
 	if len(ranked) == 0 || retrievalTooWeak(ranked) {
 		slog.Debug("rag retrieval insufficient",
 			"duration_ms", time.Since(startedAt).Milliseconds(),
@@ -130,7 +140,7 @@ func Run(ctx context.Context, chat chatRequester, embedder embeddingRequester, s
 	}
 	stats.RetrievedK = len(ranked)
 
-	evidence := selectEvidence(ranked, cfg.RAGFinalK)
+	evidence := selectEvidence(ranked, opts.FinalK)
 	stats.AnswerContextChunks = len(evidence)
 
 	answer, chatMetrics, err := synthesizeAnswer(ctx, chat, question, evidence)
@@ -154,11 +164,11 @@ func Run(ctx context.Context, chat chatRequester, embedder embeddingRequester, s
 	return appendSources(answer, evidence), nil
 }
 
-func buildOrLoadIndex(ctx context.Context, embedder embeddingRequester, source Source, cfg *config.Config, stats *pipelineStats) (*Index, error) {
-	if err := os.MkdirAll(cfg.RAGIndexDir, 0o700); err != nil {
+func buildOrLoadIndex(ctx context.Context, embedder embeddingRequester, source Source, opts Options, stats *pipelineStats) (*Index, error) {
+	if err := os.MkdirAll(opts.IndexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create rag index dir: %w", err)
 	}
-	cleanupExpiredIndexes(cfg.RAGIndexDir, cfg.RAGIndexTTL)
+	cleanupExpiredIndexes(opts.IndexDir, opts.IndexTTL)
 
 	content, err := io.ReadAll(source.Reader)
 	if err != nil {
@@ -166,15 +176,15 @@ func buildOrLoadIndex(ctx context.Context, embedder embeddingRequester, source S
 	}
 
 	sourcePath := normalizeSourcePath(source)
-	hash := hashInput(content, sourcePath, cfg)
-	indexDir := filepath.Join(cfg.RAGIndexDir, hash)
+	hash := hashInput(content, sourcePath, opts)
+	indexDir := filepath.Join(opts.IndexDir, hash)
 
-	if cached, err := loadIndex(indexDir, cfg.RAGIndexTTL); err == nil {
+	if cached, err := loadIndex(indexDir, opts.IndexTTL); err == nil {
 		stats.CacheHit = true
 		return cached, nil
 	}
 
-	chunks := chunkText(content, sourcePath, cfg.RAGChunkSize, cfg.RAGChunkOverlap)
+	chunks := chunkText(content, sourcePath, opts.ChunkSize, opts.ChunkOverlap)
 	if len(chunks) == 0 {
 		return nil, errors.New("input did not produce retrieval chunks")
 	}
@@ -193,9 +203,9 @@ func buildOrLoadIndex(ctx context.Context, embedder embeddingRequester, source S
 			InputHash:      hash,
 			DocID:          hash,
 			SourcePath:     sourcePath,
-			EmbeddingModel: cfg.EmbeddingModel,
-			ChunkSize:      cfg.RAGChunkSize,
-			ChunkOverlap:   cfg.RAGChunkOverlap,
+			EmbeddingModel: opts.EmbeddingModel,
+			ChunkSize:      opts.ChunkSize,
+			ChunkOverlap:   opts.ChunkOverlap,
 			ChunkCount:     len(chunks),
 		},
 		Chunks:     chunks,
@@ -203,7 +213,7 @@ func buildOrLoadIndex(ctx context.Context, embedder embeddingRequester, source S
 	}
 
 	if err := persistIndex(indexDir, index); err != nil {
-		if cached, loadErr := loadIndex(indexDir, cfg.RAGIndexTTL); loadErr == nil {
+		if cached, loadErr := loadIndex(indexDir, opts.IndexTTL); loadErr == nil {
 			stats.CacheHit = true
 			return cached, nil
 		}
@@ -223,14 +233,14 @@ func normalizeSourcePath(source Source) string {
 	return "stdin"
 }
 
-func hashInput(content []byte, sourcePath string, cfg *config.Config) string {
+func hashInput(content []byte, sourcePath string, opts Options) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d|%d|%d|%s",
 		content,
 		sourcePath,
 		indexSchemaVersion,
-		cfg.RAGChunkSize,
-		cfg.RAGChunkOverlap,
-		cfg.EmbeddingModel,
+		opts.ChunkSize,
+		opts.ChunkOverlap,
+		opts.EmbeddingModel,
 	)))
 	return hex.EncodeToString(sum[:])
 }
@@ -516,7 +526,7 @@ func embedQuery(ctx context.Context, embedder embeddingRequester, question strin
 	return result.Vectors[0], result.Metrics, nil
 }
 
-func retrieve(index *Index, query []float32, question string, cfg *config.Config) []candidate {
+func retrieve(index *Index, query []float32, question string, opts Options) []candidate {
 	ranked := make([]candidate, 0, len(index.Chunks))
 	for i, chunk := range index.Chunks {
 		similarity := cosineSimilarity(query, index.Embeddings[i])
@@ -538,11 +548,11 @@ func retrieve(index *Index, query []float32, question string, cfg *config.Config
 			return cmpChunkOrder(a.Chunk, b.Chunk)
 		}
 	})
-	if len(ranked) > cfg.RAGTopK {
-		ranked = slices.Clone(ranked[:cfg.RAGTopK])
+	if len(ranked) > opts.TopK {
+		ranked = slices.Clone(ranked[:opts.TopK])
 	}
 
-	switch cfg.RAGRerank {
+	switch opts.Rerank {
 	case "off":
 		return ranked
 	case "model":

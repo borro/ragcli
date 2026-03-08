@@ -1,9 +1,10 @@
-package processor
+package tools
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -50,7 +51,7 @@ func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 		},
 	}
 
-	result, err := RunTools(context.Background(), client, "/tmp/file.txt", "Что в файле?")
+	result, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", Options{})
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -74,7 +75,7 @@ func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
 		},
 	}
 
-	result, err := RunTools(context.Background(), client, "/tmp/file.txt", "Что в файле?")
+	result, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", Options{})
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -121,7 +122,7 @@ func TestRunTools_MultiStepToolLoop(t *testing.T) {
 		"12: вывод",
 	}, "\n"))
 
-	result, err := RunTools(context.Background(), client, filePath, "Что сказано про архитектуру?")
+	result, err := Run(context.Background(), client, filePath, "Что сказано про архитектуру?", Options{})
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -160,7 +161,7 @@ func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
 	client := &scriptedRequester{responses: responses}
 	filePath := writeTempFile(t, "x1\nx2\nx3\nx4\nx5\nx6\nx7\nx8\nx9\nx10\n")
 
-	_, err := RunTools(context.Background(), client, filePath, "loop?")
+	_, err := Run(context.Background(), client, filePath, "loop?", Options{})
 	var orchErr orchestrationError
 	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "orchestration_limit" {
 		t.Fatalf("RunTools() error = %v, want orchestration_limit", err)
@@ -178,7 +179,7 @@ func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\n")
-	result, err := RunTools(context.Background(), client, filePath, "test")
+	result, err := Run(context.Background(), client, filePath, "test", Options{})
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -213,7 +214,7 @@ func TestRunTools_DuplicateSearchUsesCacheAndStops(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "alpha\nbeta\n")
-	_, err := RunTools(context.Background(), client, filePath, "find alpha")
+	_, err := Run(context.Background(), client, filePath, "find alpha", Options{})
 	var orchErr orchestrationError
 	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "duplicate_call" {
 		t.Fatalf("RunTools() error = %v, want duplicate_call", err)
@@ -236,7 +237,7 @@ func TestRunTools_DuplicateReadLinesUsesCacheAndStops(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\nthree\n")
-	_, err := RunTools(context.Background(), client, filePath, "read")
+	_, err := Run(context.Background(), client, filePath, "read", Options{})
 	var orchErr orchestrationError
 	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "duplicate_call" {
 		t.Fatalf("RunTools() error = %v, want duplicate_call", err)
@@ -259,7 +260,7 @@ func TestRunTools_NoProgressStopsOnSeenLines(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\nthree\nfour\n")
-	_, err := RunTools(context.Background(), client, filePath, "read same area")
+	_, err := Run(context.Background(), client, filePath, "read same area", Options{})
 	var orchErr orchestrationError
 	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "no_progress" {
 		t.Fatalf("RunTools() error = %v, want no_progress", err)
@@ -321,7 +322,7 @@ func TestRunTools_SystemPromptMentionsAgentPolicy(t *testing.T) {
 		},
 	}
 
-	_, err := RunTools(context.Background(), client, "/tmp/file.txt", "Что в файле?")
+	_, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", Options{})
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -388,4 +389,14 @@ func toolCall(id string, name string, arguments string) openai.ToolCall {
 			Arguments: arguments,
 		},
 	}
+}
+
+func writeTempFile(t *testing.T, content string) string {
+	t.Helper()
+
+	path := t.TempDir() + "/input.txt"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
 }

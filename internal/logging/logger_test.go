@@ -1,4 +1,4 @@
-package config
+package logging
 
 import (
 	"bytes"
@@ -55,6 +55,8 @@ func TestSetLoggerNilFallsBackToDefault(t *testing.T) {
 }
 
 func TestNewLoggerFormatsSourceRelativeToRepoRoot(t *testing.T) {
+	InitProjectRoot("")
+
 	var buf bytes.Buffer
 	logger := NewLogger(LoggerConfig{
 		Level:     slog.LevelDebug,
@@ -65,7 +67,7 @@ func TestNewLoggerFormatsSourceRelativeToRepoRoot(t *testing.T) {
 	logger.Debug("test message")
 
 	output := buf.String()
-	if !strings.Contains(output, "source=internal/config/logger_test.go:") {
+	if !strings.Contains(output, "source=internal/logging/logger_test.go:") {
 		t.Fatalf("output = %q, want repo-relative source path", output)
 	}
 	if strings.Contains(output, "/home/") || strings.Contains(output, "\\") {

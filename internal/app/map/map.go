@@ -1,4 +1,4 @@
-package processor
+package mapmode
 
 import (
 	"bufio"
@@ -11,9 +11,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/borro/ragcli/internal/config"
 	"github.com/borro/ragcli/internal/llm"
 )
+
+type Options struct {
+	InputPath   string
+	Concurrency int
+	ChunkLength int
+}
 
 const separator = "\n\n---\n\n"
 
@@ -514,8 +519,8 @@ func batchStrings(items []string, size int) [][]string {
 // REDUCE
 //
 
-func fanInReduce(ctx context.Context, client *llm.Client, results []string, question string, cfg *config.Config, stats *pipelineStats) (string, error) {
-	reduceBatchSize := cfg.Concurrency
+func fanInReduce(ctx context.Context, client *llm.Client, results []string, question string, opts Options, stats *pipelineStats) (string, error) {
+	reduceBatchSize := opts.Concurrency
 	if reduceBatchSize < 2 {
 		reduceBatchSize = 2
 	}
@@ -586,21 +591,21 @@ func selfRefine(ctx context.Context, client *llm.Client, question, facts, answer
 // PIPELINE
 //
 
-func RunSRMR(ctx context.Context, client *llm.Client, input io.Reader, cfg *config.Config, question string) (string, error) {
+func Run(ctx context.Context, client *llm.Client, input io.Reader, opts Options, question string) (string, error) {
 	startedAt := time.Now()
 	inputMode := "stdin"
-	if cfg.InputPath != "" {
+	if opts.InputPath != "" {
 		inputMode = "file"
 	}
 	stats := &pipelineStats{}
 
 	slog.Debug("map-reduce pipeline started",
 		"input_mode", inputMode,
-		"chunk_length", cfg.ChunkLength,
-		"concurrency", cfg.Concurrency,
+		"chunk_length", opts.ChunkLength,
+		"concurrency", opts.Concurrency,
 	)
 
-	chunks, err := SplitByLines(input, cfg.ChunkLength)
+	chunks, err := SplitByLines(input, opts.ChunkLength)
 	if err != nil {
 		return "", err
 	}
@@ -611,7 +616,7 @@ func RunSRMR(ctx context.Context, client *llm.Client, input io.Reader, cfg *conf
 		return "Файл пустой", nil
 	}
 
-	mapResults, err := runMapParallel(ctx, client, chunks, question, cfg.Concurrency, stats)
+	mapResults, err := runMapParallel(ctx, client, chunks, question, opts.Concurrency, stats)
 	if err != nil {
 		return "", err
 	}
@@ -632,7 +637,7 @@ func RunSRMR(ctx context.Context, client *llm.Client, input io.Reader, cfg *conf
 	}
 
 	slog.Debug("reduce phase started", "input_items", len(mapResults))
-	facts, err := fanInReduce(ctx, client, mapResults, question, cfg, stats)
+	facts, err := fanInReduce(ctx, client, mapResults, question, opts, stats)
 	if err != nil {
 		return "", err
 	}
