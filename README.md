@@ -50,8 +50,8 @@ ragcli/
 │       └── main.go           # Точка входа приложения
 ├── internal/
 │   ├── app/
-│   │   ├── app.go            # Composition root и dispatch subcommands
-│   │   ├── cli.go            # Парсинг subcommands и флагов
+│   │   ├── app.go            # Composition root, запуск CLI и runtime execution path
+│   │   ├── cli.go            # Root command, subcommands, binding и CLI validation
 │   │   ├── map/              # Map pipeline
 │   │   ├── rag/              # RAG pipeline
 │   │   └── tools/            # Tools orchestration и file tools
@@ -78,6 +78,10 @@ go build -o ragcli ./cmd/ragcli
 
 # Проверка локальной версии (без ldflags будет dev)
 ./ragcli --version
+./ragcli version
+
+# Help можно вызывать и через встроенную help-команду
+./ragcli help map
 
 # Или запуск напрямую
 go run ./cmd/ragcli map --help
@@ -89,7 +93,15 @@ go run ./cmd/ragcli map --help
 - `ragcli map [flags] <prompt>`
 - `ragcli rag [flags] <prompt>`
 - `ragcli tools [flags] <prompt>`
-- `ragcli --version`
+- `ragcli version`
+- `ragcli help [command]`
+
+Поведение root-команды:
+- `ragcli` без подкоманды печатает help и завершает процесс успешно
+- `ragcli --help` печатает root help
+- `ragcli help map` и `ragcli map --help` печатают help одной и той же команды
+- `ragcli --version` и `ragcli version` выводят версию
+- для `map`, `rag` и `tools` `prompt` можно передавать как обычный позиционный аргумент; если внутри него есть токены вида `--like-this`, `ragcli` сохраняет обратную совместимость и корректно трактует их как часть prompt
 
 Общие флаги:
 - `-f, --file` или `INPUT_FILE` — путь к входному файлу, иначе читается `stdin`
@@ -98,6 +110,7 @@ go run ./cmd/ragcli map --help
 - `--api-key` или `OPENAI_API_KEY` — ключ API
 - `-r` или `RETRY` — количество повторных попыток
 - `-v, --verbose` или `VERBOSE` — включает debug логирование в `stderr`
+- `--version` — печатает версию root-команды; короткого алиаса у version-флага нет
 
 Флаги `map`:
 - `-c, --concurrency` или `CONCURRENCY`
@@ -128,6 +141,9 @@ go run ./cmd/ragcli map --help
 
 # Через stdin:
 cat document.txt | ./ragcli map "Какие основные выводы из этого документа?"
+
+# Prompt с flag-like токенами не требует обязательного `--`
+./ragcli map --file document.txt "Что означает --retry в этом документе?"
 ```
 
 ### TOOLS режим (Agentic Tool Calling)
@@ -291,7 +307,7 @@ lefthook install
 
 При создании тега вида `vX.Y.Z` автоматически создаётся релиз с бинарниками для всех платформ через [goreleaser](https://goreleaser.com/). Конфигурация релиза зафиксирована в `.goreleaser.yml`.
 
-GoReleaser вшивает тег релиза в бинарь, поэтому `./ragcli --version` для релизных артефактов выводит соответствующую версию, например `v1.0.0`. Для локальной сборки без `ldflags` команда выводит `dev`.
+GoReleaser вшивает тег релиза в бинарь, поэтому `./ragcli --version` и `./ragcli version` для релизных артефактов выводят соответствующую версию, например `v1.0.0`. Для локальной сборки без `ldflags` команда выводит `dev`.
 
 Для создания нового релиза:
 ```bash
@@ -304,6 +320,7 @@ git tag v1.0.0 && git push origin v1.0.0
 ```bash
 go build -o ragcli ./cmd/ragcli
 ./ragcli --version   # dev
+./ragcli version     # dev
 ```
 
 Для проверки release-конфига без публикации можно использовать dry-run:

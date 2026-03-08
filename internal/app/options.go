@@ -10,7 +10,6 @@ type CommonOptions struct {
 	InputPath string
 	Prompt    string
 	Verbose   bool
-	Version   bool
 }
 
 type LLMOptions struct {

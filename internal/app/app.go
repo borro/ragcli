@@ -24,32 +24,80 @@ func Run(args []string, stdout io.Writer, stdin io.Reader, version string) int {
 	logging.Configure(false)
 
 	envErr := godotenv.Load()
-
-	cmd, err := parseArgs(args)
-	if err != nil {
-		if usageErr, ok := err.(usageError); ok {
-			if usageErr.message != "" {
-				slog.Error(usageErr.message, "stage", "parse_args")
-			}
-			if usageErr.usage != "" {
-				_, _ = fmt.Fprintln(stdout, usageErr.usage)
-			}
-			if usageErr.message == "" {
-				return 0
-			}
-		} else {
-			slog.Error("failed to parse CLI args", "stage", "parse_args", "error", err)
-		}
+	root := newCLI(cliConfig{
+		stdout:  stdout,
+		version: version,
+		execute: func(ctx context.Context, cmd Command) error {
+			return executeCommand(ctx, cmd, stdout, stdin, version, len(args), envErr, startedAt)
+		},
+	})
+	if err := root.Run(context.Background(), append([]string{root.Name}, applyPromptArgCompatibility(args)...)); err != nil {
+		slog.Error("cli execution failed", "stage", "run_cli", "error", err)
 		return 1
 	}
+	return 0
+}
 
+func roundDurationSeconds(duration time.Duration) float64 {
+	return float64(duration.Round(time.Millisecond)) / float64(time.Second)
+}
+
+func applyPromptArgCompatibility(args []string) []string {
+	if len(args) == 0 || !supportsImplicitPrompt(args[0]) {
+		return args
+	}
+
+	subArgs := args[1:]
+	for i := 0; i < len(subArgs); i++ {
+		token := subArgs[i]
+		if token == "--" {
+			return args
+		}
+		if !strings.HasPrefix(token, "-") || token == "-" {
+			result := make([]string, 0, len(args)+1)
+			result = append(result, args[:i+1]...)
+			result = append(result, "--")
+			result = append(result, args[i+1:]...)
+			return result
+		}
+		if commandFlagConsumesValue(args[0], token) && !strings.Contains(token, "=") && i+1 < len(subArgs) {
+			i++
+		}
+	}
+
+	return args
+}
+
+func supportsImplicitPrompt(subcommand string) bool {
+	switch subcommand {
+	case "map", "rag", "tools":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandFlagConsumesValue(subcommand string, token string) bool {
+	switch token {
+	case "-f", "--file", "--api-url", "--model", "--api-key", "-r", "--retry":
+		return true
+	case "-c", "--concurrency", "-l", "--length":
+		return subcommand == "map"
+	case "--embedding-model", "--rag-top-k", "--rag-final-k", "--rag-chunk-size", "--rag-chunk-overlap", "--rag-index-ttl", "--rag-index-dir", "--rag-rerank":
+		return subcommand == "rag"
+	default:
+		return false
+	}
+}
+
+func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stdin io.Reader, version string, argsCount int, envErr error, startedAt time.Time) error {
 	logging.Configure(cmd.Common.Verbose)
 	slog.Info("application run started",
-		"args_count", len(args),
+		"args_count", argsCount,
 		"version", strings.TrimSpace(version),
 		"version_supplied", strings.TrimSpace(version) != "",
 	)
-	slog.Debug("parsing cli arguments", "args_count", len(args))
+	slog.Debug("parsing cli arguments", "args_count", argsCount)
 	if envErr != nil {
 		slog.Warn("failed to load .env file, using system environment variables", "stage", "load_env", "error", envErr)
 	} else {
@@ -70,24 +118,14 @@ func Run(args []string, stdout io.Writer, stdin io.Reader, version string) int {
 		"embedding_model", strings.TrimSpace(cmd.LLM.EmbeddingModel),
 	)
 
-	if cmd.Common.Version {
-		slog.Info("writing version output")
-		if _, err := fmt.Fprintln(stdout, version); err != nil {
-			slog.Error("failed to write version", "stage", "write_version", "error", err)
-			return 1
-		}
-		slog.Info("application run finished", "stage", "write_version", "exit_code", 0, "duration", roundDurationSeconds(time.Since(startedAt)))
-		return 0
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	commandCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	slog.Info("preparing input source", "command", cmd.Name, "input_path_set", strings.TrimSpace(cmd.Common.InputPath) != "")
 	handle, err := input.Open(cmd.Common.InputPath, stdin)
 	if err != nil {
 		slog.Error("failed to prepare input", "stage", "open_input", "command", cmd.Name, "input_path", strings.TrimSpace(cmd.Common.InputPath), "error", err)
-		return 1
+		return err
 	}
 	defer func() {
 		if err := handle.Close(); err != nil {
@@ -113,10 +151,10 @@ func Run(args []string, stdout io.Writer, stdin io.Reader, version string) int {
 	switch cmd.Name {
 	case "map":
 		slog.Info("starting map processing")
-		result, err = mapmode.Run(ctx, client, handle.Reader, cmd.Map, cmd.Common.Prompt)
+		result, err = mapmode.Run(commandCtx, client, handle.Reader, cmd.Map, cmd.Common.Prompt)
 	case "tools":
 		slog.Info("starting tools processing")
-		result, err = tools.Run(ctx, client, handle.Path, cmd.Common.Prompt, cmd.Tools)
+		result, err = tools.Run(commandCtx, client, handle.Path, cmd.Common.Prompt, cmd.Tools)
 	case "rag":
 		slog.Debug("creating embedding client",
 			"embedding_model", strings.TrimSpace(cmd.LLM.EmbeddingModel),
@@ -124,7 +162,7 @@ func Run(args []string, stdout io.Writer, stdin io.Reader, version string) int {
 		)
 		embedder := llm.NewEmbedder(cmd.LLM.APIURL, cmd.LLM.EmbeddingModel, cmd.LLM.APIKey, cmd.LLM.RetryCount)
 		slog.Info("starting rag processing")
-		result, err = rag.Run(ctx, client, embedder, rag.Source{
+		result, err = rag.Run(commandCtx, client, embedder, rag.Source{
 			Path:        handle.Path,
 			DisplayName: handle.DisplayName,
 			Reader:      handle.Reader,
@@ -134,7 +172,7 @@ func Run(args []string, stdout io.Writer, stdin io.Reader, version string) int {
 	}
 	if err != nil {
 		slog.Error("processing failed", "stage", "process", "command", cmd.Name, "input_source", handle.DisplayName, "error", err)
-		return 1
+		return err
 	}
 	slog.Info("processing finished",
 		"command", cmd.Name,
@@ -144,12 +182,8 @@ func Run(args []string, stdout io.Writer, stdin io.Reader, version string) int {
 	slog.Debug("writing result to stdout", "command", cmd.Name)
 	if _, err := fmt.Fprintln(stdout, strings.TrimSpace(result)); err != nil {
 		slog.Error("failed to write result", "stage", "write_result", "command", cmd.Name, "error", err)
-		return 1
+		return err
 	}
 	slog.Info("application run finished", "command", cmd.Name, "exit_code", 0, "duration", roundDurationSeconds(time.Since(startedAt)))
-	return 0
-}
-
-func roundDurationSeconds(duration time.Duration) float64 {
-	return float64(duration.Round(time.Millisecond)) / float64(time.Second)
+	return nil
 }
