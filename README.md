@@ -1,331 +1,159 @@
-# RAG CLI — Инструмент для работы с LLM через RAG и Map-Reduce
+# ragcli
 
 [![CI master](https://github.com/borro/ragcli/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/borro/ragcli/actions/workflows/ci.yaml)
 [![Coverage](https://codecov.io/gh/borro/ragcli/graph/badge.svg)](https://codecov.io/gh/borro/ragcli)
 
-Командная строка для обработки больших текстовых файлов с помощью LLM (Large Language Models) тремя режимами: **Map-Reduce**, **RAG retrieval** и **Agentic Tool Calling**.
+`ragcli` помогает задавать вопросы к большим локальным текстам через LLM из терминала. Он работает с OpenAI-compatible API и поддерживает три режима: `map`, retrieval-ориентированный `rag` и agentic `tools`.
 
-## Какую проблему решает ragcli
+Подходит для логов, документации, отчётов и других файлов, которые неудобно скармливать модели целиком. Если входной файл не указан, команда читает `stdin`, поэтому `ragcli` удобно встраивать в shell-скрипты и пайплайны.
 
-LLM плохо работает с большими файлами “в лоб”:
-- файл не помещается в контекст модели целиком;
-- ручной поиск по логам/документам занимает много времени;
-- при разбиении текста легко потерять важный контекст;
-- в CLI-скриптах нужен предсказуемый и автоматизируемый способ получать ответы из текста.
+## Почему `ragcli`
 
-`ragcli` закрывает это тремя режимами:
-- `map`: быстро и параллельно обрабатывает большие тексты по чанкам;
-- `rag`: строит локальный временный индекс, делает retrieval по embeddings и отвечает только по найденным evidence chunks;
-- `tools`: позволяет модели точечно искать нужные места в файле через инструменты (`search_file`, `read_lines`, `read_around`).
+- Не нужно вручную копировать большие файлы в чат.
+- Можно выбрать стратегию под задачу: chunked-обработка, retrieval или точечное исследование файла.
+- Один и тот же CLI работает с локальными и удалёнными OpenAI-compatible backend'ами.
+- Ответ печатается в `stdout`, а runtime-логи при `--verbose` идут в `stderr`.
 
-## Типовые use cases
+## Когда использовать какой режим
 
-1. Анализ больших логов и отчётов  
-Вопрос: “Где в логах причины 5xx и какие сервисы затронуты?”  
-Режим: `map` для скорости на больших объёмах.
+| Режим | Когда выбирать | Сильная сторона | Ограничения |
+| --- | --- | --- | --- |
+| `map` | Нужно разбить большой файл на чанки и агрегировать ответ по ним | Работает с объёмом, который неудобно отправлять одним куском | На больших файлах может быть медленным, а между чанками теряется часть контекста |
+| `rag` | Нужен retrieval по релевантным фрагментам, а не чтение файла целиком | Локальный индекс и ответ по evidence chunks | Нужен embedding endpoint |
+| `tools` | Нужно найти конкретные строки, секции или причины в файле | Модель умеет вызывать `search_file`, `read_lines`, `read_around` | Требуется корректная поддержка tool calling на backend'е |
 
-2. Поиск точных фрагментов в документации/спецификации  
-Вопрос: “Что сказано про retry policy в разделе N?”  
-Режим: `tools`, когда важно найти конкретные строки и ответить по ним.
+Короткая эвристика:
+- Для больших логов и summary-задач начинайте с `map`, если файл не помещается в один запрос и вас устраивает более долгий прогон.
+- Для Q&A по документу с опорой на релевантные куски используйте `rag`.
+- Для точечного расследования по строкам и секциям используйте `tools`.
 
-3. Быстрый Q&A по локальным текстовым данным в терминале  
-Вопрос: “Какие ключевые выводы в этом файле?”  
-Режим: любой, в зависимости от задачи (скорость vs точечный поиск).
+## Требования
 
-4. Интеграция в CI/скрипты и работу с локальными LLM  
-`ragcli` работает с OpenAI-compatible API (Ollama, LM Studio, vLLM), поэтому подходит для автоматизации без UI.
+- Go `1.25.6+` для сборки из исходников.
+- OpenAI-compatible API для chat completion.
+- Для `rag` дополнительно нужен embedding endpoint.
+- Поддерживаемые сценарии включают локальные backend'ы вроде Ollama, LM Studio и vLLM, если они совместимы по API.
 
-## Что важно понимать
-
-В режиме `rag` используется локальный временный индекс с embeddings и retrieval.
-Режим `tools` остаётся agentic file exploration поверх файла (`search_file`/`read_lines`/`read_around`), а `map` использует чанкование и агрегацию ответов.
-
-
-## Структура проекта
-
-```
-ragcli/
-├── cmd/
-│   └── ragcli/
-│       └── main.go           # Точка входа приложения
-├── internal/
-│   ├── app/
-│   │   ├── app.go            # Composition root, запуск CLI и runtime execution path
-│   │   ├── cli.go            # Root command, subcommands, binding и CLI validation
-│   │   ├── map/              # Map pipeline
-│   │   ├── rag/              # RAG pipeline
-│   │   └── tools/            # Tools orchestration и file tools
-│   ├── input/
-│   │   └── input.go          # File/stdin materialization
-│   ├── llm/
-│   │   └── client.go         # HTTP клиент для LLM API с retry/backoff
-│   └── logging/
-│       └── logger.go         # Runtime logger setup
-├── go.mod
-├── go.sum
-└── README.md
-```
-
-## Зависимости
-
-- `github.com/sashabaranov/go-openai` — Client для OpenAI-compatible API
-
-## Компиляция и запуск
+## Quickstart
 
 ```bash
-# Сборка бинарника
 go build -o ragcli ./cmd/ragcli
-
-# Проверка локальной версии (без ldflags будет dev)
 ./ragcli --version
-./ragcli version
-
-# Help можно вызывать и через встроенную help-команду
-./ragcli help map
-
-# Или запуск напрямую
-go run ./cmd/ragcli map --help
 ```
 
-## CLI
+Сразу после сборки рекомендуется выставить базовые переменные окружения, чтобы дальше не повторять одни и те же флаги:
 
-Корневые команды:
-- `ragcli map [flags] <prompt>`
-- `ragcli rag [flags] <prompt>`
-- `ragcli tools [flags] <prompt>`
-- `ragcli version`
-- `ragcli help [command]`
+```bash
+export LLM_API_URL=http://localhost:1234/v1
+export OPENAI_API_KEY=your-api-key
+export LLM_MODEL=your-chat-model
+```
 
-Поведение root-команды:
-- `ragcli` без подкоманды печатает help и завершает процесс успешно
-- `ragcli --help` печатает root help
-- `ragcli help map` и `ragcli map --help` печатают help одной и той же команды
-- `ragcli --version` и `ragcli version` выводят версию
-- для `map`, `rag` и `tools` `prompt` можно передавать как обычный позиционный аргумент; если внутри него есть токены вида `--like-this`, `ragcli` сохраняет обратную совместимость и корректно трактует их как часть prompt
+Если `LLM_MODEL` не задана, `ragcli` использует значение по умолчанию `local-model`. Во многих локальных OpenAI-compatible backend'ах это означает "возьми последнюю загруженную модель", но это поведение определяется самим backend'ом, а не CLI.
 
-Общие флаги:
-- `-f, --file` или `INPUT_FILE` — путь к входному файлу, иначе читается `stdin`
-- `--api-url` или `LLM_API_URL` — URL LLM API
-- `--model` или `LLM_MODEL` — chat-модель
-- `--api-key` или `OPENAI_API_KEY` — ключ API
-- `-r` или `RETRY` — количество повторных попыток
-- `-v, --verbose` или `VERBOSE` — включает debug логирование в `stderr`
-- `--version` — печатает версию root-команды; короткого алиаса у version-флага нет
+После этого можно запускать команды без постоянной передачи `--api-url`, `--api-key` и `--model`.
 
-Флаги `map`:
-- `-c, --concurrency` или `CONCURRENCY`
-- `-l, --length` или `LENGTH`
+### Первый запуск
 
-Флаги `rag`:
-- `--embedding-model` или `EMBEDDING_MODEL`
-- `--rag-top-k`, `--rag-final-k`
-- `--rag-chunk-size`, `--rag-chunk-overlap`
-- `--rag-index-ttl`, `--rag-index-dir`
-- `--rag-rerank`
+```bash
+./ragcli map --file document.txt "Какие основные выводы?"
+./ragcli rag --file spec.txt "Что сказано про retry policy?"
+./ragcli tools --file app.log "Где в логах причины 5xx?"
+```
 
-## Примеры использования
+## Практические заметки
+
+- `map` полезен, когда файл приходится обрабатывать чанками, но на больших файлах такой прогон может занимать заметное время.
+- На локальных моделях и при фактически последовательной обработке `map` обычно не даёт выигрыша по скорости.
+- `rag` отвечает только по найденным evidence chunks, поэтому качество зависит от embedding-модели и параметров chunking.
+- `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `search_file`, `read_lines` и `read_around`.
+- Если backend плохо поддерживает tool calling, режим `tools` может работать менее надёжно.
+- `--verbose` включает подробные runtime-логи в `stderr`, не смешивая их с финальным ответом в `stdout`.
+
+## Примеры
 
 ### `map`
 
 ```bash
-# Обработка файла с использованием 4 параллельных запросов:
-./ragcli map --file document.txt -c 4 "Какие основные выводы?"
-
-# С кастомным размером чанка и API:
-./ragcli map --file document.txt \
-  --api-url http://localhost:1234/v1 \
-  --model my-model \
-  --length 8000 \
-  --verbose \
-  "Какие основные выводы?"
-
-# Через stdin:
-cat document.txt | ./ragcli map "Какие основные выводы из этого документа?"
-
-# Prompt с flag-like токенами не требует обязательного `--`
-./ragcli map --file document.txt "Что означает --retry в этом документе?"
+./ragcli map --file report.txt -c 4 "Собери ключевые выводы"
+cat report.txt | ./ragcli map "Какие риски и ограничения описаны в документе?"
+./ragcli map --file report.txt --length 8000 --verbose "Что означает --retry в этом документе?"
 ```
 
-### TOOLS режим (Agentic Tool Calling)
-
-В этом режиме модель сама исследует файл через tools и не получает весь файл целиком в контекст.
-Цикл многошаговый: модель может несколько раз вызвать `search_file`, `read_lines` и `read_around`, пока не соберёт достаточно контекста для финального ответа.
-`ragcli` дополнительно подсказывает модели, что файл уже подключён через tools и просить пользователя повторно прислать файл нельзя, но это остаётся prompt-only guardrail, а не принудительный вызов инструмента.
+### `rag`
 
 ```bash
-./ragcli tools \
-  --file file.txt \
-  --api-url http://localhost:1234/v1 \
-  "Какие ключевые моменты обсуждаются в разделе про архитектуру?"
+./ragcli rag --file architecture.md --embedding-model text-embedding-3-small \
+  "Какие ограничения описаны в разделе про масштабирование?"
+
+cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
+  "Какие требования относятся к отказоустойчивости?"
 ```
 
-Модель будет вызывать инструменты `search_file`, `read_lines` и `read_around` для исследования файла.
-Все инструменты возвращают JSON, чтобы модель могла опираться на структурированные поля, а не на свободный текст.
-Если backend или модель не поддерживают OpenAI-compatible tool calling корректно, `tools` может вернуть обычный текстовый ответ без вызова инструментов. Усиленный prompt снижает число ложных ответов вида "пришлите файл", но не гарантирует использование tools на несовместимых серверах.
-
-### RAG режим (retrieval с локальным индексом)
-
-`rag` строит локальный временный индекс из `--file` или `stdin`, сохраняет chunk metadata и embeddings в tempdir, затем:
-- встраивает вопрос embedding моделью;
-- находит top-k релевантных чанков по cosine similarity;
-- делает lightweight rerank;
-- формирует ответ только по evidence chunks и добавляет блок `Sources`.
+### `tools`
 
 ```bash
-./ragcli rag \
-  --file file.txt \
-  --model qwen2.5 \
-  --embedding-model text-embedding-3-small \
-  "Что сказано про retry policy?"
+./ragcli tools --file app.log "Где начинаются ошибки авторизации?"
+./ragcli tools --file handbook.md --verbose \
+  "Что сказано про release process и rollback?"
 ```
 
-## Режимы работы
+## Команды
 
-### Map
+Основные команды:
 
-Файл разбивается на чанки, каждый обрабатывается параллельно через LLM (фаза **Map**), затем результаты объединяются для формирования финального ответа (фаза **Reduce**).
+- `ragcli map [options] <prompt>`
+- `ragcli rag [options] <prompt>`
+- `ragcli tools [options] <prompt>`
+- `ragcli version`
+- `ragcli help [command]`
 
-**Плюсы:**
-- Быстрее при больших файлах благодаря параллелизму
-- Предсказуемое поведение
+Поведение CLI:
 
-**Минусы:**
-- Может теряться контекст между чанками
+- `ragcli` без подкоманды печатает help.
+- `ragcli --version` и `ragcli version` выводят версию.
+- `ragcli help map` и `ragcli map --help` показывают help одной и той же команды.
+- `prompt` передаётся как позиционный аргумент.
+- `--file` опционален: если его нет, команда читает входные данные из `stdin`.
 
-### Agentic Tool Calling
+## Важные флаги и переменные окружения
 
-Используется механизм Function/Tool Calling. Модель получает доступ к инструментам:
-- `search_file(query, mode?, limit?, offset?, context_lines?)` — поиск по файлу. `mode=auto` сначала делает case-insensitive literal поиск, затем fallback по token overlap; `mode=regex` включает regex-поиск. Возвращает JSON с `query`, `requested_mode`, `mode`, `match_count`, `total_matches`, `has_more`, `next_offset`, `matches`
-- `read_lines(start_line, end_line)` — чтение диапазона строк. Возвращает JSON с `start_line`, `end_line`, `line_count`, `lines`
-- `read_around(line, before?, after?)` — чтение окна строк вокруг найденной строки. Возвращает JSON с `line`, `before`, `after`, `start_line`, `end_line`, `line_count`, `lines`
+Глобальные:
 
-Модель сама решает, какие инструменты и когда вызывать для формирования ответа, и может делать несколько последовательных tool-call шагов.
+| Флаг | Переменная | Значение |
+| --- | --- | --- |
+| `--file`, `-f` | `INPUT_FILE` | Путь к входному файлу; если не задан, читается `stdin` |
+| `--api-url` | `LLM_API_URL` | URL OpenAI-compatible API |
+| `--api-key` | `OPENAI_API_KEY` | API key |
+| `--model` | `LLM_MODEL` | Chat-модель для `map`, `rag`, `tools` |
+| `--retry`, `-r` | `RETRY` | Количество retry для LLM HTTP-клиента |
+| `--verbose`, `-v` | `VERBOSE` | Подробные runtime-логи в `stderr` |
 
-**Плюсы:**
-- Сохраняется полный контекст файла
-- Модель может целенаправленно искать информацию
+`map`:
 
-**Минусы:**
-- Медленнее (множественные циклы общения с моделью)
-- Требует поддержки tool calling от LLM API
-- Prompt-only guardrails не могут гарантировать вызов инструментов, если backend их игнорирует
+- `--concurrency`, `-c` или `CONCURRENCY`
+- `--length`, `-l` или `LENGTH`
 
-### RAG Retrieval
+`rag`:
 
-Используется локальный временный индекс с chunk metadata и embeddings. Модель не получает весь файл и не исследует его агентно; в контекст попадают только retrieval evidence chunks.
+- `--embedding-model` или `EMBEDDING_MODEL`
+- `--rag-top-k` или `RAG_TOP_K`
+- `--rag-final-k` или `RAG_FINAL_K`
+- `--rag-chunk-size` или `RAG_CHUNK_SIZE`
+- `--rag-chunk-overlap` или `RAG_CHUNK_OVERLAP`
+- `--rag-index-ttl` или `RAG_INDEX_TTL`
+- `--rag-index-dir` или `RAG_INDEX_DIR`
+- `--rag-rerank` или `RAG_RERANK`
 
-**Плюсы:**
-- Честный retrieval pipeline с citations
-- Повторные запуски могут переиспользовать индекс до истечения TTL
-- Финальный ответ ограничен найденными evidence chunks
+Полный справочник по текущим флагам смотрите через встроенный help:
 
-**Минусы:**
-- Требуется embeddings endpoint
-- Retrieval quality зависит от chunking и embedding модели
-
-## Логирование
-
-Весь вывод логов идёт в `stderr`, финальный ответ — в `stdout`.
-
-Уровни:
-- `ERROR` — по умолчанию
-- `DEBUG` — при `-v/--verbose`
-
-Примеры логов:
 ```bash
-# Успешный запуск с --verbose
-INFO  command parsed command=map input_path_set=true verbose=true retry_count=3
-INFO  input source ready input_source=document.txt has_path=true
-DEBUG command options prepared command=map input_path=document.txt has_prompt=true api_url_set=true model=local-model embedding_model=text-embedding-nomic-embed-text-v1.5
-INFO  starting map processing input_source=document.txt
-DEBUG map-reduce pipeline started chunk_length=10000 concurrency=4 input_path=document.txt
-INFO  processing finished command=map input_source=document.txt result_empty=false
-DEBUG writing result to stdout command=map
-
-# Ошибка без --verbose
-ERROR failed to prepare input stage=open_input command=map input_path=missing.txt error="open missing.txt: no such file or directory"
+./ragcli --help
+./ragcli map --help
+./ragcli rag --help
+./ragcli tools --help
 ```
 
-## Обработка ошибок и retry
+## Для разработки
 
-При ошибках запрос к LLM или embeddings API автоматически повторяется с экспоненциальной задержкой:
-- Попроба 1 → запрос без задержки
-- Попроба 2 → задержка 1с
-- Попроба 3 → задержка 2с
-- Попроба 4 → задержка 4с
-- Попроба 5 → задержка 8с
-
-Количество попыток задается флагом `-r`.
-
-## Graceful Shutdown
-
-При нажатии `Ctrl+C` (сигнал SIGINT/SIGTERM):
-- Все HTTP запросы отменяются через контекст
-- Worker pool останавливается
-- Временные файлы от stdin удаляются
-
-## Совместимость API
-
-Утилита работает с любым API, совместимым с OpenAI Chat Completions форматом. Протестировано с:
-- Ollama (ollama serve)
-- LM Studio
-- vLLM
-- Другие OpenAI-compatible серверы
-
-## CI/CD
-
-Для разработки используется GitHub Actions с автоматической проверкой:
-- Линтинг через `golangci-lint`
-- Запуск тестов с покрытием кода
-- Сборка бинарников для Linux, macOS и Windows
-
-Детали workflow см. в `.github/workflows/ci.yaml`
-
-### Pre-commit хуки
-
-Локальные проверки перед коммитом запускаются через `lefthook`.
-
-Установка:
-```bash
-go install github.com/evilmartians/lefthook@latest
-curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin $(cat .golangci-lint-version)
-lefthook install
-```
-
-Для репозитория зафиксирована версия `golangci-lint` из `.golangci-lint-version`.
-
-Хук `pre-commit` выполняет проверки в таком порядке:
-- `gofmt` для staged `.go` файлов с автоматическим добавлением исправлений в индекс
-- `golangci-lint run --timeout=5m ./cmd/... ./internal/...`
-- `go test ./...`
-- `go test ./... -coverprofile=coverage.out`
-- `go tool cover -func=coverage.out`
-
-Эти хуки дублируют базовые проверки CI, но не заменяют GitHub Actions.
-
-### Автоматические релизы
-
-При создании тега вида `vX.Y.Z` автоматически создаётся релиз с бинарниками для всех платформ через [goreleaser](https://goreleaser.com/). Конфигурация релиза зафиксирована в `.goreleaser.yml`.
-
-GoReleaser вшивает тег релиза в бинарь, поэтому `./ragcli --version` и `./ragcli version` для релизных артефактов выводят соответствующую версию, например `v1.0.0`. Для локальной сборки без `ldflags` команда выводит `dev`.
-
-Для создания нового релиза:
-```bash
-git tag v1.0.0 && git push origin v1.0.0
-```
-
-### Локальная сборка
-
-Для локальной сборки бинарника для вашей платформы:
-```bash
-go build -o ragcli ./cmd/ragcli
-./ragcli --version   # dev
-./ragcli version     # dev
-```
-
-Для проверки release-конфига без публикации можно использовать dry-run:
-```bash
-goreleaser release --clean --snapshot --skip=publish --config .goreleaser.yml
-```
-
-Для кроссплатформенной сборки используйте GoReleaser или соберите отдельно для каждой платформы через переменные `GOOS` и `GOARCH`.
+Точка входа находится в [`cmd/ragcli/main.go`](/home/borro/projects/llm-code/ragcli/cmd/ragcli/main.go), а CLI-описание и help-тексты определены в [`internal/app/cli.go`](/home/borro/projects/llm-code/ragcli/internal/app/cli.go). Если нужен полный обзор доступных опций и их значений по умолчанию, удобнее начинать именно с help или этих файлов.
