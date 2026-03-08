@@ -13,18 +13,27 @@ builds:
     goos:
       - linux
       - darwin
-      - windows
     goarch:
       - amd64
       - arm64
-    ignore:
-      - goos: windows
-        goarch: arm64
+
+  - id: ragcli-windows
+    main: ./cmd/ragcli
+    binary: ragcli
+    ldflags:
+      - -X main.version={{ .Version }}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+    goarch:
+      - amd64
 
 archives:
   - id: default
     builds:
       - ragcli
+      - ragcli-windows
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
