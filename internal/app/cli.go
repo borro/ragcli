@@ -20,6 +20,7 @@ type commandBinder func(*cli.Command) (Command, error)
 
 type cliConfig struct {
 	stdout  io.Writer
+	stderr  io.Writer
 	version string
 	execute commandExecutor
 }
@@ -40,16 +41,18 @@ func newCLI(cfg cliConfig) *cli.Command {
 		Version:               strings.TrimSpace(cfg.version),
 		Flags:                 globalFlags(),
 		Action:                showRootHelp,
+		OnUsageError:          showUsageHelp,
 		Commands:              buildCLICommands(cfg),
 		Writer:                cfg.stdout,
-		ErrWriter:             cfg.stdout,
+		ErrWriter:             cfg.stderr,
+		ExitErrHandler:        suppressExitError,
 		HideHelp:              false,
 		EnableShellCompletion: true,
 	}
 }
 
 func buildCLICommands(cfg cliConfig) []*cli.Command {
-	return []*cli.Command{
+	commands := []*cli.Command{
 		newPromptCLICommand(promptCommandConfig{
 			name:        "map",
 			usage:       "Обработать большой текст чанками через map-reduce",
@@ -208,6 +211,12 @@ func buildCLICommands(cfg cliConfig) []*cli.Command {
 		}),
 		newVersionCLICommand(),
 	}
+
+	for _, cmd := range commands {
+		cmd.OnUsageError = showUsageHelp
+	}
+
+	return commands
 }
 
 type promptCommandConfig struct {
@@ -334,11 +343,23 @@ func globalFlags() []cli.Flag {
 		&cli.BoolFlag{
 			Name:    "debug",
 			Aliases: []string{"d"},
-			Usage:   "Включить debug runtime-логи в stderr.",
+			Usage:   "Включить debug runtime-логи в stderr; без флага ошибки печатаются одной строкой.",
 			Sources: cli.EnvVars("DEBUG"),
 		},
 	}
 }
+
+func showUsageHelp(ctx context.Context, cmd *cli.Command, err error, _ bool) error {
+	if cmd.Root() == cmd {
+		_ = cli.ShowRootCommandHelp(cmd)
+		return err
+	}
+
+	_ = cli.ShowSubcommandHelp(cmd)
+	return err
+}
+
+func suppressExitError(context.Context, *cli.Command, error) {}
 
 func bindCommandBase(cmd *cli.Command, name string) Command {
 	return Command{

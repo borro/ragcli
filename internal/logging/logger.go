@@ -3,7 +3,6 @@ package logging
 import (
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,14 +14,20 @@ var (
 	projectRootOnce sync.Once
 )
 
-func Configure(debug bool) {
-	slog.SetDefault(newLogger(os.Stderr, debug))
+func Configure(writer io.Writer, debug bool) {
+	slog.SetDefault(newLogger(writer, debug))
 }
 
 func newLogger(writer io.Writer, debug bool) *slog.Logger {
+	if writer == nil {
+		writer = io.Discard
+	}
+
 	level := slog.LevelError
 	if debug {
 		level = slog.LevelDebug
+	} else {
+		writer = io.Discard
 	}
 
 	handler := slog.NewTextHandler(writer, &slog.HandlerOptions{

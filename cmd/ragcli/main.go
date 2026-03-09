@@ -9,5 +9,5 @@ import (
 var version = "dev"
 
 func main() {
-	os.Exit(app.Run(os.Args[1:], os.Stdout, os.Stdin, version))
+	os.Exit(app.Run(os.Args[1:], os.Stdout, os.Stderr, os.Stdin, version))
 }

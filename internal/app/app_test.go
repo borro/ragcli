@@ -10,7 +10,7 @@ import (
 func TestRunVersionCommand(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run([]string{"version"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"version"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run(version) exit code = %d, want 0", exitCode)
 	}
@@ -22,7 +22,7 @@ func TestRunVersionCommand(t *testing.T) {
 func TestRunVersionFlag(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run([]string{"--version"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"--version"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run(--version) exit code = %d, want 0", exitCode)
 	}
@@ -34,7 +34,7 @@ func TestRunVersionFlag(t *testing.T) {
 func TestRunShortDebugFlagDoesNotPrintVersion(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run([]string{"-d"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"-d"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run(-d) exit code = %d, want 0", exitCode)
 	}
@@ -53,7 +53,7 @@ func TestRunShortDebugFlagDoesNotPrintVersion(t *testing.T) {
 func TestRunRootHelp(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run([]string{"--help"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"--help"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run(--help) exit code = %d, want 0", exitCode)
 	}
@@ -71,7 +71,7 @@ func TestRunRootHelp(t *testing.T) {
 func TestRunMapHelp(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run([]string{"map", "--help"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"map", "--help"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run(map --help) exit code = %d, want 0", exitCode)
 	}
@@ -86,7 +86,7 @@ func TestRunMapHelp(t *testing.T) {
 func TestRunHelpMapShowsGlobalFlags(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run([]string{"help", "map"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"help", "map"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run(help map) exit code = %d, want 0", exitCode)
 	}
@@ -101,7 +101,7 @@ func TestRunHelpMapShowsGlobalFlags(t *testing.T) {
 func TestRunRAGHelp(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run([]string{"rag", "--help"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"rag", "--help"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run(rag --help) exit code = %d, want 0", exitCode)
 	}
@@ -116,7 +116,7 @@ func TestRunRAGHelp(t *testing.T) {
 func TestRunHybridHelp(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run([]string{"hybrid", "--help"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"hybrid", "--help"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run(hybrid --help) exit code = %d, want 0", exitCode)
 	}
@@ -131,7 +131,7 @@ func TestRunHybridHelp(t *testing.T) {
 func TestRunVersionHelp(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run([]string{"version", "--help"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"version", "--help"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run(version --help) exit code = %d, want 0", exitCode)
 	}
@@ -149,7 +149,7 @@ func TestRunVersionHelp(t *testing.T) {
 func TestRunWithoutSubcommandShowsHelp(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run(nil, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run(nil, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run() exit code = %d, want 0", exitCode)
 	}
@@ -281,8 +281,9 @@ func TestApplyPromptArgCompatibilitySkipsUnsupportedCommands(t *testing.T) {
 
 func TestRunMapMissingPromptShowsHelp(t *testing.T) {
 	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 
-	exitCode := Run([]string{"map"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"map"}, &stdout, &stderr, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 1 {
 		t.Fatalf("Run(map) exit code = %d, want 1", exitCode)
 	}
@@ -292,29 +293,82 @@ func TestRunMapMissingPromptShowsHelp(t *testing.T) {
 			t.Fatalf("stdout missing %q in map usage output:\n%s", needle, output)
 		}
 	}
+	if stderr.String() != "missing required argument: prompt\n" {
+		t.Fatalf("stderr = %q, want prompt error", stderr.String())
+	}
 }
 
 func TestRunMapMissingInputFile(t *testing.T) {
 	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 
-	exitCode := Run([]string{"map", "--file", "missing.txt", "question"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"map", "--file", "missing.txt", "question"}, &stdout, &stderr, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 1 {
 		t.Fatalf("Run(map missing file) exit code = %d, want 1", exitCode)
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty output", stdout.String())
 	}
+	if stderr.String() != "failed to open file: open missing.txt: no such file or directory\n" {
+		t.Fatalf("stderr = %q, want plain file error", stderr.String())
+	}
+}
+
+func TestRunMapMissingInputFileDebugLogsToStderr(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run([]string{"--debug", "map", "--file", "missing.txt", "question"}, &stdout, &stderr, bytes.NewBuffer(nil), "v1.2.3")
+	if exitCode != 1 {
+		t.Fatalf("Run(debug map missing file) exit code = %d, want 1", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty output", stdout.String())
+	}
+	output := stderr.String()
+	if !strings.Contains(output, "level=ERROR") {
+		t.Fatalf("stderr = %q, want structured debug log", output)
+	}
+	if strings.Contains(output, "\nfailed to open file: open missing.txt: no such file or directory\n") {
+		t.Fatalf("stderr = %q, want no plain-text duplicate", output)
+	}
+	if strings.Count(output, "failed to open file: open missing.txt: no such file or directory") != 1 {
+		t.Fatalf("stderr = %q, want single fatal error occurrence", output)
+	}
+}
+
+func TestRunMapInvalidFlagShowsHelpOnStdoutAndErrorOnStderr(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run([]string{"map", "--unknown", "question"}, &stdout, &stderr, bytes.NewBuffer(nil), "v1.2.3")
+	if exitCode != 1 {
+		t.Fatalf("Run(map --unknown) exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "ragcli map [arguments...]") {
+		t.Fatalf("stdout = %q, want map help output", stdout.String())
+	}
+	if stderr.String() != "flag provided but not defined: -unknown\n" {
+		t.Fatalf("stderr = %q, want invalid-flag error", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "Incorrect Usage:") {
+		t.Fatalf("stdout = %q, want no built-in incorrect usage prefix", stdout.String())
+	}
 }
 
 func TestRunMapWithEmptyStdin(t *testing.T) {
 	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 
-	exitCode := Run([]string{"map", "question"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"map", "question"}, &stdout, &stderr, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
 		t.Fatalf("Run(map empty stdin) exit code = %d, want 0", exitCode)
 	}
 	if stdout.String() != "Файл пустой\n" {
 		t.Fatalf("stdout = %q, want empty-input result", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no stderr output on success", stderr.String())
 	}
 }
 
@@ -355,9 +409,11 @@ func TestBindRAGCommandNormalizesValues(t *testing.T) {
 func runCLIForTest(args []string) (Command, string, error) {
 	var captured Command
 	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 
 	root := newCLI(cliConfig{
 		stdout:  &stdout,
+		stderr:  &stderr,
 		version: "test-version",
 		execute: func(_ context.Context, cmd Command) error {
 			captured = cmd

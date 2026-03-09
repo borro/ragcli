@@ -2,10 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,21 +23,28 @@ import (
 	"github.com/joho/godotenv"
 )
 
-func Run(args []string, stdout io.Writer, stdin io.Reader, version string) int {
+func Run(args []string, stdout io.Writer, stderr io.Writer, stdin io.Reader, version string) int {
 	startedAt := time.Now()
-	logging.Configure(false)
+	if stderr == nil {
+		stderr = io.Discard
+	}
 
 	envErr := godotenv.Load()
+	adjustedArgs := applyPromptArgCompatibility(args)
+	debug := debugEnabled(adjustedArgs)
+	logging.Configure(stderr, debug)
+
 	root := newCLI(cliConfig{
 		stdout:  stdout,
+		stderr:  stderr,
 		version: version,
 		execute: func(ctx context.Context, cmd Command) error {
-			return executeCommand(ctx, cmd, stdout, stdin, version, len(args), envErr, startedAt)
+			return executeCommand(ctx, cmd, stdout, stderr, stdin, version, len(args), envErr, startedAt)
 		},
 	})
-	if err := root.Run(context.Background(), append([]string{root.Name}, applyPromptArgCompatibility(args)...)); err != nil {
-		slog.Error("cli execution failed", "stage", "run_cli", "error", err)
-		return 1
+	if err := root.Run(context.Background(), append([]string{root.Name}, adjustedArgs...)); err != nil {
+		handleRunError(stderr, err, debug)
+		return exitCode(err)
 	}
 	return 0
 }
@@ -93,8 +103,8 @@ func commandFlagConsumesValue(subcommand string, token string) bool {
 	}
 }
 
-func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stdin io.Reader, version string, argsCount int, envErr error, startedAt time.Time) error {
-	logging.Configure(cmd.Common.Debug)
+func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr io.Writer, stdin io.Reader, version string, argsCount int, envErr error, startedAt time.Time) error {
+	logging.Configure(stderr, cmd.Common.Debug)
 	slog.Info("application run started",
 		"args_count", argsCount,
 		"version", strings.TrimSpace(version),
@@ -128,7 +138,6 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stdin io
 	slog.Info("preparing input source", "command", cmd.Name, "input_path_set", strings.TrimSpace(cmd.Common.InputPath) != "")
 	handle, err := input.Open(cmd.Common.InputPath, stdin)
 	if err != nil {
-		slog.Error("failed to prepare input", "stage", "open_input", "command", cmd.Name, "input_path", strings.TrimSpace(cmd.Common.InputPath), "error", err)
 		return err
 	}
 	defer func() {
@@ -187,7 +196,6 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stdin io
 		err = fmt.Errorf("unknown subcommand: %s", cmd.Name)
 	}
 	if err != nil {
-		slog.Error("processing failed", "stage", "process", "command", cmd.Name, "input_source", handle.DisplayName, "error", err)
 		return err
 	}
 	slog.Info("processing finished",
@@ -197,15 +205,87 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stdin io
 
 	formatted, err := formatOutput(result, stdout, cmd.Common.Raw)
 	if err != nil {
-		slog.Error("failed to format result", "stage", "format_result", "command", cmd.Name, "error", err)
 		return err
 	}
 
 	slog.Debug("writing result to stdout", "command", cmd.Name)
 	if _, err := fmt.Fprintln(stdout, formatted); err != nil {
-		slog.Error("failed to write result", "stage", "write_result", "command", cmd.Name, "error", err)
 		return err
 	}
 	slog.Info("application run finished", "command", cmd.Name, "exit_code", 0, "duration", roundDurationSeconds(time.Since(startedAt)))
 	return nil
+}
+
+func handleRunError(stderr io.Writer, err error, debug bool) {
+	if err == nil {
+		return
+	}
+
+	if debug {
+		slog.Error("cli execution failed", "stage", "run_cli", "error", err)
+		return
+	}
+
+	_, _ = fmt.Fprintln(stderr, err)
+}
+
+func debugEnabled(args []string) bool {
+	if value, found := debugFlagValue(args); found {
+		return value
+	}
+
+	return debugEnvValue()
+}
+
+func debugFlagValue(args []string) (bool, bool) {
+	value := false
+	found := false
+
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+
+		switch {
+		case arg == "--debug" || arg == "-d":
+			value = true
+			found = true
+		case strings.HasPrefix(arg, "--debug="):
+			value = parseBool(strings.TrimPrefix(arg, "--debug="))
+			found = true
+		}
+	}
+
+	return value, found
+}
+
+func debugEnvValue() bool {
+	raw, ok := os.LookupEnv("DEBUG")
+	if !ok {
+		return false
+	}
+
+	return parseBool(raw)
+}
+
+func parseBool(raw string) bool {
+	value, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+
+	return value
+}
+
+func exitCode(err error) int {
+	type exitCoder interface {
+		ExitCode() int
+	}
+
+	var codedErr exitCoder
+	if errors.As(err, &codedErr) {
+		return codedErr.ExitCode()
+	}
+
+	return 1
 }

@@ -14,7 +14,7 @@ func TestConfigureEnablesDebugLevelWhenDebugEnabled(t *testing.T) {
 		slog.SetDefault(original)
 	})
 
-	Configure(true)
+	Configure(&bytes.Buffer{}, true)
 	if !slog.Default().Enabled(context.TODO(), slog.LevelDebug) {
 		t.Fatal("default logger should be enabled for debug after Configure(true)")
 	}
@@ -26,9 +26,24 @@ func TestConfigureDisablesDebugLevelByDefault(t *testing.T) {
 		slog.SetDefault(original)
 	})
 
-	Configure(false)
+	Configure(&bytes.Buffer{}, false)
 	if slog.Default().Enabled(context.TODO(), slog.LevelDebug) {
 		t.Fatal("default logger should not enable debug")
+	}
+}
+
+func TestConfigureDiscardsErrorsWhenDebugDisabled(t *testing.T) {
+	original := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(original)
+	})
+
+	var buf bytes.Buffer
+	Configure(&buf, false)
+	slog.Error("hidden error")
+
+	if buf.Len() != 0 {
+		t.Fatalf("buffer = %q, want no log output when debug is disabled", buf.String())
 	}
 }
 
