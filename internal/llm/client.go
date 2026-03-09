@@ -257,6 +257,7 @@ func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []str
 		req.Input = inputs
 	}
 
+	var lastErr error
 	for attempt := 1; attempt <= e.retryCount+1; attempt++ {
 		select {
 		case <-ctx.Done():
@@ -306,6 +307,7 @@ func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []str
 			"duration", float64(elapsed.Round(time.Millisecond))/float64(time.Second),
 			"error", err,
 		)
+		lastErr = err
 
 		if attempt <= e.retryCount {
 			delay := 1 << (attempt - 1)
@@ -324,6 +326,9 @@ func (e *Embedder) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []str
 		}
 	}
 
+	if lastErr != nil {
+		return nil, EmbeddingMetrics{}, fmt.Errorf("embedding request failed after %d attempts: %w", e.retryCount+1, lastErr)
+	}
 	return nil, EmbeddingMetrics{}, fmt.Errorf("embedding request failed after %d attempts", e.retryCount+1)
 }
 

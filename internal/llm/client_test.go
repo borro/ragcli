@@ -562,6 +562,30 @@ func TestCreateEmbeddingsWithMetrics_ContextCancelled(t *testing.T) {
 	}
 }
 
+func TestCreateEmbeddingsWithMetrics_IncludesLastError(t *testing.T) {
+	embedder := NewEmbedder("", "embed-model", "", 2)
+	wantErr := errors.New("remote 503")
+	calls := 0
+	embedder.doEmbeddings = func(_ context.Context, _ openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error) {
+		calls++
+		return openai.EmbeddingResponse{}, wantErr
+	}
+
+	_, _, err := embedder.CreateEmbeddingsWithMetrics(context.Background(), []string{"alpha"})
+	if err == nil {
+		t.Fatal("CreateEmbeddingsWithMetrics() error = nil, want wrapped error")
+	}
+	if calls != 3 {
+		t.Fatalf("CreateEmbeddingsWithMetrics() calls = %d, want 3", calls)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("CreateEmbeddingsWithMetrics() err = %v, want wrapped %v", err, wantErr)
+	}
+	if got := err.Error(); got != "embedding request failed after 3 attempts: remote 503" {
+		t.Fatalf("CreateEmbeddingsWithMetrics() error string = %q, want wrapped message", got)
+	}
+}
+
 // isContextError проверяет, является ли ошибка ошибкой отмены контекста
 func isContextError(err error) bool {
 	// Проверка на context deadline exceeded или cancelled
