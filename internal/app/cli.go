@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/borro/ragcli/internal/app/hybrid"
 	mapmode "github.com/borro/ragcli/internal/app/map"
 	"github.com/borro/ragcli/internal/app/rag"
 	"github.com/borro/ragcli/internal/app/tools"
@@ -127,6 +128,75 @@ func buildCLICommands(cfg cliConfig) []*cli.Command {
 				},
 			},
 			bind:    bindRAGCommand,
+			execute: cfg.execute,
+		}),
+		newPromptCLICommand(promptCommandConfig{
+			name:        "hybrid",
+			usage:       "Комбинировать retrieval, локальное дочитывание и map-агрегацию",
+			description: hybridCommandDescription(),
+			flags: []cli.Flag{
+				&cli.StringFlag{
+					Name:    "embedding-model",
+					Usage:   "Embedding-модель для semantic retrieval.",
+					Value:   defaultLLMOptions().EmbeddingModel,
+					Sources: cli.EnvVars("EMBEDDING_MODEL"),
+				},
+				&cli.IntFlag{
+					Name:    "rag-chunk-size",
+					Usage:   "Целевой размер meso-сегмента для semantic retrieval.",
+					Value:   1800,
+					Sources: cli.EnvVars("RAG_CHUNK_SIZE"),
+				},
+				&cli.IntFlag{
+					Name:    "rag-chunk-overlap",
+					Usage:   "Перекрытие соседних meso-сегментов.",
+					Value:   200,
+					Sources: cli.EnvVars("RAG_CHUNK_OVERLAP"),
+				},
+				&cli.DurationFlag{
+					Name:    "rag-index-ttl",
+					Usage:   "Время жизни локального semantic индекса.",
+					Value:   24 * time.Hour,
+					Sources: cli.EnvVars("RAG_INDEX_TTL"),
+				},
+				&cli.StringFlag{
+					Name:    "rag-index-dir",
+					Usage:   "Каталог локального semantic индекса.",
+					Value:   defaultRAGIndexDir(),
+					Sources: cli.EnvVars("RAG_INDEX_DIR"),
+				},
+				&cli.IntFlag{
+					Name:    "hybrid-top-k",
+					Usage:   "Сколько fusion-кандидатов брать после retrieval.",
+					Value:   8,
+					Sources: cli.EnvVars("HYBRID_TOP_K"),
+				},
+				&cli.IntFlag{
+					Name:    "hybrid-final-k",
+					Usage:   "Сколько регионов оставить для финального синтеза.",
+					Value:   4,
+					Sources: cli.EnvVars("HYBRID_FINAL_K"),
+				},
+				&cli.IntFlag{
+					Name:    "hybrid-map-k",
+					Usage:   "По скольким регионам запускать map-извлечение фактов.",
+					Value:   4,
+					Sources: cli.EnvVars("HYBRID_MAP_K"),
+				},
+				&cli.IntFlag{
+					Name:    "hybrid-read-window",
+					Usage:   "Сколько строк дочитывать вокруг сильного совпадения.",
+					Value:   3,
+					Sources: cli.EnvVars("HYBRID_READ_WINDOW"),
+				},
+				&cli.StringFlag{
+					Name:    "hybrid-fallback",
+					Usage:   "Fallback при слабом retrieval или недоступных embeddings: map, rag-only, fail.",
+					Value:   "map",
+					Sources: cli.EnvVars("HYBRID_FALLBACK"),
+				},
+			},
+			bind:    bindHybridCommand,
 			execute: cfg.execute,
 		}),
 		newPromptCLICommand(promptCommandConfig{
@@ -339,6 +409,28 @@ func bindRAGCommand(cmd *cli.Command) (Command, error) {
 	return bound, nil
 }
 
+func bindHybridCommand(cmd *cli.Command) (Command, error) {
+	bound := bindCommandBase(cmd, "hybrid")
+	bound.LLM.EmbeddingModel = normalizeEmbeddingModel(cmd.String("embedding-model"))
+	bound.Hybrid = normalizeHybridOptions(hybrid.Options{
+		TopK:           cmd.Int("hybrid-top-k"),
+		FinalK:         cmd.Int("hybrid-final-k"),
+		MapK:           cmd.Int("hybrid-map-k"),
+		ReadWindow:     cmd.Int("hybrid-read-window"),
+		Fallback:       cmd.String("hybrid-fallback"),
+		ChunkSize:      cmd.Int("rag-chunk-size"),
+		ChunkOverlap:   cmd.Int("rag-chunk-overlap"),
+		IndexTTL:       cmd.Duration("rag-index-ttl"),
+		IndexDir:       cmd.String("rag-index-dir"),
+		EmbeddingModel: bound.LLM.EmbeddingModel,
+	})
+
+	if err := validatePrompt(bound.Common.Prompt); err != nil {
+		return Command{}, err
+	}
+	return bound, nil
+}
+
 func normalizeEmbeddingModel(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "text-embedding-3-small"
@@ -361,6 +453,30 @@ func normalizeRAGOptions(options rag.Options) rag.Options {
 		options.IndexDir = defaultRAGIndexDir()
 	}
 	options.Rerank = normalizeRAGRerank(options.Rerank)
+	return options
+}
+
+func normalizeHybridOptions(options hybrid.Options) hybrid.Options {
+	options.TopK = maxInt(options.TopK, 1)
+	options.FinalK = maxInt(options.FinalK, 1)
+	if options.FinalK > options.TopK {
+		options.FinalK = options.TopK
+	}
+	options.MapK = maxInt(options.MapK, 1)
+	if options.MapK > options.TopK {
+		options.MapK = options.TopK
+	}
+	options.ReadWindow = maxInt(options.ReadWindow, 1)
+	options.ChunkSize = maxInt(options.ChunkSize, 1000)
+	options.ChunkOverlap = maxInt(options.ChunkOverlap, 0)
+	if options.ChunkOverlap >= options.ChunkSize {
+		options.ChunkOverlap = options.ChunkSize / 4
+	}
+	if strings.TrimSpace(options.IndexDir) == "" {
+		options.IndexDir = defaultRAGIndexDir()
+	}
+	options.EmbeddingModel = normalizeEmbeddingModel(options.EmbeddingModel)
+	options.Fallback = normalizeHybridFallback(options.Fallback)
 	return options
 }
 
@@ -404,6 +520,19 @@ func normalizeRAGRerank(value string) string {
 	}
 }
 
+func normalizeHybridFallback(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "map":
+		return "map"
+	case "rag-only":
+		return "rag-only"
+	case "fail":
+		return "fail"
+	default:
+		return "map"
+	}
+}
+
 func defaultRAGIndexDir() string {
 	return os.TempDir() + string(os.PathSeparator) + "ragcli-index"
 }
@@ -443,5 +572,16 @@ func toolsCommandDescription() string {
 Examples:
   ragcli tools --file file.txt "Какие ключевые моменты обсуждаются в разделе про архитектуру?"
   ragcli tools --file app.log --verbose "Где в логах причины 5xx?"
+`)
+}
+
+func hybridCommandDescription() string {
+	return strings.TrimSpace(`
+Комбинирует lexical и semantic retrieval, дочитывает точные строки локально и агрегирует факты только по найденным регионам.
+
+Examples:
+  ragcli hybrid --file file.txt "Что в документе сказано про retry policy и ограничения?"
+  ragcli hybrid --file app.log --hybrid-fallback rag-only "Где причина 5xx и что происходит рядом?"
+  cat handbook.md | ragcli hybrid --hybrid-top-k 10 --hybrid-map-k 5 "Какие шаги release process и rollback?"
 `)
 }

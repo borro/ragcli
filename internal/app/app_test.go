@@ -113,6 +113,21 @@ func TestRunRAGHelp(t *testing.T) {
 	}
 }
 
+func TestRunHybridHelp(t *testing.T) {
+	var stdout bytes.Buffer
+
+	exitCode := Run([]string{"hybrid", "--help"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	if exitCode != 0 {
+		t.Fatalf("Run(hybrid --help) exit code = %d, want 0", exitCode)
+	}
+	output := stdout.String()
+	for _, needle := range []string{"--hybrid-top-k", "--hybrid-map-k", "--hybrid-fallback", "--embedding-model", "--rag-index-ttl"} {
+		if !strings.Contains(output, needle) {
+			t.Fatalf("stdout missing %q in hybrid help:\n%s", needle, output)
+		}
+	}
+}
+
 func TestRunVersionHelp(t *testing.T) {
 	var stdout bytes.Buffer
 
@@ -194,6 +209,47 @@ func TestCLIRAGCommandBindingFromEnv(t *testing.T) {
 	}
 	if captured.LLM.EmbeddingModel != "embed-v2" {
 		t.Fatalf("EmbeddingModel = %q, want embed-v2", captured.LLM.EmbeddingModel)
+	}
+}
+
+func TestCLIHybridCommandBinding(t *testing.T) {
+	captured, _, err := runCLIForTest([]string{
+		"hybrid",
+		"--embedding-model", "embed-v2",
+		"--hybrid-top-k", "6",
+		"--hybrid-final-k", "9",
+		"--hybrid-map-k", "7",
+		"--hybrid-read-window", "5",
+		"--hybrid-fallback", "rag-only",
+		"--rag-chunk-size", "1200",
+		"question",
+	})
+	if err != nil {
+		t.Fatalf("runCLIForTest() error = %v", err)
+	}
+	if captured.Name != "hybrid" {
+		t.Fatalf("Name = %q, want hybrid", captured.Name)
+	}
+	if captured.LLM.EmbeddingModel != "embed-v2" {
+		t.Fatalf("EmbeddingModel = %q, want embed-v2", captured.LLM.EmbeddingModel)
+	}
+	if captured.Hybrid.TopK != 6 {
+		t.Fatalf("TopK = %d, want 6", captured.Hybrid.TopK)
+	}
+	if captured.Hybrid.FinalK != 6 {
+		t.Fatalf("FinalK = %d, want normalized 6", captured.Hybrid.FinalK)
+	}
+	if captured.Hybrid.MapK != 6 {
+		t.Fatalf("MapK = %d, want normalized 6", captured.Hybrid.MapK)
+	}
+	if captured.Hybrid.ReadWindow != 5 {
+		t.Fatalf("ReadWindow = %d, want 5", captured.Hybrid.ReadWindow)
+	}
+	if captured.Hybrid.Fallback != "rag-only" {
+		t.Fatalf("Fallback = %q, want rag-only", captured.Hybrid.Fallback)
+	}
+	if captured.Hybrid.ChunkSize != 1200 {
+		t.Fatalf("ChunkSize = %d, want 1200", captured.Hybrid.ChunkSize)
 	}
 }
 

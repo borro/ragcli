@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/borro/ragcli/internal/app/hybrid"
 	mapmode "github.com/borro/ragcli/internal/app/map"
 	"github.com/borro/ragcli/internal/app/rag"
 	"github.com/borro/ragcli/internal/app/tools"
@@ -70,7 +71,7 @@ func applyPromptArgCompatibility(args []string) []string {
 
 func supportsImplicitPrompt(subcommand string) bool {
 	switch subcommand {
-	case "map", "rag", "tools":
+	case "map", "rag", "hybrid", "tools":
 		return true
 	default:
 		return false
@@ -84,7 +85,9 @@ func commandFlagConsumesValue(subcommand string, token string) bool {
 	case "-c", "--concurrency", "-l", "--length":
 		return subcommand == "map"
 	case "--embedding-model", "--rag-top-k", "--rag-final-k", "--rag-chunk-size", "--rag-chunk-overlap", "--rag-index-ttl", "--rag-index-dir", "--rag-rerank":
-		return subcommand == "rag"
+		return subcommand == "rag" || subcommand == "hybrid"
+	case "--hybrid-top-k", "--hybrid-final-k", "--hybrid-map-k", "--hybrid-read-window", "--hybrid-fallback":
+		return subcommand == "hybrid"
 	default:
 		return false
 	}
@@ -156,6 +159,18 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stdin io
 	case "tools":
 		slog.Info("starting tools processing")
 		result, err = tools.Run(commandCtx, client, handle.Path, cmd.Common.Prompt, cmd.Tools)
+	case "hybrid":
+		slog.Debug("creating embedding client",
+			"embedding_model", strings.TrimSpace(cmd.LLM.EmbeddingModel),
+			"retry_count", cmd.LLM.RetryCount,
+		)
+		embedder := llm.NewEmbedder(cmd.LLM.APIURL, cmd.LLM.EmbeddingModel, cmd.LLM.APIKey, cmd.LLM.RetryCount)
+		slog.Info("starting hybrid processing")
+		result, err = hybrid.Run(commandCtx, client, embedder, hybrid.Source{
+			Path:        handle.Path,
+			DisplayName: handle.DisplayName,
+			Reader:      handle.Reader,
+		}, cmd.Hybrid, cmd.Common.Prompt)
 	case "rag":
 		slog.Debug("creating embedding client",
 			"embedding_model", strings.TrimSpace(cmd.LLM.EmbeddingModel),
