@@ -172,8 +172,39 @@ func TestCLIMapCommandBinding(t *testing.T) {
 	if captured.Map.Concurrency != 4 {
 		t.Fatalf("Concurrency = %d, want 4", captured.Map.Concurrency)
 	}
+	if captured.Map.LengthExplicit {
+		t.Fatalf("LengthExplicit = %v, want false", captured.Map.LengthExplicit)
+	}
 	if captured.Common.Prompt != "what changed?" {
 		t.Fatalf("Prompt = %q, want combined prompt", captured.Common.Prompt)
+	}
+}
+
+func TestCLIMapCommandLengthExplicitFromFlag(t *testing.T) {
+	captured, _, err := runCLIForTest([]string{"map", "--length", "4321", "question"})
+	if err != nil {
+		t.Fatalf("runCLIForTest() error = %v", err)
+	}
+	if !captured.Map.LengthExplicit {
+		t.Fatalf("LengthExplicit = %v, want true", captured.Map.LengthExplicit)
+	}
+	if captured.Map.ChunkLength != 4321 {
+		t.Fatalf("ChunkLength = %d, want 4321", captured.Map.ChunkLength)
+	}
+}
+
+func TestCLIMapCommandLengthExplicitFromEnv(t *testing.T) {
+	t.Setenv("LENGTH", "5432")
+
+	captured, _, err := runCLIForTest([]string{"map", "question"})
+	if err != nil {
+		t.Fatalf("runCLIForTest() error = %v", err)
+	}
+	if !captured.Map.LengthExplicit {
+		t.Fatalf("LengthExplicit = %v, want true", captured.Map.LengthExplicit)
+	}
+	if captured.Map.ChunkLength != 5432 {
+		t.Fatalf("ChunkLength = %d, want 5432", captured.Map.ChunkLength)
 	}
 }
 

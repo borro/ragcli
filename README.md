@@ -151,7 +151,7 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 `map`:
 
 - `--concurrency`, `-c` или `CONCURRENCY`
-- `--length`, `-l` или `LENGTH` — приблизительный лимит токенов на chunk; внутри применяется консервативный safety factor
+- `--length`, `-l` или `LENGTH` — строгий override лимита токенов на chunk; если не задан, `map` пытается автоопределить context length модели и при неуспехе использует `10000`
 
 `rag`:
 

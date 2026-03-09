@@ -28,8 +28,12 @@ func (f *fakeEmbedder) CreateEmbeddingsWithMetrics(_ context.Context, inputs []s
 }
 
 type scriptedChat struct {
-	responses []string
-	requests  []openai.ChatCompletionRequest
+	responses         []string
+	requests          []openai.ChatCompletionRequest
+	autoContextLength int
+	autoContextSource string
+	autoContextErr    error
+	autoContextCalls  int
 }
 
 func (s *scriptedChat) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
@@ -43,6 +47,21 @@ func (s *scriptedChat) SendRequestWithMetrics(_ context.Context, req openai.Chat
 			Message: openai.ChatCompletionMessage{Role: "assistant", Content: s.responses[idx]},
 		}},
 	}, llm.RequestMetrics{}, nil
+}
+
+func (s *scriptedChat) ResolveAutoContextLength(_ context.Context) (int, string, error) {
+	s.autoContextCalls++
+	if s.autoContextErr != nil {
+		return 0, "", s.autoContextErr
+	}
+	if s.autoContextLength < 1 {
+		return 0, "", errors.New("no auto context length configured")
+	}
+	source := s.autoContextSource
+	if source == "" {
+		source = "lmstudio_api"
+	}
+	return s.autoContextLength, source, nil
 }
 
 func TestProfileDocument(t *testing.T) {
@@ -124,6 +143,43 @@ func TestRunHybridFallsBackToMapWhenEmbeddingsFail(t *testing.T) {
 	}
 	if answer != "fallback answer" {
 		t.Fatalf("Run() answer = %q, want fallback answer", answer)
+	}
+}
+
+func TestRunHybridFallbackMapUsesAutoContextLength(t *testing.T) {
+	chat := &scriptedChat{
+		responses: []string{
+			"fact from fallback map",
+			"fallback answer",
+			"SUPPORTED: yes\nISSUES:\nNONE",
+		},
+		autoContextLength: 16384,
+	}
+
+	answer, err := Run(context.Background(), chat, &fakeEmbedder{err: errors.New("embed fail")}, Source{
+		Path:        "",
+		DisplayName: "stdin",
+		Reader:      strings.NewReader("retry policy is enabled\n"),
+	}, Options{
+		TopK:           4,
+		FinalK:         2,
+		MapK:           2,
+		ReadWindow:     2,
+		Fallback:       "map",
+		ChunkSize:      1000,
+		ChunkOverlap:   100,
+		IndexTTL:       time.Hour,
+		IndexDir:       t.TempDir(),
+		EmbeddingModel: "embed",
+	}, "What is the retry policy?", nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if answer != "fallback answer" {
+		t.Fatalf("Run() answer = %q, want fallback answer", answer)
+	}
+	if chat.autoContextCalls != 1 {
+		t.Fatalf("autoContextCalls = %d, want 1", chat.autoContextCalls)
 	}
 }
 

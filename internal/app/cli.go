@@ -68,7 +68,7 @@ func buildCLICommands(cfg cliConfig) []*cli.Command {
 				&cli.IntFlag{
 					Name:    "length",
 					Aliases: []string{"l"},
-					Usage:   "Приблизительный лимит токенов на chunk; внутри используется консервативно.",
+					Usage:   "Строгий override лимита токенов на chunk для map; без него включается автоопределение.",
 					Value:   10000,
 					Sources: cli.EnvVars("LENGTH"),
 				},
@@ -401,9 +401,10 @@ func bindPrompt(cmd *cli.Command) string {
 func bindMapCommand(cmd *cli.Command) (Command, error) {
 	bound := bindCommandBase(cmd, "map")
 	bound.Map = normalizeMapOptions(mapmode.Options{
-		ChunkLength: cmd.Int("length"),
-		Concurrency: cmd.Int("concurrency"),
-		InputPath:   bound.Common.InputPath,
+		ChunkLength:    cmd.Int("length"),
+		LengthExplicit: cmd.IsSet("length"),
+		Concurrency:    cmd.Int("concurrency"),
+		InputPath:      bound.Common.InputPath,
 	})
 
 	if err := validatePrompt(bound.Common.Prompt); err != nil {
@@ -414,7 +415,6 @@ func bindMapCommand(cmd *cli.Command) (Command, error) {
 
 func normalizeMapOptions(options mapmode.Options) mapmode.Options {
 	options.Concurrency = maxInt(options.Concurrency, 1)
-	options.ChunkLength = maxInt(options.ChunkLength, 1000)
 	return options
 }
 
@@ -578,7 +578,7 @@ func mapCommandDescription() string {
 
 Examples:
   ragcli map --file document.txt -c 4 "Какие основные выводы?"
-  ragcli map --file document.txt --length 8000 --api-url http://localhost:1234/v1 --model my-model "Какие основные выводы?"
+  ragcli map --file document.txt --length 8000 --api-url http://localhost:1234/v1 --model my-model "Какие основные выводы? (strict override)"
   cat document.txt | ragcli map "Какие основные выводы из этого документа?"
 `)
 }

@@ -3,6 +3,7 @@ package mapmode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/testutil"
 	"github.com/borro/ragcli/internal/verbose"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 func TestMapMessages_MarksChunkAsUntrusted(t *testing.T) {
@@ -153,9 +155,10 @@ func TestRun_EndToEndWithRefine(t *testing.T) {
 	}, nil)
 
 	result, err := Run(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
-		InputPath:   "input.txt",
-		ChunkLength: (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
-		Concurrency: 1,
+		InputPath:      "input.txt",
+		ChunkLength:    (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
+		LengthExplicit: true,
+		Concurrency:    1,
 	}, "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -191,9 +194,10 @@ func TestRun_ReportsFinalCompletionOnce(t *testing.T) {
 	)
 
 	result, err := Run(context.Background(), client, strings.NewReader("aaa\n"), Options{
-		InputPath:   "input.txt",
-		ChunkLength: (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
-		Concurrency: 1,
+		InputPath:      "input.txt",
+		ChunkLength:    (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
+		LengthExplicit: true,
+		Concurrency:    1,
 	}, "Что в файле?", plan)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -219,9 +223,10 @@ func TestRun_EmptyInput(t *testing.T) {
 	client := newSequencedLLMClient(t, nil, nil)
 
 	result, err := Run(context.Background(), client, strings.NewReader(""), Options{
-		InputPath:   "input.txt",
-		ChunkLength: 10,
-		Concurrency: 1,
+		InputPath:      "input.txt",
+		ChunkLength:    10,
+		LengthExplicit: true,
+		Concurrency:    1,
 	}, "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -236,9 +241,10 @@ func TestRun_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
 		client := newSequencedLLMClient(t, []string{"SKIP", "SKIP"}, nil)
 
 		result, err := Run(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
-			InputPath:   "input.txt",
-			ChunkLength: (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
-			Concurrency: 1,
+			InputPath:      "input.txt",
+			ChunkLength:    (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
+			LengthExplicit: true,
+			Concurrency:    1,
 		}, "Что в файле?", nil)
 		if err != nil {
 			t.Fatalf("Run() error = %v", err)
@@ -252,9 +258,10 @@ func TestRun_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
 		client := newSequencedLLMClient(t, nil, []int{http.StatusInternalServerError, http.StatusInternalServerError})
 
 		result, err := Run(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
-			InputPath:   "input.txt",
-			ChunkLength: (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
-			Concurrency: 1,
+			InputPath:      "input.txt",
+			ChunkLength:    (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
+			LengthExplicit: true,
+			Concurrency:    1,
 		}, "Что в файле?", nil)
 		if err != nil {
 			t.Fatalf("Run() error = %v", err)
@@ -263,6 +270,77 @@ func TestRun_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
 			t.Fatalf("Run() result = %q, want %q", result, "Нет информации для ответа")
 		}
 	})
+}
+
+func TestRun_ExplicitLengthSkipsAutoDetection(t *testing.T) {
+	client := &resolverScriptedChat{
+		responses: []string{"fact", "answer", "SUPPORTED: yes\nISSUES:\nNONE"},
+		autoValue: 64000,
+		autoError: nil,
+	}
+
+	_, err := Run(context.Background(), client, strings.NewReader("a\n"), Options{
+		InputPath:      "input.txt",
+		ChunkLength:    1,
+		LengthExplicit: true,
+		Concurrency:    1,
+	}, strings.Repeat("очень длинный вопрос ", 40), nil)
+	if err == nil {
+		t.Fatal("Run() error = nil, want strict --length failure")
+	}
+	if !strings.Contains(err.Error(), "map prompt and question exceed chunk token limit") {
+		t.Fatalf("Run() error = %v, want chunk limit error", err)
+	}
+	if client.resolveCalls != 0 {
+		t.Fatalf("resolveCalls = %d, want 0", client.resolveCalls)
+	}
+}
+
+func TestRun_UsesAutoLengthWhenNotExplicit(t *testing.T) {
+	client := &resolverScriptedChat{
+		responses: []string{"fact", "answer", "SUPPORTED: yes\nISSUES:\nNONE"},
+		autoValue: 10000,
+		autoError: nil,
+	}
+
+	result, err := Run(context.Background(), client, strings.NewReader("a\n"), Options{
+		InputPath:      "input.txt",
+		ChunkLength:    1,
+		LengthExplicit: false,
+		Concurrency:    1,
+	}, strings.Repeat("очень длинный вопрос ", 40), nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result != "answer" {
+		t.Fatalf("Run() result = %q, want answer", result)
+	}
+	if client.resolveCalls != 1 {
+		t.Fatalf("resolveCalls = %d, want 1", client.resolveCalls)
+	}
+}
+
+func TestRun_FallsBackToDefaultLengthWhenAutoFails(t *testing.T) {
+	client := &resolverScriptedChat{
+		responses: []string{"fact", "answer", "SUPPORTED: yes\nISSUES:\nNONE"},
+		autoError: errors.New("cannot detect"),
+	}
+
+	result, err := Run(context.Background(), client, strings.NewReader("a\n"), Options{
+		InputPath:      "input.txt",
+		ChunkLength:    1,
+		LengthExplicit: false,
+		Concurrency:    1,
+	}, strings.Repeat("очень длинный вопрос ", 40), nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result != "answer" {
+		t.Fatalf("Run() result = %q, want answer", result)
+	}
+	if client.resolveCalls != 1 {
+		t.Fatalf("resolveCalls = %d, want 1", client.resolveCalls)
+	}
 }
 
 func TestBatchReduceInputs_RespectsLength(t *testing.T) {
@@ -404,9 +482,10 @@ func TestRun_PassesAllMapFactsToReduce(t *testing.T) {
 	}, nil)
 
 	result, err := Run(context.Background(), client, strings.NewReader(line+"\n"+line+"\n"+line+"\n"), Options{
-		InputPath:   "input.txt",
-		ChunkLength: (estimateMapRequestTokens("Что в файле?", line) * mapBudgetDenominator / mapBudgetNumerator) + 1,
-		Concurrency: 1,
+		InputPath:      "input.txt",
+		ChunkLength:    (estimateMapRequestTokens("Что в файле?", line) * mapBudgetDenominator / mapBudgetNumerator) + 1,
+		LengthExplicit: true,
+		Concurrency:    1,
 	}, "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -445,9 +524,10 @@ func TestRun_NormalizesMapOutputBeforeReduce(t *testing.T) {
 	}, nil)
 
 	result, err := Run(context.Background(), client, strings.NewReader(line+"\n"), Options{
-		InputPath:   "input.txt",
-		ChunkLength: (estimateMapRequestTokens("Что в файле?", line) * mapBudgetDenominator / mapBudgetNumerator) + 1,
-		Concurrency: 1,
+		InputPath:      "input.txt",
+		ChunkLength:    (estimateMapRequestTokens("Что в файле?", line) * mapBudgetDenominator / mapBudgetNumerator) + 1,
+		LengthExplicit: true,
+		Concurrency:    1,
 	}, "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -472,6 +552,45 @@ func newSequencedLLMClient(t *testing.T, responses []string, statuses []int) *ll
 	return client
 }
 
+type resolverScriptedChat struct {
+	responses    []string
+	requestIndex int
+	autoValue    int
+	autoSource   string
+	autoError    error
+	resolveCalls int
+}
+
+func (s *resolverScriptedChat) SendRequestWithMetrics(_ context.Context, _ openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
+	if s.requestIndex >= len(s.responses) {
+		return nil, llm.RequestMetrics{}, context.DeadlineExceeded
+	}
+	content := s.responses[s.requestIndex]
+	s.requestIndex++
+	return &openai.ChatCompletionResponse{
+		Choices: []openai.ChatCompletionChoice{
+			{
+				Message: openai.ChatCompletionMessage{
+					Role:    "assistant",
+					Content: content,
+				},
+			},
+		},
+	}, llm.RequestMetrics{}, nil
+}
+
+func (s *resolverScriptedChat) ResolveAutoContextLength(_ context.Context) (int, string, error) {
+	s.resolveCalls++
+	if s.autoError != nil {
+		return 0, "", s.autoError
+	}
+	source := s.autoSource
+	if source == "" {
+		source = "lmstudio_api"
+	}
+	return s.autoValue, source, nil
+}
+
 type capturedChatRequest struct {
 	Messages []capturedChatMessage `json:"messages"`
 }
@@ -488,6 +607,21 @@ func newCapturingLLMClient(t *testing.T, responses []string, statuses []int) (*l
 	requestIndex := 0
 	requests := make([]capturedChatRequest, 0, len(responses))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/api/v1/models") {
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{
+						"id":                 "test-model",
+						"max_context_length": 32000,
+					},
+				},
+			}); err != nil {
+				t.Fatalf("failed to encode models response: %v", err)
+			}
+			return
+		}
+
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("failed to read request body: %v", err)

@@ -18,10 +18,13 @@ import (
 )
 
 type Options struct {
-	InputPath   string
-	Concurrency int
-	ChunkLength int
+	InputPath      string
+	Concurrency    int
+	ChunkLength    int
+	LengthExplicit bool
 }
+
+const defaultChunkLengthFallback = 10000
 
 const separator = "\n\n---\n\n"
 
@@ -56,6 +59,10 @@ type pipelineStats struct {
 	MapFactLinesRaw  int
 	MapFactLinesKept int
 	ReduceIterations int
+}
+
+type autoContextLengthResolver interface {
+	ResolveAutoContextLength(ctx context.Context) (int, string, error)
 }
 
 //
@@ -797,6 +804,24 @@ func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string
 	return results[0], nil
 }
 
+func resolveChunkLength(ctx context.Context, client llm.ChatRequester, opts Options) (int, string) {
+	if opts.LengthExplicit {
+		return opts.ChunkLength, "explicit_length"
+	}
+
+	resolver, ok := client.(autoContextLengthResolver)
+	if !ok {
+		return defaultChunkLengthFallback, "default_10000"
+	}
+
+	length, source, err := resolver.ResolveAutoContextLength(ctx)
+	if err != nil || length < 1 {
+		return defaultChunkLengthFallback, "default_10000"
+	}
+
+	return length, source
+}
+
 //
 // SELF REFINEMENT
 //
@@ -853,10 +878,13 @@ func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Op
 	verifyMeter := plan.Stage("verify")
 	finalMeter := plan.Stage("final")
 	chunkingMeter.Start("разбиваю файл на чанки")
+	effectiveChunkLength, chunkLengthSource := resolveChunkLength(ctx, client, opts)
+	opts.ChunkLength = effectiveChunkLength
 
 	slog.Debug("map-reduce pipeline started",
 		"input_mode", inputMode,
 		"chunk_length", opts.ChunkLength,
+		"chunk_length_source", chunkLengthSource,
 		"chunk_length_unit", "approx_tokens",
 		"concurrency", opts.Concurrency,
 		"map_token_budget", effectiveMapApproxTokenBudget(opts.ChunkLength),

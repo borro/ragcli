@@ -1416,11 +1416,12 @@ func mergeFactBlocks(left, right string) string {
 }
 
 func fallbackToMap(ctx context.Context, chat llm.ChatRequester, source Source, opts Options, question string, content []byte, plan *verbose.Plan) (string, error) {
-	slog.Debug("hybrid map fallback started", "chunk_length", max(opts.ChunkSize*4, 10000))
+	slog.Debug("hybrid map fallback started", "chunk_length_mode", "auto_or_default")
 	return mapmode.Run(ctx, chat, bytes.NewReader(content), mapmode.Options{
-		InputPath:   source.Path,
-		Concurrency: 1,
-		ChunkLength: max(opts.ChunkSize*4, 10000),
+		InputPath:      source.Path,
+		Concurrency:    1,
+		ChunkLength:    10000,
+		LengthExplicit: false,
 	}, question, plan)
 }
 
