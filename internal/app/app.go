@@ -106,6 +106,7 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stdin io
 	slog.Info("command parsed",
 		"command", cmd.Name,
 		"input_path_set", strings.TrimSpace(cmd.Common.InputPath) != "",
+		"raw", cmd.Common.Raw,
 		"verbose", cmd.Common.Verbose,
 		"retry_count", cmd.LLM.RetryCount,
 	)
@@ -179,8 +180,14 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stdin io
 		"result_empty", strings.TrimSpace(result) == "",
 	)
 
+	formatted, err := formatOutput(result, stdout, cmd.Common.Raw)
+	if err != nil {
+		slog.Error("failed to format result", "stage", "format_result", "command", cmd.Name, "error", err)
+		return err
+	}
+
 	slog.Debug("writing result to stdout", "command", cmd.Name)
-	if _, err := fmt.Fprintln(stdout, strings.TrimSpace(result)); err != nil {
+	if _, err := fmt.Fprintln(stdout, formatted); err != nil {
 		slog.Error("failed to write result", "stage", "write_result", "command", cmd.Name, "error", err)
 		return err
 	}

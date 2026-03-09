@@ -12,7 +12,7 @@
 - Не нужно вручную копировать большие файлы в чат.
 - Можно выбрать стратегию под задачу: chunked-обработка, retrieval или точечное исследование файла.
 - Один и тот же CLI работает с локальными и удалёнными OpenAI-compatible backend'ами.
-- Ответ печатается в `stdout`, а runtime-логи при `--verbose` идут в `stderr`.
+- В терминале финальный ответ рендерится как Markdown; при `--raw` или выводе в pipe/redirect печатается исходный текст в `stdout`, а runtime-логи при `--verbose` идут в `stderr`.
 
 ## Когда использовать какой режим
 
@@ -68,6 +68,8 @@ export LLM_MODEL=your-chat-model
 - `rag` отвечает только по найденным evidence chunks, поэтому качество зависит от embedding-модели и параметров chunking.
 - `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `search_file`, `read_lines` и `read_around`.
 - Если backend плохо поддерживает tool calling, режим `tools` может работать менее надёжно.
+- В интерактивном терминале `ragcli` рендерит финальный Markdown-ответ через ANSI-стили; если вывод перенаправлен в файл или pipe, остаётся сырой Markdown без ANSI.
+- `--raw` принудительно отключает markdown-рендер и печатает исходный ответ как есть.
 - `--verbose` включает подробные runtime-логи в `stderr`, не смешивая их с финальным ответом в `stdout`.
 
 ## Примеры
@@ -78,6 +80,7 @@ export LLM_MODEL=your-chat-model
 ./ragcli map --file report.txt -c 4 "Собери ключевые выводы"
 cat report.txt | ./ragcli map "Какие риски и ограничения описаны в документе?"
 ./ragcli map --file report.txt --length 8000 --verbose "Что означает --retry в этом документе?"
+./ragcli map --file report.txt --raw "Верни ответ без терминального markdown-рендера"
 ```
 
 ### `rag`
@@ -127,6 +130,7 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 | `--api-key` | `OPENAI_API_KEY` | API key |
 | `--model` | `LLM_MODEL` | Chat-модель для `map`, `rag`, `tools` |
 | `--retry`, `-r` | `RETRY` | Количество retry для LLM HTTP-клиента |
+| `--raw` | `RAW` | Отключить markdown-рендер финального ответа и печатать сырой текст |
 | `--verbose`, `-v` | `VERBOSE` | Подробные runtime-логи в `stderr` |
 
 `map`:

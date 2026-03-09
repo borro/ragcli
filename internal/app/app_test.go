@@ -58,7 +58,7 @@ func TestRunRootHelp(t *testing.T) {
 		t.Fatalf("Run(--help) exit code = %d, want 0", exitCode)
 	}
 	output := stdout.String()
-	for _, needle := range []string{"map", "rag", "tools", "version", "help, h", "--version", "--file", "--model", "ragcli [global options] [command [command options]]", "v1.2.3"} {
+	for _, needle := range []string{"map", "rag", "tools", "version", "help, h", "--version", "--file", "--model", "--raw", "ragcli [global options] [command [command options]]", "v1.2.3"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in help output:\n%s", needle, output)
 		}
@@ -91,7 +91,7 @@ func TestRunHelpMapShowsGlobalFlags(t *testing.T) {
 		t.Fatalf("Run(help map) exit code = %d, want 0", exitCode)
 	}
 	output := stdout.String()
-	for _, needle := range []string{"GLOBAL OPTIONS:", "--file", "--api-url", "--model", "--retry", "--verbose"} {
+	for _, needle := range []string{"GLOBAL OPTIONS:", "--file", "--api-url", "--model", "--retry", "--raw", "--verbose"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in help map output:\n%s", needle, output)
 		}
@@ -124,7 +124,7 @@ func TestRunVersionHelp(t *testing.T) {
 	if !strings.Contains(output, "ragcli version") {
 		t.Fatalf("stdout = %q, want version usage", output)
 	}
-	for _, needle := range []string{"GLOBAL OPTIONS:", "--file", "--api-url", "--model", "--retry", "--verbose"} {
+	for _, needle := range []string{"GLOBAL OPTIONS:", "--file", "--api-url", "--model", "--retry", "--raw", "--verbose"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in version help:\n%s", needle, output)
 		}
@@ -163,7 +163,7 @@ func TestCLIMapCommandBinding(t *testing.T) {
 }
 
 func TestCLIGlobalFlagsApplyBeforeSubcommand(t *testing.T) {
-	captured, _, err := runCLIForTest([]string{"--file", "doc.txt", "--model", "qwen2.5", "map", "question"})
+	captured, _, err := runCLIForTest([]string{"--file", "doc.txt", "--model", "qwen2.5", "--raw", "map", "question"})
 	if err != nil {
 		t.Fatalf("runCLIForTest() error = %v", err)
 	}
@@ -175,6 +175,9 @@ func TestCLIGlobalFlagsApplyBeforeSubcommand(t *testing.T) {
 	}
 	if captured.LLM.Model != "qwen2.5" {
 		t.Fatalf("Model = %q, want qwen2.5", captured.LLM.Model)
+	}
+	if !captured.Common.Raw {
+		t.Fatalf("Raw = %v, want true", captured.Common.Raw)
 	}
 }
 

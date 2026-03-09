@@ -257,6 +257,11 @@ func globalFlags() []cli.Flag {
 			Sources: cli.EnvVars("RETRY"),
 		},
 		&cli.BoolFlag{
+			Name:    "raw",
+			Usage:   "Печатать финальный ответ как есть, без markdown-рендера в терминале.",
+			Sources: cli.EnvVars("RAW"),
+		},
+		&cli.BoolFlag{
 			Name:    "verbose",
 			Aliases: []string{"v"},
 			Usage:   "Включить подробные runtime-логи в stderr.",
@@ -277,6 +282,7 @@ func bindCommonOptions(cmd *cli.Command) CommonOptions {
 	return CommonOptions{
 		InputPath: cmd.String("file"),
 		Prompt:    bindPrompt(cmd),
+		Raw:       cmd.Bool("raw"),
 		Verbose:   cmd.Bool("verbose"),
 	}
 }
