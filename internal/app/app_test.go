@@ -31,22 +31,22 @@ func TestRunVersionFlag(t *testing.T) {
 	}
 }
 
-func TestRunShortVerboseFlagDoesNotPrintVersion(t *testing.T) {
+func TestRunShortDebugFlagDoesNotPrintVersion(t *testing.T) {
 	var stdout bytes.Buffer
 
-	exitCode := Run([]string{"-v"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
+	exitCode := Run([]string{"-d"}, &stdout, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
-		t.Fatalf("Run(-v) exit code = %d, want 0", exitCode)
+		t.Fatalf("Run(-d) exit code = %d, want 0", exitCode)
 	}
 	output := stdout.String()
 	if !strings.Contains(output, "COMMANDS:") {
 		t.Fatalf("stdout = %q, want root help output", output)
 	}
-	if !strings.Contains(output, "--verbose, -v") {
-		t.Fatalf("stdout = %q, want verbose flag in root help", output)
+	if !strings.Contains(output, "--debug, -d") {
+		t.Fatalf("stdout = %q, want debug flag in root help", output)
 	}
 	if strings.Contains(strings.TrimSpace(output), "v1.2.3") && !strings.Contains(output, "VERSION:") {
-		t.Fatalf("stdout = %q, -v must not behave like version command", output)
+		t.Fatalf("stdout = %q, -d must not behave like version command", output)
 	}
 }
 
@@ -91,7 +91,7 @@ func TestRunHelpMapShowsGlobalFlags(t *testing.T) {
 		t.Fatalf("Run(help map) exit code = %d, want 0", exitCode)
 	}
 	output := stdout.String()
-	for _, needle := range []string{"GLOBAL OPTIONS:", "--file", "--api-url", "--model", "--retry", "--raw", "--verbose"} {
+	for _, needle := range []string{"GLOBAL OPTIONS:", "--file", "--api-url", "--model", "--retry", "--raw", "--debug"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in help map output:\n%s", needle, output)
 		}
@@ -139,7 +139,7 @@ func TestRunVersionHelp(t *testing.T) {
 	if !strings.Contains(output, "ragcli version") {
 		t.Fatalf("stdout = %q, want version usage", output)
 	}
-	for _, needle := range []string{"GLOBAL OPTIONS:", "--file", "--api-url", "--model", "--retry", "--raw", "--verbose"} {
+	for _, needle := range []string{"GLOBAL OPTIONS:", "--file", "--api-url", "--model", "--retry", "--raw", "--debug"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in version help:\n%s", needle, output)
 		}

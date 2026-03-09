@@ -332,10 +332,10 @@ func globalFlags() []cli.Flag {
 			Sources: cli.EnvVars("RAW"),
 		},
 		&cli.BoolFlag{
-			Name:    "verbose",
-			Aliases: []string{"v"},
-			Usage:   "Включить подробные runtime-логи в stderr.",
-			Sources: cli.EnvVars("VERBOSE"),
+			Name:    "debug",
+			Aliases: []string{"d"},
+			Usage:   "Включить debug runtime-логи в stderr.",
+			Sources: cli.EnvVars("DEBUG"),
 		},
 	}
 }
@@ -353,7 +353,7 @@ func bindCommonOptions(cmd *cli.Command) CommonOptions {
 		InputPath: cmd.String("file"),
 		Prompt:    bindPrompt(cmd),
 		Raw:       cmd.Bool("raw"),
-		Verbose:   cmd.Bool("verbose"),
+		Debug:     cmd.Bool("debug"),
 	}
 }
 
@@ -571,7 +571,7 @@ func toolsCommandDescription() string {
 
 Examples:
   ragcli tools --file file.txt "Какие ключевые моменты обсуждаются в разделе про архитектуру?"
-  ragcli tools --file app.log --verbose "Где в логах причины 5xx?"
+  ragcli tools --file app.log --debug "Где в логах причины 5xx?"
 `)
 }
 

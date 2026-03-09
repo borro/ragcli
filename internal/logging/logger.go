@@ -15,13 +15,13 @@ var (
 	projectRootOnce sync.Once
 )
 
-func Configure(verbose bool) {
-	slog.SetDefault(newLogger(os.Stderr, verbose))
+func Configure(debug bool) {
+	slog.SetDefault(newLogger(os.Stderr, debug))
 }
 
-func newLogger(writer io.Writer, verbose bool) *slog.Logger {
+func newLogger(writer io.Writer, debug bool) *slog.Logger {
 	level := slog.LevelError
-	if verbose {
+	if debug {
 		level = slog.LevelDebug
 	}
 

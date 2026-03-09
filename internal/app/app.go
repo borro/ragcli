@@ -94,7 +94,7 @@ func commandFlagConsumesValue(subcommand string, token string) bool {
 }
 
 func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stdin io.Reader, version string, argsCount int, envErr error, startedAt time.Time) error {
-	logging.Configure(cmd.Common.Verbose)
+	logging.Configure(cmd.Common.Debug)
 	slog.Info("application run started",
 		"args_count", argsCount,
 		"version", strings.TrimSpace(version),
@@ -110,7 +110,7 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stdin io
 		"command", cmd.Name,
 		"input_path_set", strings.TrimSpace(cmd.Common.InputPath) != "",
 		"raw", cmd.Common.Raw,
-		"verbose", cmd.Common.Verbose,
+		"debug", cmd.Common.Debug,
 		"retry_count", cmd.LLM.RetryCount,
 	)
 	slog.Debug("command options prepared",

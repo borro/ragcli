@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestConfigureEnablesDebugLevelWhenVerbose(t *testing.T) {
+func TestConfigureEnablesDebugLevelWhenDebugEnabled(t *testing.T) {
 	original := slog.Default()
 	t.Cleanup(func() {
 		slog.SetDefault(original)
@@ -47,9 +47,9 @@ func TestLoggerFormatsSourceRelativeToRepoRoot(t *testing.T) {
 	}
 }
 
-func newTestLogger(buf *bytes.Buffer, verbose bool) *slog.Logger {
+func newTestLogger(buf *bytes.Buffer, debug bool) *slog.Logger {
 	level := slog.LevelError
-	if verbose {
+	if debug {
 		level = slog.LevelDebug
 	}
 
