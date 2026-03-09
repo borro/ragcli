@@ -37,8 +37,8 @@ func TestEffectiveApproxTokenBudget(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := effectiveApproxTokenBudget(tt.input); got != tt.want {
-			t.Fatalf("effectiveApproxTokenBudget(%d) = %d, want %d", tt.input, got, tt.want)
+		if got := effectiveMapApproxTokenBudget(tt.input); got != tt.want {
+			t.Fatalf("effectiveMapApproxTokenBudget(%d) = %d, want %d", tt.input, got, tt.want)
 		}
 	}
 }
@@ -62,7 +62,7 @@ func TestSplitByApproxTokens(t *testing.T) {
 			name:      "multiple ascii lines fit into one chunk",
 			question:  "Что в файле?",
 			input:     "abc\ndef",
-			maxTokens: (estimateMapRequestTokens("Что в файле?", "abc\ndef") * approxBudgetDenominator / approxBudgetNumerator) + 1,
+			maxTokens: (estimateMapRequestTokens("Что в файле?", "abc\ndef") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 			expectedChunks: []string{
 				"abc\ndef",
 			},
@@ -71,7 +71,7 @@ func TestSplitByApproxTokens(t *testing.T) {
 			name:      "new line makes next chunk overflow",
 			question:  "Что в файле?",
 			input:     "abcdef\nghi",
-			maxTokens: (estimateMapRequestTokens("Что в файле?", "abcdef") * approxBudgetDenominator / approxBudgetNumerator) + 1,
+			maxTokens: (estimateMapRequestTokens("Что в файле?", "abcdef") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 			expectedChunks: []string{
 				"abcdef",
 				"ghi",
@@ -81,7 +81,7 @@ func TestSplitByApproxTokens(t *testing.T) {
 			name:      "unicode respects runes not bytes",
 			question:  "Что в файле?",
 			input:     "привет\nмир",
-			maxTokens: (estimateMapRequestTokens("Что в файле?", "привет") * approxBudgetDenominator / approxBudgetNumerator) + 1,
+			maxTokens: (estimateMapRequestTokens("Что в файле?", "привет") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 			expectedChunks: []string{
 				"привет",
 				"мир",
@@ -91,7 +91,7 @@ func TestSplitByApproxTokens(t *testing.T) {
 			name:      "oversized line splits by rune boundaries",
 			question:  "Что в файле?",
 			input:     "abcdefghij",
-			maxTokens: (estimateMapRequestTokens("Что в файле?", "abcdefghi") * approxBudgetDenominator / approxBudgetNumerator) + 1,
+			maxTokens: (estimateMapRequestTokens("Что в файле?", "abcdefghi") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 			expectedChunks: []string{
 				"abcdefghi",
 				"j",
@@ -101,7 +101,7 @@ func TestSplitByApproxTokens(t *testing.T) {
 			name:      "exact boundary",
 			question:  "Что в файле?",
 			input:     "abcdef",
-			maxTokens: (estimateMapRequestTokens("Что в файле?", "abcdef") * approxBudgetDenominator / approxBudgetNumerator) + 1,
+			maxTokens: (estimateMapRequestTokens("Что в файле?", "abcdef") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 			expectedChunks: []string{
 				"abcdef",
 			},
@@ -139,7 +139,7 @@ func TestSplitByApproxTokens_LargeInput(t *testing.T) {
 		builder.WriteString("line\n")
 	}
 
-	chunks, err := SplitByApproxTokens(context.Background(), strings.NewReader(builder.String()), "Что в файле?", (estimateMapRequestTokens("Что в файле?", "line\nline\nline")*approxBudgetDenominator/approxBudgetNumerator)+1)
+	chunks, err := SplitByApproxTokens(context.Background(), strings.NewReader(builder.String()), "Что в файле?", (estimateMapRequestTokens("Что в файле?", "line\nline\nline")*mapBudgetDenominator/mapBudgetNumerator)+1)
 	if err != nil {
 		t.Fatalf("SplitByApproxTokens() error = %v", err)
 	}
@@ -159,7 +159,7 @@ func TestSplitByApproxTokens_RespectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := SplitByApproxTokens(ctx, strings.NewReader("abc"), "Что в файле?", (estimateMapRequestTokens("Что в файле?", "abc")*approxBudgetDenominator/approxBudgetNumerator)+1)
+	_, err := SplitByApproxTokens(ctx, strings.NewReader("abc"), "Что в файле?", (estimateMapRequestTokens("Что в файле?", "abc")*mapBudgetDenominator/mapBudgetNumerator)+1)
 	if err == nil {
 		t.Fatal("expected context cancellation error")
 	}

@@ -21,15 +21,17 @@ type textChunk struct {
 const (
 	approxMessageOverheadTokens = 12
 	approxMapRequestReserve     = 64
-	approxBudgetNumerator       = 3
-	approxBudgetDenominator     = 5
+	mapBudgetNumerator          = 3
+	mapBudgetDenominator        = 5
+	reduceBudgetNumerator       = 4
+	reduceBudgetDenominator     = 5
 )
 
 func SplitByApproxTokens(ctx context.Context, r io.Reader, question string, maxTokens int) ([]textChunk, error) {
 	if maxTokens < 1 {
 		return nil, fmt.Errorf("max tokens must be >= 1")
 	}
-	safeMaxTokens := effectiveApproxTokenBudget(maxTokens)
+	safeMaxTokens := effectiveMapApproxTokenBudget(maxTokens)
 	if safeMaxTokens < 1 {
 		return nil, fmt.Errorf("max tokens must be >= 1")
 	}
@@ -169,12 +171,20 @@ func estimateReduceRequestTokens(question, facts string) int {
 	return estimateReduceRequestOverheadTokens(question) + approxTokenCount(facts)
 }
 
-func effectiveApproxTokenBudget(maxTokens int) int {
+func effectiveMapApproxTokenBudget(maxTokens int) int {
+	return effectiveApproxTokenBudget(maxTokens, mapBudgetNumerator, mapBudgetDenominator)
+}
+
+func effectiveReduceApproxTokenBudget(maxTokens int) int {
+	return effectiveApproxTokenBudget(maxTokens, reduceBudgetNumerator, reduceBudgetDenominator)
+}
+
+func effectiveApproxTokenBudget(maxTokens, numerator, denominator int) int {
 	if maxTokens <= 0 {
 		return 0
 	}
 
-	budget := (maxTokens * approxBudgetNumerator) / approxBudgetDenominator
+	budget := (maxTokens * numerator) / denominator
 	if budget < 1 {
 		return 1
 	}
