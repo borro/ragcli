@@ -25,6 +25,7 @@ import (
 	mapmode "github.com/borro/ragcli/internal/app/map"
 	"github.com/borro/ragcli/internal/app/tools/filetools"
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -142,16 +143,36 @@ var (
 	errReasoningOnlyOutput = errors.New("chat response returned reasoning-only output")
 )
 
-func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source Source, opts Options, question string) (string, error) {
+func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+	if plan == nil {
+		plan = verbose.NewPlan(nil, "hybrid",
+			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+			verbose.StageDef{Key: "segments", Label: "сегментация", Slots: 2},
+			verbose.StageDef{Key: "retrieval", Label: "retrieval", Slots: 9},
+			verbose.StageDef{Key: "grounding", Label: "grounding", Slots: 4},
+			verbose.StageDef{Key: "facts", Label: "извлечение фактов", Slots: 3},
+			verbose.StageDef{Key: "coverage", Label: "coverage", Slots: 2},
+			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+		)
+	}
+	prepareMeter := plan.Stage("prepare")
+	segmentsMeter := plan.Stage("segments")
+	retrievalMeter := plan.Stage("retrieval")
+	groundingMeter := plan.Stage("grounding")
+	factMeter := plan.Stage("facts")
+	coverageMeter := plan.Stage("coverage")
+	finalMeter := plan.Stage("final")
 	if source.Reader == nil {
 		return "", errors.New("hybrid source reader is required")
 	}
 
 	startedAt := time.Now()
+	prepareMeter.Start("читаю входной документ")
 	content, err := io.ReadAll(source.Reader)
 	if err != nil {
 		return "", fmt.Errorf("failed to read source: %w", err)
 	}
+	prepareMeter.Done(fmt.Sprintf("прочитал документ, %d байт", len(content)))
 	if len(content) == 0 {
 		slog.Info("hybrid processing finished", "reason", "empty_input")
 		return "Файл пустой", nil
@@ -182,11 +203,16 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 		"micro_segments", len(micro),
 		"meso_segments", len(meso),
 	)
+	segmentsMeter.Start("готовлю сегменты документа")
+	segmentsMeter.Done(fmt.Sprintf("профиль %s, сегментов %d", profile, len(meso)))
 
 	slog.Debug("hybrid lexical retrieval started", "segment_count", len(meso))
+	retrievalMeter.Start("выполняю lexical retrieval")
 	lexicalHits := lexicalRetrieve(question, meso)
 	slog.Debug("hybrid lexical retrieval finished", "hits", len(lexicalHits))
+	retrievalMeter.Note(fmt.Sprintf("lexical retrieval дал %d совпадений", len(lexicalHits)))
 
+	retrievalMeter.Note("отправляю запрос на semantic retrieval")
 	slog.Debug("hybrid semantic retrieval started", "segment_count", len(meso))
 	semanticHits, semanticErr := semanticRetrieve(ctx, embedder, displayName, content, meso, opts, question)
 	if semanticErr != nil {
@@ -194,7 +220,7 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 		switch opts.Fallback {
 		case "map":
 			slog.Info("hybrid switching to map fallback", "reason", "semantic_retrieval_failed")
-			return fallbackToMap(ctx, chat, source, opts, question, content)
+			return fallbackToMap(ctx, chat, source, opts, question, content, nil)
 		case "rag-only":
 			slog.Warn("hybrid semantic retrieval unavailable, continuing with lexical retrieval only", "error", semanticErr)
 		default:
@@ -203,16 +229,20 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 	}
 	if semanticErr == nil {
 		slog.Debug("hybrid semantic retrieval finished", "hits", len(semanticHits))
+		retrievalMeter.Note(fmt.Sprintf("semantic retrieval дал %d совпадений", len(semanticHits)))
+	} else {
+		retrievalMeter.Note("semantic retrieval недоступен, продолжаю без него")
 	}
 
 	slog.Debug("hybrid fusion started", "lexical_hits", len(lexicalHits), "semantic_hits", len(semanticHits))
 	regions := fuseAndExpandRegions(lexicalHits, semanticHits, meso, readPath, displayName, opts)
 	slog.Info("hybrid fusion finished", "regions", len(regions))
+	retrievalMeter.Done(fmt.Sprintf("нашёл %d регионов", len(regions)))
 	if len(regions) == 0 || retrievalTooWeak(regions) {
 		slog.Warn("hybrid retrieval too weak", "regions", len(regions), "fallback", opts.Fallback)
 		if opts.Fallback == "map" {
 			slog.Info("hybrid switching to map fallback", "reason", "weak_retrieval")
-			return fallbackToMap(ctx, chat, source, opts, question, content)
+			return fallbackToMap(ctx, chat, source, opts, question, content, nil)
 		}
 		if len(regions) == 0 {
 			slog.Info("hybrid processing finished", "reason", "no_evidence", "duration", roundDuration(time.Since(startedAt)))
@@ -230,14 +260,17 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 	}
 
 	slog.Debug("hybrid grounding started", "regions", len(finalRegions))
-	evidence, err := groundEvidence(finalRegions, opts.ReadWindow)
+	groundingMeter.Start("дочитываю точные строки")
+	evidence, err := groundEvidence(finalRegions, opts.ReadWindow, groundingMeter)
 	if err != nil {
 		return "", err
 	}
+	groundingMeter.Done(fmt.Sprintf("подготовил %d evidence blocks", len(evidence)))
 	slog.Info("hybrid grounding finished", "evidence_blocks", len(evidence))
 
 	slog.Debug("hybrid map extraction started", "regions", len(mapRegions))
-	factBlocks, reducedFacts, err := mapExtractFacts(ctx, chat, mapRegions, question)
+	factMeter.Start("собираю факты по регионам")
+	factBlocks, reducedFacts, err := mapExtractFacts(ctx, chat, mapRegions, question, factMeter)
 	if err != nil {
 		return "", err
 	}
@@ -247,10 +280,12 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 	)
 
 	slog.Debug("hybrid coverage check started")
+	coverageMeter.Start("отправляю facts и evidence в LLM на coverage-check")
 	coverage, err := checkCoverage(ctx, chat, question, reducedFacts, evidence)
 	if err != nil {
 		return "", err
 	}
+	coverageMeter.Done("coverage-check завершён")
 	slog.Info("hybrid coverage check finished",
 		"covered", coverage.Covered,
 		"gaps", len(coverage.Gaps),
@@ -280,14 +315,16 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 				extra = extra[:opts.FinalK]
 			}
 			slog.Debug("hybrid targeted reread grounding started", "regions", len(extra))
-			extraEvidence, err := groundEvidence(extra, opts.ReadWindow)
+			groundingMeter.Start("дочитываю дополнительные регионы")
+			extraEvidence, err := groundEvidence(extra, opts.ReadWindow, groundingMeter)
 			if err != nil {
 				return "", err
 			}
+			groundingMeter.Done(fmt.Sprintf("дочитал %d дополнительных регионов", len(extra)))
 			evidence = appendEvidence(evidence, extraEvidence)
 
 			slog.Debug("hybrid targeted reread map extraction started", "regions", len(extra))
-			_, extraReduced, err := mapExtractFacts(ctx, chat, extra, followUpQuery)
+			_, extraReduced, err := mapExtractFacts(ctx, chat, extra, followUpQuery, factMeter)
 			if err != nil {
 				return "", err
 			}
@@ -303,15 +340,18 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 	}
 
 	slog.Debug("hybrid answer synthesis started", "evidence_blocks", len(evidence), "fact_lines", countFactLines(reducedFacts))
+	finalMeter.Start(fmt.Sprintf("передаю в LLM %d evidence blocks и %d строк фактов", len(evidence), countFactLines(reducedFacts)))
 	answer, err := synthesizeAnswer(ctx, chat, question, reducedFacts, evidence)
 	if err != nil {
 		if (errors.Is(err, errEmptyChatContent) || errors.Is(err, errReasoningOnlyOutput)) && opts.Fallback == "map" {
 			slog.Warn("hybrid answer synthesis returned empty content, switching to map fallback")
-			return fallbackToMap(ctx, chat, source, opts, question, content)
+			return fallbackToMap(ctx, chat, source, opts, question, content, nil)
 		}
 		return "", err
 	}
 	result := appendSources(answer, evidence)
+	finalMeter.Note("получил ответ от LLM, добавляю ссылки на источники")
+	finalMeter.Done("ответ готов")
 	slog.Info("hybrid processing finished",
 		"reason", "success",
 		"duration", roundDuration(time.Since(startedAt)),
@@ -1142,9 +1182,9 @@ func retrievalTooWeak(regions []Region) bool {
 	return regions[0].Score < 0.18
 }
 
-func groundEvidence(regions []Region, readWindow int) ([]EvidenceBlock, error) {
+func groundEvidence(regions []Region, readWindow int, meter verbose.Meter) ([]EvidenceBlock, error) {
 	evidence := make([]EvidenceBlock, 0, len(regions))
-	for _, region := range regions {
+	for index, region := range regions {
 		linesRaw, err := filetools.ReadLines(region.SourcePath, region.StartLine, region.EndLine)
 		if err != nil {
 			return nil, err
@@ -1175,6 +1215,7 @@ func groundEvidence(regions []Region, readWindow int) ([]EvidenceBlock, error) {
 		}
 
 		evidence = append(evidence, block)
+		meter.Report(index+1, len(regions), fmt.Sprintf("дочитал %d/%d регионов", index+1, len(regions)))
 	}
 	return evidence, nil
 }
@@ -1197,14 +1238,15 @@ func lineSlicesText(lines []filetools.LineSlice) string {
 	return strings.Join(parts, "\n")
 }
 
-func mapExtractFacts(ctx context.Context, chat llm.ChatRequester, regions []Region, question string) ([]RegionFacts, string, error) {
+func mapExtractFacts(ctx context.Context, chat llm.ChatRequester, regions []Region, question string, meter verbose.Meter) ([]RegionFacts, string, error) {
 	if len(regions) == 0 {
 		return nil, "", nil
 	}
 
 	result := make([]RegionFacts, 0, len(regions))
 	blocks := make([]string, 0, len(regions))
-	for _, region := range regions {
+	for index, region := range regions {
+		meter.Note(fmt.Sprintf("отправляю регион %d/%d в LLM", index+1, len(regions)))
 		facts, err := callChat(ctx, chat, chatCallOptions{
 			Stage:                   "map_extract_region",
 			MaxCompletionTokens:     220,
@@ -1225,11 +1267,13 @@ func mapExtractFacts(ctx context.Context, chat llm.ChatRequester, regions []Regi
 		}
 		normalized := normalizeFacts(facts)
 		if normalized == "" || strings.EqualFold(normalized, "SKIP") {
+			meter.Report(index+1, len(regions), fmt.Sprintf("обработано %d/%d регионов", index+1, len(regions)))
 			continue
 		}
 		factList := strings.Split(normalized, "\n")
 		result = append(result, RegionFacts{Region: region, Facts: factList})
 		blocks = append(blocks, normalized)
+		meter.Report(index+1, len(regions), fmt.Sprintf("обработано %d/%d регионов", index+1, len(regions)))
 	}
 	if len(blocks) == 0 {
 		return result, "", nil
@@ -1371,13 +1415,13 @@ func mergeFactBlocks(left, right string) string {
 	return normalizeFacts(combined)
 }
 
-func fallbackToMap(ctx context.Context, chat llm.ChatRequester, source Source, opts Options, question string, content []byte) (string, error) {
+func fallbackToMap(ctx context.Context, chat llm.ChatRequester, source Source, opts Options, question string, content []byte, plan *verbose.Plan) (string, error) {
 	slog.Debug("hybrid map fallback started", "chunk_length", max(opts.ChunkSize*4, 10000))
 	return mapmode.Run(ctx, chat, bytes.NewReader(content), mapmode.Options{
 		InputPath:   source.Path,
 		Concurrency: 1,
 		ChunkLength: max(opts.ChunkSize*4, 10000),
-	}, question)
+	}, question, plan)
 }
 
 type chatCallOptions struct {

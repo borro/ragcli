@@ -346,6 +346,12 @@ func globalFlags() []cli.Flag {
 			Usage:   "Включить debug runtime-логи в stderr; без флага ошибки печатаются одной строкой.",
 			Sources: cli.EnvVars("DEBUG"),
 		},
+		&cli.BoolFlag{
+			Name:    "verbose",
+			Aliases: []string{"v"},
+			Usage:   "Показывать ход выполнения в stderr отдельными строками статуса.",
+			Sources: cli.EnvVars("VERBOSE"),
+		},
 	}
 }
 
@@ -375,6 +381,7 @@ func bindCommonOptions(cmd *cli.Command) CommonOptions {
 		Prompt:    bindPrompt(cmd),
 		Raw:       cmd.Bool("raw"),
 		Debug:     cmd.Bool("debug"),
+		Verbose:   cmd.Bool("verbose"),
 	}
 }
 

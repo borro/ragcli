@@ -20,6 +20,7 @@ import (
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/logging"
+	"github.com/borro/ragcli/internal/verbose"
 	"github.com/joho/godotenv"
 )
 
@@ -105,6 +106,14 @@ func commandFlagConsumesValue(subcommand string, token string) bool {
 
 func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr io.Writer, stdin io.Reader, version string, argsCount int, envErr error, startedAt time.Time) error {
 	logging.Configure(stderr, cmd.Common.Debug)
+	commandCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	reporter := verbose.New(stderr, cmd.Common.Verbose, cmd.Common.Debug)
+	plan := progressPlanForCommand(cmd.Name, reporter)
+	prepareMeter := plan.Stage("prepare")
+	prepareMeter.Start("открываю входные данные")
+
 	slog.Info("application run started",
 		"args_count", argsCount,
 		"version", strings.TrimSpace(version),
@@ -132,9 +141,6 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 		"embedding_model", strings.TrimSpace(cmd.LLM.EmbeddingModel),
 	)
 
-	commandCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	slog.Info("preparing input source", "command", cmd.Name, "input_path_set", strings.TrimSpace(cmd.Common.InputPath) != "")
 	handle, err := input.Open(cmd.Common.InputPath, stdin)
 	if err != nil {
@@ -151,6 +157,7 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 		"input_source", handle.DisplayName,
 		"has_path", strings.TrimSpace(handle.Path) != "",
 	)
+	prepareMeter.Done("входные данные готовы")
 	slog.Debug("creating llm client",
 		"command", cmd.Name,
 		"api_url_set", strings.TrimSpace(cmd.LLM.APIURL) != "",
@@ -164,10 +171,10 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 	switch cmd.Name {
 	case "map":
 		slog.Info("starting map processing")
-		result, err = mapmode.Run(commandCtx, client, handle.Reader, cmd.Map, cmd.Common.Prompt)
+		result, err = mapmode.Run(commandCtx, client, handle.Reader, cmd.Map, cmd.Common.Prompt, plan)
 	case "tools":
 		slog.Info("starting tools processing")
-		result, err = tools.Run(commandCtx, client, handle.Path, cmd.Common.Prompt, cmd.Tools)
+		result, err = tools.Run(commandCtx, client, handle.Path, cmd.Common.Prompt, plan)
 	case "hybrid":
 		slog.Debug("creating embedding client",
 			"embedding_model", strings.TrimSpace(cmd.LLM.EmbeddingModel),
@@ -179,7 +186,7 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 			Path:        handle.Path,
 			DisplayName: handle.DisplayName,
 			Reader:      handle.Reader,
-		}, cmd.Hybrid, cmd.Common.Prompt)
+		}, cmd.Hybrid, cmd.Common.Prompt, plan)
 	case "rag":
 		slog.Debug("creating embedding client",
 			"embedding_model", strings.TrimSpace(cmd.LLM.EmbeddingModel),
@@ -191,7 +198,7 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 			Path:        handle.Path,
 			DisplayName: handle.DisplayName,
 			Reader:      handle.Reader,
-		}, cmd.RAG, cmd.Common.Prompt)
+		}, cmd.RAG, cmd.Common.Prompt, plan)
 	default:
 		err = fmt.Errorf("unknown subcommand: %s", cmd.Name)
 	}
@@ -214,6 +221,46 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 	}
 	slog.Info("application run finished", "command", cmd.Name, "exit_code", 0, "duration", roundDurationSeconds(time.Since(startedAt)))
 	return nil
+}
+
+func progressPlanForCommand(command string, reporter verbose.Reporter) *verbose.Plan {
+	switch command {
+	case "map":
+		return verbose.NewPlan(reporter, "map",
+			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+			verbose.StageDef{Key: "chunking", Label: "чанкинг", Slots: 4},
+			verbose.StageDef{Key: "chunks", Label: "обработка чанков", Slots: 9},
+			verbose.StageDef{Key: "reduce", Label: "reduce", Slots: 5},
+			verbose.StageDef{Key: "verify", Label: "проверка ответа", Slots: 2},
+			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+		)
+	case "tools":
+		return verbose.NewPlan(reporter, "tools",
+			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+			verbose.StageDef{Key: "init", Label: "инициализация", Slots: 2},
+			verbose.StageDef{Key: "loop", Label: "LLM turn", Slots: 18},
+			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+		)
+	case "hybrid":
+		return verbose.NewPlan(reporter, "hybrid",
+			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+			verbose.StageDef{Key: "segments", Label: "сегментация", Slots: 2},
+			verbose.StageDef{Key: "retrieval", Label: "retrieval", Slots: 9},
+			verbose.StageDef{Key: "grounding", Label: "grounding", Slots: 4},
+			verbose.StageDef{Key: "facts", Label: "извлечение фактов", Slots: 3},
+			verbose.StageDef{Key: "coverage", Label: "coverage", Slots: 2},
+			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+		)
+	case "rag":
+		return verbose.NewPlan(reporter, "rag",
+			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+			verbose.StageDef{Key: "index", Label: "индекс", Slots: 8},
+			verbose.StageDef{Key: "retrieval", Label: "retrieval", Slots: 7},
+			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 7},
+		)
+	default:
+		return verbose.NewPlan(reporter, command, verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 1})
+	}
 }
 
 func handleRunError(stderr io.Writer, err error, debug bool) {

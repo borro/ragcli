@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -497,7 +498,7 @@ func isInstructionLikeLine(line string) bool {
 	return false
 }
 
-func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []textChunk, question string, workers int, stats *pipelineStats) ([]string, error) {
+func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []textChunk, question string, workers int, stats *pipelineStats, chunkMeter verbose.Meter) ([]string, error) {
 	slog.Debug("map phase started", "chunk_count", len(chunks), "workers", workers)
 
 	type mapJob struct {
@@ -513,7 +514,6 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []text
 	}
 
 	jobs := make(chan mapJob)
-	results := make(chan string)
 	resultMeta := make(chan mapResult, len(chunks))
 
 	var wg sync.WaitGroup
@@ -527,7 +527,6 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []text
 			defer wg.Done()
 
 			for job := range jobs {
-
 				res, err := callLLM(ctx, client, mapMessages(question, job.chunk.Text), llmCallContext{
 					Stage:         "map_chunk",
 					ChunkIndex:    job.index + 1,
@@ -553,7 +552,6 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []text
 				)
 
 				if normalized != "" && normalized != "SKIP" {
-					results <- normalized
 					resultMeta <- mapResult{output: normalized, rawFactLines: rawFactLines, keptFactLine: keptFactLines}
 				} else {
 					resultMeta <- mapResult{skipped: true, rawFactLines: rawFactLines}
@@ -572,19 +570,14 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []text
 		close(jobs)
 
 		wg.Wait()
-
-		close(results)
-
+		close(resultMeta)
 	}()
 
 	var collected []string
 
-	for r := range results {
-		collected = append(collected, r)
-	}
-
-	for i := 0; i < len(chunks); i++ {
-		result := <-resultMeta
+	completed := 0
+	for result := range resultMeta {
+		completed++
 		switch {
 		case result.err != nil:
 			stats.MapErrors++
@@ -592,9 +585,13 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []text
 			stats.MapSkips++
 		default:
 			stats.MapSuccesses++
+			if result.output != "" {
+				collected = append(collected, result.output)
+			}
 		}
 		stats.MapFactLinesRaw += result.rawFactLines
 		stats.MapFactLinesKept += result.keptFactLine
+		chunkMeter.Report(completed, len(chunks), fmt.Sprintf("обработано %d/%d chunks", completed, len(chunks)))
 	}
 
 	slog.Debug("map phase finished",
@@ -734,7 +731,7 @@ func splitReduceItemByApproxTokens(ctx context.Context, item string, question st
 // REDUCE
 //
 
-func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string, question string, opts Options, stats *pipelineStats) (string, error) {
+func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string, question string, opts Options, stats *pipelineStats, reduceMeter verbose.Meter) (string, error) {
 	iteration := 0
 	for len(results) > 1 {
 		iteration++
@@ -744,6 +741,7 @@ func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string
 		if err != nil {
 			return "", err
 		}
+		reduceMeter.Note(fmt.Sprintf("reduce iteration %d: %d batch", iteration, len(batches)))
 		slog.Debug("reduce iteration started",
 			"iteration", iteration,
 			"input_items", len(results),
@@ -761,6 +759,7 @@ func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string
 			rawFactLines := countPreparedFactLines(input, func(raw string) string { return raw })
 			preparedInput := prepareReduceFacts(input)
 			preparedFactLines := countPreparedFactLines(preparedInput, func(raw string) string { return raw })
+			reduceMeter.Note(fmt.Sprintf("отправляю batch %d/%d в LLM (%d строк фактов)", batchIndex+1, len(batches), preparedFactLines))
 			slog.Debug("reduce batch prepared",
 				"iteration", iteration,
 				"batch_index", batchIndex+1,
@@ -780,6 +779,7 @@ func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string
 			if err != nil {
 				return "", err
 			}
+			reduceMeter.Report(batchIndex+1, len(batches), fmt.Sprintf("готово %d/%d batch", batchIndex+1, len(batches)))
 
 			next = append(next, summary)
 		}
@@ -801,7 +801,8 @@ func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string
 // SELF REFINEMENT
 //
 
-func selfRefine(ctx context.Context, client llm.ChatRequester, question, facts, answer string, stats *pipelineStats) (string, error) {
+func selfRefine(ctx context.Context, client llm.ChatRequester, question, facts, answer string, stats *pipelineStats, verifyMeter verbose.Meter) (string, error) {
+	verifyMeter.Start("отправляю черновой ответ на верификацию в LLM")
 	slog.Debug("self-refine critique started")
 
 	critique, err := callLLM(ctx, client, critiqueMessages(question, facts, answer), llmCallContext{Stage: "self_refine_critique"}, stats)
@@ -811,24 +812,47 @@ func selfRefine(ctx context.Context, client llm.ChatRequester, question, facts, 
 
 	if strings.Contains(critique, "NONE") {
 		slog.Debug("self-refine skipped", "reason", "critique_none")
+		verifyMeter.Done("доработка не нужна")
 		return answer, nil
 	}
 
 	slog.Debug("self-refine finalize started")
-	return callLLM(ctx, client, refineMessages(question, facts, answer, critique), llmCallContext{Stage: "self_refine_finalize"}, stats)
+	verifyMeter.Note("отправляю замечания на доработку в LLM")
+	refined, err := callLLM(ctx, client, refineMessages(question, facts, answer, critique), llmCallContext{Stage: "self_refine_finalize"}, stats)
+	if err != nil {
+		return "", err
+	}
+	verifyMeter.Done("доработка завершена")
+	return refined, nil
 }
 
 //
 // PIPELINE
 //
 
-func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Options, question string) (string, error) {
+func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Options, question string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
 	inputMode := "stdin"
 	if opts.InputPath != "" {
 		inputMode = "file"
 	}
 	stats := &pipelineStats{}
+	if plan == nil {
+		plan = verbose.NewPlan(nil, "map",
+			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+			verbose.StageDef{Key: "chunking", Label: "чанкинг", Slots: 4},
+			verbose.StageDef{Key: "chunks", Label: "обработка чанков", Slots: 9},
+			verbose.StageDef{Key: "reduce", Label: "reduce", Slots: 5},
+			verbose.StageDef{Key: "verify", Label: "проверка ответа", Slots: 2},
+			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+		)
+	}
+	chunkingMeter := plan.Stage("chunking")
+	chunkMeter := plan.Stage("chunks")
+	reduceMeter := plan.Stage("reduce")
+	verifyMeter := plan.Stage("verify")
+	finalMeter := plan.Stage("final")
+	chunkingMeter.Start("разбиваю файл на чанки")
 
 	slog.Debug("map-reduce pipeline started",
 		"input_mode", inputMode,
@@ -844,13 +868,14 @@ func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Op
 		return "", err
 	}
 	slog.Debug("split into chunks", "chunk_count", len(chunks))
+	chunkingMeter.Done(fmt.Sprintf("подготовил %d chunks", len(chunks)))
 
 	if len(chunks) == 0 {
 		slog.Debug("map-reduce pipeline finished", "reason", "empty_input", "duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second))
 		return "Файл пустой", nil
 	}
 
-	mapResults, err := runMapParallel(ctx, client, chunks, question, opts.Concurrency, stats)
+	mapResults, err := runMapParallel(ctx, client, chunks, question, opts.Concurrency, stats, chunkMeter)
 	if err != nil {
 		return "", err
 	}
@@ -874,21 +899,26 @@ func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Op
 	}
 
 	slog.Debug("reduce phase started", "input_items", len(mapResults))
-	facts, err := fanInReduce(ctx, client, mapResults, question, opts, stats)
+	reduceMeter.Start("агрегирую найденные факты")
+	facts, err := fanInReduce(ctx, client, mapResults, question, opts, stats, reduceMeter)
 	if err != nil {
 		return "", err
 	}
+	reduceMeter.Done("агрегация фактов завершена")
 
 	slog.Debug("final answer generation started")
+	finalMeter.Start("отправляю объединённые факты в LLM")
 	answer, err := callLLM(ctx, client, finalMessages(question, facts), llmCallContext{Stage: "final_answer"}, stats)
 	if err != nil {
 		return "", err
 	}
+	finalMeter.Note("получил черновой итоговый ответ")
 
-	result, err := selfRefine(ctx, client, question, facts, answer, stats)
+	result, err := selfRefine(ctx, client, question, facts, answer, stats, verifyMeter)
 	if err != nil {
 		return "", err
 	}
+	finalMeter.Done("ответ готов")
 
 	slog.Debug("map-reduce pipeline finished",
 		"reason", "success",

@@ -33,6 +33,7 @@ func TestFormatOutputNonTTYSkipsRendering(t *testing.T) {
 
 func TestFormatOutputTTYRendersMarkdown(t *testing.T) {
 	t.Cleanup(setTerminalWriterForTest(true))
+	t.Cleanup(setTerminalWidthForTest(120))
 
 	got, err := formatOutput("# Title", &bytes.Buffer{}, false)
 	if err != nil {
@@ -46,6 +47,20 @@ func TestFormatOutputTTYRendersMarkdown(t *testing.T) {
 	}
 }
 
+func TestFormatOutputTTYUsesTerminalWidth(t *testing.T) {
+	t.Cleanup(setTerminalWriterForTest(true))
+	t.Cleanup(setTerminalWidthForTest(120))
+
+	input := strings.Repeat("word ", 18)
+	got, err := formatOutput(input, &bytes.Buffer{}, false)
+	if err != nil {
+		t.Fatalf("formatOutput() error = %v", err)
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatalf("formatOutput() = %q, want single line when terminal is wide enough", got)
+	}
+}
+
 func setTerminalWriterForTest(value bool) func() {
 	prev := isTerminalWriter
 	isTerminalWriter = func(_ io.Writer) bool {
@@ -53,5 +68,15 @@ func setTerminalWriterForTest(value bool) func() {
 	}
 	return func() {
 		isTerminalWriter = prev
+	}
+}
+
+func setTerminalWidthForTest(value int) func() {
+	prev := terminalWidth
+	terminalWidth = func(_ io.Writer) int {
+		return value
+	}
+	return func() {
+		terminalWidth = prev
 	}
 }

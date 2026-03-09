@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -50,7 +51,7 @@ func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 		},
 	}
 
-	result, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", Options{})
+	result, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -66,6 +67,36 @@ func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 	}
 }
 
+func TestRunTools_VerboseEmitsSingleFinalCompletionLine(t *testing.T) {
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "Готовый ответ", nil)),
+		},
+	}
+	var stderr bytes.Buffer
+
+	result, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", verbose.NewPlan(verbose.New(&stderr, true, false), "tools",
+		verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+		verbose.StageDef{Key: "init", Label: "инициализация", Slots: 2},
+		verbose.StageDef{Key: "loop", Label: "LLM turn", Slots: 18},
+		verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+	))
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "Готовый ответ" {
+		t.Fatalf("RunTools() result = %q, want %q", result, "Готовый ответ")
+	}
+
+	output := stderr.String()
+	if strings.Count(output, "(100%)") != 1 {
+		t.Fatalf("stderr = %q, want exactly one final completion line", output)
+	}
+	if !strings.Contains(output, "финальный ответ") {
+		t.Fatalf("stderr = %q, want final answer stage", output)
+	}
+}
+
 func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
@@ -74,7 +105,7 @@ func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
 		},
 	}
 
-	result, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", Options{})
+	result, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -121,7 +152,7 @@ func TestRunTools_MultiStepToolLoop(t *testing.T) {
 		"12: вывод",
 	}, "\n"))
 
-	result, err := Run(context.Background(), client, filePath, "Что сказано про архитектуру?", Options{})
+	result, err := Run(context.Background(), client, filePath, "Что сказано про архитектуру?", nil)
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -160,7 +191,7 @@ func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
 	client := &scriptedRequester{responses: responses}
 	filePath := writeTempFile(t, "x1\nx2\nx3\nx4\nx5\nx6\nx7\nx8\nx9\nx10\n")
 
-	_, err := Run(context.Background(), client, filePath, "loop?", Options{})
+	_, err := Run(context.Background(), client, filePath, "loop?", nil)
 	var orchErr orchestrationError
 	if !errorsAsOrchestration(err, &orchErr) || orchErr.Code != "orchestration_limit" {
 		t.Fatalf("RunTools() error = %v, want orchestration_limit", err)
@@ -178,7 +209,7 @@ func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\n")
-	result, err := Run(context.Background(), client, filePath, "test", Options{})
+	result, err := Run(context.Background(), client, filePath, "test", nil)
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -214,7 +245,7 @@ func TestRunTools_DuplicateSearchUsesCacheAndFinalizesWithoutTools(t *testing.T)
 	}
 
 	filePath := writeTempFile(t, "alpha\nbeta\n")
-	result, err := Run(context.Background(), client, filePath, "find alpha", Options{})
+	result, err := Run(context.Background(), client, filePath, "find alpha", nil)
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -250,7 +281,7 @@ func TestRunTools_DuplicateReadLinesUsesCacheAndFinalizesWithoutTools(t *testing
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\nthree\n")
-	result, err := Run(context.Background(), client, filePath, "read", Options{})
+	result, err := Run(context.Background(), client, filePath, "read", nil)
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -276,7 +307,7 @@ func TestRunTools_NoProgressFinalizesWithoutTools(t *testing.T) {
 	}
 
 	filePath := writeTempFile(t, "one\ntwo\nthree\nfour\n")
-	result, err := Run(context.Background(), client, filePath, "read same area", Options{})
+	result, err := Run(context.Background(), client, filePath, "read same area", nil)
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -340,7 +371,7 @@ func TestRunTools_SystemPromptMentionsAgentPolicy(t *testing.T) {
 		},
 	}
 
-	_, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", Options{})
+	_, err := Run(context.Background(), client, "/tmp/file.txt", "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -368,7 +399,7 @@ func TestRunTools_UserPromptMentionsToolsFileContext(t *testing.T) {
 	}
 
 	filePath := "/tmp/rest2push.log"
-	_, err := Run(context.Background(), client, filePath, "Есть ли тут явные критические ошибки?", Options{})
+	_, err := Run(context.Background(), client, filePath, "Есть ли тут явные критические ошибки?", nil)
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}
@@ -400,7 +431,7 @@ func TestRunTools_WarnsWhenFirstAnswerSkipsTools(t *testing.T) {
 		slog.SetDefault(original)
 	})
 
-	result, err := Run(context.Background(), client, "/tmp/rest2push.log", "Есть ли тут явные критические ошибки?", Options{})
+	result, err := Run(context.Background(), client, "/tmp/rest2push.log", "Есть ли тут явные критические ошибки?", nil)
 	if err != nil {
 		t.Fatalf("RunTools() error = %v", err)
 	}

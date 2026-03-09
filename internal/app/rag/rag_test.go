@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/testutil"
+	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -57,6 +59,31 @@ func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req openai.ChatComp
 			CompletionTokens: 5,
 			TotalTokens:      16,
 		}, nil
+}
+
+type gatedEmbedder struct {
+	started chan<- string
+	release <-chan struct{}
+}
+
+func (g *gatedEmbedder) CreateEmbeddingsWithMetrics(_ context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
+	select {
+	case g.started <- "embedding":
+	default:
+	}
+	<-g.release
+
+	vectors := make([][]float32, 0, len(inputs))
+	for _, input := range inputs {
+		vectors = append(vectors, vectorFor(input))
+	}
+	return vectors, llm.EmbeddingMetrics{
+		Attempt:      1,
+		InputCount:   len(inputs),
+		VectorCount:  len(vectors),
+		TotalTokens:  len(inputs) * 7,
+		PromptTokens: len(inputs) * 7,
+	}, nil
 }
 
 func TestChunkTextPreservesLineRanges(t *testing.T) {
@@ -113,7 +140,7 @@ func TestBuildOrLoadIndexUsesCacheAndInvalidatesByModel(t *testing.T) {
 	}
 
 	stats := &pipelineStats{}
-	_, err := buildOrLoadIndex(context.Background(), embedder, source, cfg, stats)
+	_, err := buildOrLoadIndex(context.Background(), embedder, source, cfg, stats, verbose.Meter{})
 	if err != nil {
 		t.Fatalf("buildOrLoadIndex() error = %v", err)
 	}
@@ -129,7 +156,7 @@ func TestBuildOrLoadIndexUsesCacheAndInvalidatesByModel(t *testing.T) {
 		Path:        "/tmp/source.txt",
 		DisplayName: "source.txt",
 		Reader:      strings.NewReader("alpha\nretry policy is enabled\nbeta\n"),
-	}, cfg, stats)
+	}, cfg, stats, verbose.Meter{})
 	if err != nil {
 		t.Fatalf("buildOrLoadIndex(cache) error = %v", err)
 	}
@@ -144,7 +171,7 @@ func TestBuildOrLoadIndexUsesCacheAndInvalidatesByModel(t *testing.T) {
 		Path:        "/tmp/source.txt",
 		DisplayName: "source.txt",
 		Reader:      strings.NewReader("alpha\nretry policy is enabled\nbeta\n"),
-	}, cfg, stats)
+	}, cfg, stats, verbose.Meter{})
 	if err != nil {
 		t.Fatalf("buildOrLoadIndex(model change) error = %v", err)
 	}
@@ -178,7 +205,7 @@ func TestRunReturnsAnswerWithCitations(t *testing.T) {
 		Path:        "/tmp/retries.txt",
 		DisplayName: "retries.txt",
 		Reader:      strings.NewReader(content),
-	}, cfg, "What is the retry policy?")
+	}, cfg, "What is the retry policy?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -211,7 +238,7 @@ func TestRunReturnsHonestInsufficientAnswer(t *testing.T) {
 	answer, err := Run(context.Background(), &fakeChat{answer: "should not be used"}, &fakeEmbedder{}, Source{
 		DisplayName: "stdin",
 		Reader:      strings.NewReader("alpha beta gamma\ndelta epsilon\n"),
-	}, cfg, "payments and invoices")
+	}, cfg, "payments and invoices", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -220,6 +247,95 @@ func TestRunReturnsHonestInsufficientAnswer(t *testing.T) {
 	}
 	if !strings.Contains(answer, "Sources:\n- none") {
 		t.Fatalf("answer = %q, want empty sources block", answer)
+	}
+}
+
+func TestRunVerboseProgressIsIsolatedPerRun(t *testing.T) {
+	content := strings.Join([]string{
+		"overview",
+		"retry policy is enabled for failed requests",
+		"backoff starts at 1s",
+		"database settings are described elsewhere",
+	}, "\n")
+
+	started := make(chan string, 8)
+	release := make(chan struct{})
+	runOnce := func(t *testing.T, index int, recorder *testutil.ProgressRecorder) <-chan error {
+		t.Helper()
+
+		plan := verbose.NewPlan(recorder, "rag",
+			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+			verbose.StageDef{Key: "index", Label: "индекс", Slots: 8},
+			verbose.StageDef{Key: "retrieval", Label: "retrieval", Slots: 7},
+			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 7},
+		)
+		errCh := make(chan error, 1)
+		go func() {
+			_, err := Run(context.Background(), &fakeChat{answer: "Retry policy is enabled [source 1]."}, &gatedEmbedder{
+				started: started,
+				release: release,
+			}, Source{
+				Path:        "/tmp/retries.txt",
+				DisplayName: "retries.txt",
+				Reader:      strings.NewReader(content),
+			}, Options{
+				EmbeddingModel: "embed",
+				TopK:           3,
+				FinalK:         2,
+				ChunkSize:      55,
+				ChunkOverlap:   10,
+				IndexTTL:       time.Hour,
+				IndexDir:       filepath.Join(t.TempDir(), "idx", string(rune('a'+index))),
+				Rerank:         "heuristic",
+			}, "What is the retry policy?", plan)
+			errCh <- err
+		}()
+		return errCh
+	}
+
+	expectedTotal := verbose.NewPlan(nil, "rag",
+		verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+		verbose.StageDef{Key: "index", Label: "индекс", Slots: 8},
+		verbose.StageDef{Key: "retrieval", Label: "retrieval", Slots: 7},
+		verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 7},
+	).Total()
+	first := testutil.NewProgressRecorder(expectedTotal)
+	second := testutil.NewProgressRecorder(expectedTotal)
+	errFirst := runOnce(t, 0, first)
+	errSecond := runOnce(t, 1, second)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for both runs to start embeddings")
+		}
+	}
+	close(release)
+
+	if err := <-errFirst; err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if err := <-errSecond; err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		recorder *testutil.ProgressRecorder
+	}{
+		{name: "first", recorder: first},
+		{name: "second", recorder: second},
+	} {
+		progressCalls, _, totals := tc.recorder.Snapshot()
+		if progressCalls == 0 {
+			t.Fatalf("%s recorder saw no progress updates", tc.name)
+		}
+		for _, total := range totals {
+			if total != expectedTotal {
+				t.Fatalf("%s recorder total = %d, want %d", tc.name, total, expectedTotal)
+			}
+		}
 	}
 }
 
@@ -241,7 +357,7 @@ func TestPersistedIndexFilesExist(t *testing.T) {
 		Reader:      strings.NewReader("one\ntwo\nthree\nfour\n"),
 	}
 
-	index, err := buildOrLoadIndex(context.Background(), &fakeEmbedder{}, source, cfg, &pipelineStats{})
+	index, err := buildOrLoadIndex(context.Background(), &fakeEmbedder{}, source, cfg, &pipelineStats{}, verbose.Meter{})
 	if err != nil {
 		t.Fatalf("buildOrLoadIndex() error = %v", err)
 	}
@@ -325,7 +441,7 @@ func TestBuildOrLoadIndexConcurrentWritersSharePublishedIndex(t *testing.T) {
 				Path:        "/tmp/source.txt",
 				DisplayName: "source.txt",
 				Reader:      strings.NewReader(content),
-			}, cfg, &pipelineStats{})
+			}, cfg, &pipelineStats{}, verbose.Meter{})
 			errs <- err
 		}()
 	}

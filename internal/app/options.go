@@ -12,6 +12,7 @@ type CommonOptions struct {
 	Prompt    string
 	Raw       bool
 	Debug     bool
+	Verbose   bool
 }
 
 type LLMOptions struct {

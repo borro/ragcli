@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -98,28 +99,44 @@ type candidate struct {
 	Score      float64
 }
 
-func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source Source, opts Options, question string) (string, error) {
+func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source Source, opts Options, question string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
 	stats := pipelineStats{}
+	if plan == nil {
+		plan = verbose.NewPlan(nil, "rag",
+			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+			verbose.StageDef{Key: "index", Label: "индекс", Slots: 8},
+			verbose.StageDef{Key: "retrieval", Label: "retrieval", Slots: 7},
+			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 7},
+		)
+	}
+	indexMeter := plan.Stage("index")
+	retrievalMeter := plan.Stage("retrieval")
+	finalMeter := plan.Stage("final")
 
 	if source.Reader == nil {
 		return "", errors.New("rag source reader is required")
 	}
 
-	index, err := buildOrLoadIndex(ctx, embedder, source, opts, &stats)
+	indexMeter.Start("читаю входной документ")
+	index, err := buildOrLoadIndex(ctx, embedder, source, opts, &stats, indexMeter)
 	if err != nil {
 		return "", err
 	}
 	stats.ChunkCount = len(index.Chunks)
 
+	retrievalMeter.Start("отправляю вопрос в embeddings API")
 	queryEmbedding, metrics, err := embedQuery(ctx, embedder, question)
 	if err != nil {
 		return "", err
 	}
 	stats.EmbeddingCalls += 1
 	stats.EmbeddingTokens += metrics.TotalTokens
+	retrievalMeter.Note("embedding запроса готов")
 
+	retrievalMeter.Note("ищу релевантные фрагменты")
 	ranked := retrieve(index, queryEmbedding, question, opts)
+	retrievalMeter.Done(fmt.Sprintf("retrieval вернул %d кандидатов, беру %d evidence chunks", len(ranked), min(len(ranked), opts.FinalK)))
 	if len(ranked) == 0 || retrievalTooWeak(ranked) {
 		slog.Debug("rag retrieval insufficient",
 			"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
@@ -136,10 +153,13 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 	evidence := selectEvidence(ranked, opts.FinalK)
 	stats.AnswerContextChunks = len(evidence)
 
+	finalMeter.Start("собираю ответ по evidence chunks")
+	finalMeter.Note(fmt.Sprintf("передаю %d evidence chunks в LLM", len(evidence)))
 	answer, chatMetrics, err := synthesizeAnswer(ctx, chat, question, evidence)
 	if err != nil {
 		return "", err
 	}
+	finalMeter.Note("получил ответ от LLM, добавляю ссылки на источники")
 
 	slog.Debug("rag processing finished",
 		"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
@@ -154,10 +174,11 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 		"total_tokens", chatMetrics.TotalTokens,
 	)
 
+	finalMeter.Done("ответ готов")
 	return appendSources(answer, evidence), nil
 }
 
-func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, source Source, opts Options, stats *pipelineStats) (*Index, error) {
+func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, source Source, opts Options, stats *pipelineStats, indexMeter verbose.Meter) (*Index, error) {
 	if err := os.MkdirAll(opts.IndexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create rag index dir: %w", err)
 	}
@@ -167,6 +188,7 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 	if err != nil {
 		return nil, fmt.Errorf("failed to read source: %w", err)
 	}
+	indexMeter.Note(fmt.Sprintf("прочитал документ, %d байт", len(content)))
 
 	sourcePath := normalizeSourcePath(source)
 	hash := hashInput(content, sourcePath, opts)
@@ -174,6 +196,7 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 
 	if cached, err := loadIndex(indexDir, opts.IndexTTL); err == nil {
 		stats.CacheHit = true
+		indexMeter.Done("использую готовый локальный индекс")
 		return cached, nil
 	}
 
@@ -181,8 +204,8 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 	if len(chunks) == 0 {
 		return nil, errors.New("input did not produce retrieval chunks")
 	}
-
-	embeddings, calls, tokens, err := embedChunks(ctx, embedder, chunks)
+	indexMeter.Note(fmt.Sprintf("строю embedding-индекс по %d chunks", len(chunks)))
+	embeddings, calls, tokens, err := embedChunks(ctx, embedder, chunks, indexMeter)
 	if err != nil {
 		return nil, err
 	}
@@ -208,10 +231,12 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 	if err := persistIndex(indexDir, index); err != nil {
 		if cached, loadErr := loadIndex(indexDir, opts.IndexTTL); loadErr == nil {
 			stats.CacheHit = true
+			indexMeter.Done("индекс уже успел сохраниться, использую готовую версию")
 			return cached, nil
 		}
 		return nil, err
 	}
+	indexMeter.Done("локальный индекс сохранён на диск")
 
 	return index, nil
 }
@@ -480,11 +505,12 @@ func chunkText(content []byte, sourcePath string, chunkSize, overlap int) []Chun
 	return chunks
 }
 
-func embedChunks(ctx context.Context, embedder llm.EmbeddingRequester, chunks []Chunk) ([][]float32, int, int, error) {
+func embedChunks(ctx context.Context, embedder llm.EmbeddingRequester, chunks []Chunk, indexMeter verbose.Meter) ([][]float32, int, int, error) {
 	const batchSize = 32
 	vectors := make([][]float32, 0, len(chunks))
 	calls := 0
 	totalTokens := 0
+	totalBatches := (len(chunks) + batchSize - 1) / batchSize
 
 	for start := 0; start < len(chunks); start += batchSize {
 		end := min(start+batchSize, len(chunks))
@@ -492,6 +518,7 @@ func embedChunks(ctx context.Context, embedder llm.EmbeddingRequester, chunks []
 		for _, chunk := range chunks[start:end] {
 			inputs = append(inputs, normalizeEmbeddingInput(chunk.Text))
 		}
+		indexMeter.Note(fmt.Sprintf("отправляю embeddings batch %d/%d", calls+1, totalBatches))
 
 		vectorsBatch, metrics, err := embedder.CreateEmbeddingsWithMetrics(ctx, inputs)
 		if err != nil {
@@ -500,6 +527,7 @@ func embedChunks(ctx context.Context, embedder llm.EmbeddingRequester, chunks []
 		calls++
 		totalTokens += metrics.TotalTokens
 		vectors = append(vectors, vectorsBatch...)
+		indexMeter.Report(calls, totalBatches, fmt.Sprintf("готов embeddings batch %d/%d", calls, totalBatches))
 	}
 
 	if len(vectors) != len(chunks) {
@@ -778,20 +806,6 @@ func sanitizeUntrustedBlock(raw string) string {
 		safeLines = append(safeLines, line)
 	}
 	return strings.TrimSpace(strings.Join(safeLines, "\n"))
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func abs(v int) int {

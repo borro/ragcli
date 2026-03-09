@@ -118,7 +118,7 @@ func TestRunHybridFallsBackToMapWhenEmbeddingsFail(t *testing.T) {
 		IndexTTL:       time.Hour,
 		IndexDir:       t.TempDir(),
 		EmbeddingModel: "embed",
-	}, "What is the retry policy?")
+	}, "What is the retry policy?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -166,7 +166,7 @@ func TestRunHybridCoverageTriggersExtraRegion(t *testing.T) {
 		IndexTTL:       time.Hour,
 		IndexDir:       t.TempDir(),
 		EmbeddingModel: "embed",
-	}, "What is the retry policy and what is required before release?")
+	}, "What is the retry policy and what is required before release?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}

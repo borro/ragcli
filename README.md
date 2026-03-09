@@ -3,7 +3,7 @@
 [![CI master](https://github.com/borro/ragcli/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/borro/ragcli/actions/workflows/ci.yaml)
 [![Coverage](https://codecov.io/gh/borro/ragcli/graph/badge.svg)](https://codecov.io/gh/borro/ragcli)
 
-`ragcli` помогает задавать вопросы к большим локальным текстам через LLM из терминала. Он работает с OpenAI-compatible API и поддерживает три режима: `map`, retrieval-ориентированный `rag` и agentic `tools`.
+`ragcli` помогает задавать вопросы к большим локальным текстам через LLM из терминала. Он работает с OpenAI-compatible API и поддерживает четыре режима: `map`, retrieval-ориентированный `rag`, гибридный `hybrid` и agentic `tools`.
 
 Подходит для логов, документации, отчётов и других файлов, которые неудобно скармливать модели целиком. Если входной файл не указан, команда читает `stdin`, поэтому `ragcli` удобно встраивать в shell-скрипты и пайплайны.
 
@@ -66,11 +66,13 @@ export LLM_MODEL=your-chat-model
 - `map` полезен, когда файл приходится обрабатывать чанками, но на больших файлах такой прогон может занимать заметное время.
 - На локальных моделях и при фактически последовательной обработке `map` обычно не даёт выигрыша по скорости.
 - `rag` отвечает только по найденным evidence chunks, поэтому качество зависит от embedding-модели и параметров chunking.
+- `hybrid` сочетает lexical/semantic retrieval, точечное дочитывание и map-style извлечение фактов, поэтому обычно полезен для длинных документов со смешанной структурой.
 - `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `search_file`, `read_lines` и `read_around`.
 - Если backend плохо поддерживает tool calling, режим `tools` может работать менее надёжно.
 - В интерактивном терминале `ragcli` рендерит финальный Markdown-ответ через ANSI-стили; если вывод перенаправлен в файл или pipe, остаётся сырой Markdown без ANSI.
 - `--raw` принудительно отключает markdown-рендер и печатает исходный ответ как есть.
 - `--debug` включает подробные runtime-логи в `stderr`, не смешивая их с финальным ответом в `stdout`; без него `stderr` остаётся каналом для краткой пользовательской ошибки.
+- `--verbose` показывает пользовательский статус выполнения в `stderr` отдельными строками; ранняя подготовка и открытие input отображаются как текстовые этапы, а процентный прогресс начинается внутри выбранного режима.
 
 ## Примеры
 
@@ -93,6 +95,13 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
   "Какие требования относятся к отказоустойчивости?"
 ```
 
+### `hybrid`
+
+```bash
+./ragcli hybrid --file design.md --verbose \
+  "Какие ограничения и компромиссы описаны в документе?"
+```
+
 ### `tools`
 
 ```bash
@@ -107,6 +116,7 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 
 - `ragcli map [options] <prompt>`
 - `ragcli rag [options] <prompt>`
+- `ragcli hybrid [options] <prompt>`
 - `ragcli tools [options] <prompt>`
 - `ragcli version`
 - `ragcli help [command]`
@@ -132,6 +142,7 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 | `--retry`, `-r` | `RETRY` | Количество retry для LLM HTTP-клиента |
 | `--raw` | `RAW` | Отключить markdown-рендер финального ответа и печатать сырой текст |
 | `--debug`, `-d` | `DEBUG` | Подробные runtime-логи в `stderr`; без флага ошибки печатаются одной строкой |
+| `--verbose`, `-v` | `VERBOSE` | Печатать в `stderr` пользовательские статусы выполнения по этапам |
 
 `map`:
 
@@ -149,12 +160,24 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 - `--rag-index-dir` или `RAG_INDEX_DIR`
 - `--rag-rerank` или `RAG_RERANK`
 
+`hybrid`:
+
+- `--embedding-model` или `EMBEDDING_MODEL`
+- `--rag-index-ttl` или `RAG_INDEX_TTL`
+- `--rag-index-dir` или `RAG_INDEX_DIR`
+- `--hybrid-top-k` или `HYBRID_TOP_K`
+- `--hybrid-final-k` или `HYBRID_FINAL_K`
+- `--hybrid-map-k` или `HYBRID_MAP_K`
+- `--hybrid-read-window` или `HYBRID_READ_WINDOW`
+- `--hybrid-fallback` или `HYBRID_FALLBACK`
+
 Полный справочник по текущим флагам смотрите через встроенный help:
 
 ```bash
 ./ragcli --help
 ./ragcli map --help
 ./ragcli rag --help
+./ragcli hybrid --help
 ./ragcli tools --help
 ```
 

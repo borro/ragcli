@@ -12,6 +12,7 @@ import (
 
 	"github.com/borro/ragcli/internal/app/tools/filetools"
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -203,13 +204,26 @@ func buildToolsUserPrompt(prompt string, filePath string) string {
 	return strings.Join(lines, "\n")
 }
 
-func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string, _ Options) (string, error) {
+func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
 	slog.Debug("tools processing started", "file_path", filePath, "has_file_path", filePath != "")
+	if plan == nil {
+		plan = verbose.NewPlan(nil, "tools",
+			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+			verbose.StageDef{Key: "init", Label: "инициализация", Slots: 2},
+			verbose.StageDef{Key: "loop", Label: "LLM turn", Slots: 18},
+			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+		)
+	}
+	initMeter := plan.Stage("init")
+	loopMeter := plan.Stage("loop")
+	finalMeter := plan.Stage("final")
+	initMeter.Start("подготавливаю tool session")
 
 	toolsConfig := NewToolsConfig(prompt, filePath)
 	messages := make([]openai.ChatCompletionMessage, 0, 2)
 	messages = append(messages, toolsConfig.systemMessage, toolsConfig.userQuestion)
+	initMeter.Done("tool session готова")
 	loopState := newToolLoopState(filePath)
 	var toolChoiceToSend interface{} = "auto"
 	emptyFinalAnswerRetries := 0
@@ -233,6 +247,9 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 	}
 
 	for turn := 1; turn <= toolsMaxTurns; turn++ {
+		turnMeter := loopMeter.Slice(turn, toolsMaxTurns)
+		turnMeter = turnMeter.WithStage("LLM turn")
+		turnMeter.Start(fmt.Sprintf("отправляю в LLM историю из %d сообщений (turn %d/%d)", len(messages), turn, toolsMaxTurns))
 		req := openai.ChatCompletionRequest{
 			Messages:   messages,
 			Tools:      toolsConfig.tools,
@@ -276,6 +293,11 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 			"tool_calls_count", len(choice.Message.ToolCalls),
 			"has_content", choice.Message.Content != "",
 		)
+		if len(choice.Message.ToolCalls) > 0 {
+			turnMeter.Note(fmt.Sprintf("LLM запросил %d tool calls", len(choice.Message.ToolCalls)))
+		} else {
+			finalMeter.Start(fmt.Sprintf("LLM вернул текстовый ответ на turn %d", turn))
+		}
 
 		if turn == 1 && strings.TrimSpace(filePath) != "" && len(choice.Message.ToolCalls) == 0 && strings.TrimSpace(choice.Message.Content) != "" {
 			slog.Warn("tools backend returned a direct answer without using file tools",
@@ -287,8 +309,10 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 
 		if len(choice.Message.ToolCalls) > 0 {
 			slog.Debug("received tool calls from model", "turn", turn, "count", len(choice.Message.ToolCalls))
+			toolMeter := turnMeter.WithStage("вызов инструментов")
+			toolMeter.Start(fmt.Sprintf("выполняю %d tool calls", len(choice.Message.ToolCalls)))
 
-			results, err := loopState.executeToolCalls(ctx, choice.Message.ToolCalls)
+			results, err := loopState.executeToolCalls(ctx, choice.Message.ToolCalls, toolMeter)
 			slog.Debug("tool calls finished", "turn", turn, "result_count", len(results), "has_error", err != nil)
 			for i, result := range results {
 				messages = append(messages, openai.ChatCompletionMessage{
@@ -323,6 +347,8 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 				return "", fmt.Errorf("failed to execute tool calls: %w", err)
 			}
 
+			toolMeter.Done(fmt.Sprintf("готово %d tool calls", len(results)))
+
 			continue
 		}
 
@@ -342,6 +368,7 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 			logStop("empty_final_answer", turn)
 			return "", fmt.Errorf("received final response without content")
 		}
+		finalMeter.Done(fmt.Sprintf("финальный ответ получен на turn %d", turn))
 		logStop("final_answer", turn)
 		return choice.Message.Content, nil
 	}
@@ -362,12 +389,28 @@ func newToolLoopState(filePath string) *toolLoopState {
 	}
 }
 
-func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai.ToolCall) ([]string, error) {
+func summarizeToolMeta(name string, meta toolExecutionMeta, index int, total int) string {
+	base := fmt.Sprintf("%s (%d/%d)", strings.TrimSpace(name), index, total)
+	switch {
+	case meta.NovelLines > 0:
+		return fmt.Sprintf("%s: получил %d новых строк", base, meta.NovelLines)
+	case meta.Cached:
+		return fmt.Sprintf("%s: использую кэшированный результат", base)
+	case meta.AlreadySeen:
+		return fmt.Sprintf("%s: новых строк нет, всё уже читалось", base)
+	case meta.Duplicate:
+		return fmt.Sprintf("%s: повторный вызов без нового контекста", base)
+	default:
+		return fmt.Sprintf("%s: результат получен", base)
+	}
+}
+
+func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai.ToolCall, meter verbose.Meter) ([]string, error) {
 	results := make([]string, 0, len(toolCalls))
 	turnHadProgress := false
 	turnAllDuplicates := len(toolCalls) > 0
 
-	for _, call := range toolCalls {
+	for index, call := range toolCalls {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -383,6 +426,7 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 			}
 			results = append(results, toolErr)
 			turnAllDuplicates = false
+			meter.Report(index+1, len(toolCalls), fmt.Sprintf("%s (%d/%d): ошибка", strings.TrimSpace(call.Function.Name), index+1, len(toolCalls)))
 			continue
 		}
 
@@ -393,6 +437,7 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 			turnAllDuplicates = false
 		}
 
+		meter.Report(index+1, len(toolCalls), summarizeToolMeta(call.Function.Name, meta, index+1, len(toolCalls)))
 		results = append(results, result)
 	}
 

@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/testutil"
+	"github.com/borro/ragcli/internal/verbose"
 )
 
 func TestMapMessages_MarksChunkAsUntrusted(t *testing.T) {
@@ -154,12 +156,62 @@ func TestRun_EndToEndWithRefine(t *testing.T) {
 		InputPath:   "input.txt",
 		ChunkLength: (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 		Concurrency: 1,
-	}, "Что в файле?")
+	}, "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if result != "refined answer" {
 		t.Fatalf("Run() result = %q, want %q", result, "refined answer")
+	}
+}
+
+func TestRun_ReportsFinalCompletionOnce(t *testing.T) {
+	client := newSequencedLLMClient(t, []string{
+		"fact from chunk 1",
+		"initial answer",
+		"SUPPORTED: no\nISSUES:\n- make it more precise",
+		"refined answer",
+	}, nil)
+	plan := verbose.NewPlan(nil, "map",
+		verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+		verbose.StageDef{Key: "chunking", Label: "чанкинг", Slots: 4},
+		verbose.StageDef{Key: "chunks", Label: "обработка чанков", Slots: 9},
+		verbose.StageDef{Key: "reduce", Label: "reduce", Slots: 5},
+		verbose.StageDef{Key: "verify", Label: "проверка ответа", Slots: 2},
+		verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+	)
+	recorder := testutil.NewProgressRecorder(plan.Total())
+	plan = verbose.NewPlan(recorder, "map",
+		verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+		verbose.StageDef{Key: "chunking", Label: "чанкинг", Slots: 4},
+		verbose.StageDef{Key: "chunks", Label: "обработка чанков", Slots: 9},
+		verbose.StageDef{Key: "reduce", Label: "reduce", Slots: 5},
+		verbose.StageDef{Key: "verify", Label: "проверка ответа", Slots: 2},
+		verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+	)
+
+	result, err := Run(context.Background(), client, strings.NewReader("aaa\n"), Options{
+		InputPath:   "input.txt",
+		ChunkLength: (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
+		Concurrency: 1,
+	}, "Что в файле?", plan)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result != "refined answer" {
+		t.Fatalf("Run() result = %q, want %q", result, "refined answer")
+	}
+
+	finalCount := 0
+	total := plan.Total()
+	_, currents, _ := recorder.Snapshot()
+	for _, current := range currents {
+		if current == total {
+			finalCount++
+		}
+	}
+	if finalCount != 1 {
+		t.Fatalf("final progress count = %d, want 1; currents = %#v", finalCount, currents)
 	}
 }
 
@@ -170,7 +222,7 @@ func TestRun_EmptyInput(t *testing.T) {
 		InputPath:   "input.txt",
 		ChunkLength: 10,
 		Concurrency: 1,
-	}, "Что в файле?")
+	}, "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -187,7 +239,7 @@ func TestRun_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
 			InputPath:   "input.txt",
 			ChunkLength: (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 			Concurrency: 1,
-		}, "Что в файле?")
+		}, "Что в файле?", nil)
 		if err != nil {
 			t.Fatalf("Run() error = %v", err)
 		}
@@ -203,7 +255,7 @@ func TestRun_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
 			InputPath:   "input.txt",
 			ChunkLength: (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 			Concurrency: 1,
-		}, "Что в файле?")
+		}, "Что в файле?", nil)
 		if err != nil {
 			t.Fatalf("Run() error = %v", err)
 		}
@@ -355,7 +407,7 @@ func TestRun_PassesAllMapFactsToReduce(t *testing.T) {
 		InputPath:   "input.txt",
 		ChunkLength: (estimateMapRequestTokens("Что в файле?", line) * mapBudgetDenominator / mapBudgetNumerator) + 1,
 		Concurrency: 1,
-	}, "Что в файле?")
+	}, "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -396,7 +448,7 @@ func TestRun_NormalizesMapOutputBeforeReduce(t *testing.T) {
 		InputPath:   "input.txt",
 		ChunkLength: (estimateMapRequestTokens("Что в файле?", line) * mapBudgetDenominator / mapBudgetNumerator) + 1,
 		Concurrency: 1,
-	}, "Что в файле?")
+	}, "Что в файле?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
