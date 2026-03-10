@@ -623,15 +623,12 @@ func TestResolveAutoContextLength_UsesPathAPIModels(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL+"/lm/v1", "qwen/qwen3.5-9b", "", 0)
-	value, source, err := client.ResolveAutoContextLength(context.Background())
+	value, err := client.ResolveAutoContextLength(context.Background())
 	if err != nil {
 		t.Fatalf("ResolveAutoContextLength() error = %v", err)
 	}
 	if value != 32768 {
 		t.Fatalf("ResolveAutoContextLength() value = %d, want 32768", value)
-	}
-	if source != "lmstudio_api" {
-		t.Fatalf("ResolveAutoContextLength() source = %q, want lmstudio_api", source)
 	}
 	if hitsPath != 1 {
 		t.Fatalf("path models hits = %d, want 1", hitsPath)
@@ -673,15 +670,12 @@ func TestResolveAutoContextLength_FallsBackToRootAPIModels(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL+"/nested/v1", "qwen/qwen3.5-9b", "", 0)
-	value, source, err := client.ResolveAutoContextLength(context.Background())
+	value, err := client.ResolveAutoContextLength(context.Background())
 	if err != nil {
 		t.Fatalf("ResolveAutoContextLength() error = %v", err)
 	}
 	if value != 65536 {
 		t.Fatalf("ResolveAutoContextLength() value = %d, want 65536", value)
-	}
-	if source != "lmstudio_api" {
-		t.Fatalf("ResolveAutoContextLength() source = %q, want lmstudio_api", source)
 	}
 	if hitsPath != 1 {
 		t.Fatalf("path models hits = %d, want 1", hitsPath)
@@ -698,13 +692,13 @@ func TestResolveAutoContextLength_WarmupWhenModelNotLoaded(t *testing.T) {
 	client.doHTTP = func(_ *http.Request) (*http.Response, error) {
 		modelsCalls++
 		if modelsCalls == 1 {
-			body := `{"models":[{"key":"qwen/qwen3.5-9b","loaded_instances":[],"max_context_length":262144}]}`
+			body := `{"models":[{"key":"qwen/qwen3.5-9b","loaded_instances":[]}]}`
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       ioNopCloser(strings.NewReader(body)),
 			}, nil
 		}
-		body := `{"models":[{"key":"qwen/qwen3.5-9b","loaded_instances":[{"id":"qwen/qwen3.5-9b","config":{"context_length":150000}}],"max_context_length":262144}]}`
+		body := `{"models":[{"key":"qwen/qwen3.5-9b","loaded_instances":[{"id":"qwen/qwen3.5-9b","config":{"context_length":150000}}]}]}`
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       ioNopCloser(strings.NewReader(body)),
@@ -726,15 +720,12 @@ func TestResolveAutoContextLength_WarmupWhenModelNotLoaded(t *testing.T) {
 		}, nil
 	}
 
-	value, source, err := client.ResolveAutoContextLength(context.Background())
+	value, err := client.ResolveAutoContextLength(context.Background())
 	if err != nil {
 		t.Fatalf("ResolveAutoContextLength() error = %v", err)
 	}
 	if value != 150000 {
 		t.Fatalf("ResolveAutoContextLength() value = %d, want 150000", value)
-	}
-	if source != "lmstudio_api" {
-		t.Fatalf("ResolveAutoContextLength() source = %q, want lmstudio_api", source)
 	}
 	if warmupCalls != 1 {
 		t.Fatalf("warmupCalls = %d, want 1", warmupCalls)
@@ -762,7 +753,6 @@ func TestResolveAutoContextLength_ParsesModelsFieldAndKey(t *testing.T) {
 							},
 						},
 					},
-					"max_context_length": 262144,
 				},
 			},
 		})
@@ -770,15 +760,12 @@ func TestResolveAutoContextLength_ParsesModelsFieldAndKey(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL+"/v1", "qwen/qwen3.5-9b", "", 0)
-	value, source, err := client.ResolveAutoContextLength(context.Background())
+	value, err := client.ResolveAutoContextLength(context.Background())
 	if err != nil {
 		t.Fatalf("ResolveAutoContextLength() error = %v", err)
 	}
 	if value != 150000 {
 		t.Fatalf("ResolveAutoContextLength() value = %d, want 150000", value)
-	}
-	if source != "lmstudio_api" {
-		t.Fatalf("ResolveAutoContextLength() source = %q, want lmstudio_api", source)
 	}
 }
 
@@ -794,43 +781,12 @@ func TestResolveAutoContextLength_UsesProbeFromError(t *testing.T) {
 		return openai.ChatCompletionResponse{}, errors.New(`Cannot truncate prompt with n_keep (1368) >= n_ctx (256)`)
 	}
 
-	value, source, err := client.ResolveAutoContextLength(context.Background())
+	value, err := client.ResolveAutoContextLength(context.Background())
 	if err != nil {
 		t.Fatalf("ResolveAutoContextLength() error = %v", err)
 	}
 	if value != 256 {
 		t.Fatalf("ResolveAutoContextLength() value = %d, want 256", value)
-	}
-	if source != "probe_from_error" {
-		t.Fatalf("ResolveAutoContextLength() source = %q, want probe_from_error", source)
-	}
-}
-
-func TestResolveAutoContextLength_CachesResult(t *testing.T) {
-	var modelsCalls int
-	client := NewClient("http://localhost:1234/v1", "test-model", "", 0)
-	client.doHTTP = func(_ *http.Request) (*http.Response, error) {
-		modelsCalls++
-		body := `{"data":[{"id":"test-model","max_context_length":4096}]}`
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       ioNopCloser(strings.NewReader(body)),
-		}, nil
-	}
-
-	firstValue, firstSource, firstErr := client.ResolveAutoContextLength(context.Background())
-	secondValue, secondSource, secondErr := client.ResolveAutoContextLength(context.Background())
-	if firstErr != nil || secondErr != nil {
-		t.Fatalf("ResolveAutoContextLength() errors = %v / %v, want nil", firstErr, secondErr)
-	}
-	if firstValue != 4096 || secondValue != 4096 {
-		t.Fatalf("ResolveAutoContextLength() values = %d / %d, want 4096", firstValue, secondValue)
-	}
-	if firstSource != "lmstudio_api" || secondSource != "lmstudio_api" {
-		t.Fatalf("ResolveAutoContextLength() sources = %q / %q, want lmstudio_api", firstSource, secondSource)
-	}
-	if modelsCalls != 1 {
-		t.Fatalf("modelsCalls = %d, want 1", modelsCalls)
 	}
 }
 
@@ -846,7 +802,7 @@ func TestResolveAutoContextLength_ReturnsErrorWhenUndetected(t *testing.T) {
 		return openai.ChatCompletionResponse{}, errors.New("upstream unavailable")
 	}
 
-	_, _, err := client.ResolveAutoContextLength(context.Background())
+	_, err := client.ResolveAutoContextLength(context.Background())
 	if err == nil {
 		t.Fatal("ResolveAutoContextLength() error = nil, want non-nil")
 	}

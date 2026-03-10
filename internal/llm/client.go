@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -27,17 +25,20 @@ type Client struct {
 	apiKey     string
 	doRequest  func(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
 	doHTTP     func(req *http.Request) (*http.Response, error)
-
-	contextLengthMu       sync.Mutex
-	contextLengthResolved bool
-	contextLengthValue    int
-	contextLengthSource   string
-	contextLengthErr      error
 }
 
 // ChatRequester describes chat completion clients used by application packages.
 type ChatRequester interface {
 	SendRequestWithMetrics(ctx context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, RequestMetrics, error)
+}
+
+type AutoContextLengthResolver interface {
+	ResolveAutoContextLength(ctx context.Context) (int, error)
+}
+
+type ChatAutoContextRequester interface {
+	ChatRequester
+	AutoContextLengthResolver
 }
 
 // Embedder представляет клиент для embeddings API.
@@ -225,46 +226,19 @@ func (c *Client) Model() string {
 }
 
 // ResolveAutoContextLength attempts to detect model context length.
-// Source can be "lmstudio_api" or "probe_from_error".
-func (c *Client) ResolveAutoContextLength(ctx context.Context) (int, string, error) {
-	c.contextLengthMu.Lock()
-	if c.contextLengthResolved {
-		value := c.contextLengthValue
-		source := c.contextLengthSource
-		err := c.contextLengthErr
-		c.contextLengthMu.Unlock()
-		slog.Debug("auto context length cache hit",
-			"model", c.model,
-			"base_url", c.baseURL,
-			"value", value,
-			"source", source,
-			"has_error", err != nil,
-		)
-		return value, source, err
-	}
-	c.contextLengthMu.Unlock()
-
+func (c *Client) ResolveAutoContextLength(ctx context.Context) (int, error) {
 	slog.Debug("auto context length resolve started",
 		"model", c.model,
 		"base_url", c.baseURL,
 	)
-	value, source, err := c.resolveAutoContextLengthNoCache(ctx)
-
-	c.contextLengthMu.Lock()
-	c.contextLengthResolved = true
-	c.contextLengthValue = value
-	c.contextLengthSource = source
-	c.contextLengthErr = err
-	c.contextLengthMu.Unlock()
-
+	value, err := c.resolveAutoContextLengthNoCache(ctx)
 	slog.Debug("auto context length resolve finished",
 		"model", c.model,
 		"base_url", c.baseURL,
 		"value", value,
-		"source", source,
 		"error", err,
 	)
-	return value, source, err
+	return value, err
 }
 
 func buildRequestMetrics(defaultModel string, attempt int, req openai.ChatCompletionRequest, resp openai.ChatCompletionResponse, duration time.Duration) RequestMetrics {
@@ -305,66 +279,88 @@ func responseHasToolCalls(resp openai.ChatCompletionResponse) bool {
 	return false
 }
 
-func (c *Client) resolveAutoContextLengthNoCache(ctx context.Context) (int, string, error) {
+func (c *Client) resolveAutoContextLengthNoCache(ctx context.Context) (int, error) {
+	var lastErr error
 	modelsURLs := lmStudioModelsURLs(c.baseURL)
 	for _, modelsURL := range modelsURLs {
 		slog.Debug("auto context length trying lmstudio models endpoint",
 			"model", c.model,
 			"url", modelsURL,
 		)
-		length, err := c.resolveContextLengthFromLMStudioModels(ctx, modelsURL)
+		length, err := c.resolveContextLengthFromModelsURL(ctx, modelsURL)
 		if err == nil {
-			slog.Debug("auto context length resolved from lmstudio models endpoint",
-				"model", c.model,
-				"url", modelsURL,
-				"value", length,
-			)
-			return length, "lmstudio_api", nil
-		}
-		if errors.Is(err, errModelNotLoaded) {
-			slog.Debug("auto context length model matched but not loaded, sending warmup request",
-				"model", c.model,
-				"url", modelsURL,
-			)
-			if warmupErr := c.warmupModel(ctx); warmupErr == nil {
-				retryLength, retryErr := c.resolveContextLengthFromLMStudioModels(ctx, modelsURL)
-				if retryErr == nil {
-					slog.Debug("auto context length resolved from lmstudio models endpoint after warmup",
-						"model", c.model,
-						"url", modelsURL,
-						"value", retryLength,
-					)
-					return retryLength, "lmstudio_api", nil
-				}
-				slog.Debug("auto context length warmup retry failed",
-					"model", c.model,
-					"url", modelsURL,
-					"error", retryErr,
-				)
-			} else {
-				slog.Debug("auto context length warmup request failed",
-					"model", c.model,
-					"url", modelsURL,
-					"error", warmupErr,
-				)
-			}
+			return length, nil
 		}
 		slog.Debug("auto context length lmstudio models endpoint failed",
 			"model", c.model,
 			"url", modelsURL,
 			"error", err,
 		)
+		lastErr = err
 	}
 
-	slog.Debug("auto context length trying probe from error", "model", c.model)
+	slog.Debug("auto context length falling back to probe from error",
+		"model", c.model,
+		"last_error", lastErr,
+	)
 	length, err := c.resolveContextLengthFromProbe(ctx)
 	if err == nil {
-		slog.Debug("auto context length resolved from probe", "model", c.model, "value", length)
-		return length, "probe_from_error", nil
+		return length, nil
 	}
-	slog.Debug("auto context length probe failed", "model", c.model, "error", err)
+	slog.Debug("auto context length probe failed",
+		"model", c.model,
+		"error", err,
+	)
+	lastErr = err
 
-	return 0, "", fmt.Errorf("failed to resolve model context length")
+	if lastErr == nil {
+		lastErr = fmt.Errorf("context length not detected")
+	}
+	return 0, fmt.Errorf("failed to resolve model context length: %w", lastErr)
+}
+
+func (c *Client) resolveContextLengthFromModelsURL(ctx context.Context, modelsURL string) (int, error) {
+	length, err := c.resolveContextLengthFromLMStudioModels(ctx, modelsURL)
+	if err == nil {
+		return length, nil
+	}
+	if !errors.Is(err, errModelNotLoaded) {
+		return 0, err
+	}
+
+	slog.Debug("auto context length model matched but not loaded, sending warmup request",
+		"model", c.model,
+		"url", modelsURL,
+	)
+	req := openai.ChatCompletionRequest{
+		Model: c.model,
+		Messages: []openai.ChatCompletionMessage{
+			{
+				Role:    openai.ChatMessageRoleUser,
+				Content: "ping",
+			},
+		},
+		MaxCompletionTokens: 1,
+	}
+	if _, warmupErr := c.doRequestOnce(ctx, req); warmupErr != nil {
+		slog.Debug("auto context length warmup request failed",
+			"model", c.model,
+			"url", modelsURL,
+			"error", warmupErr,
+		)
+		return 0, warmupErr
+	}
+
+	retryLength, retryErr := c.resolveContextLengthFromLMStudioModels(ctx, modelsURL)
+	if retryErr == nil {
+		return retryLength, nil
+	}
+	slog.Debug("auto context length warmup retry failed",
+		"model", c.model,
+		"url", modelsURL,
+		"error", retryErr,
+	)
+	return 0, retryErr
 }
 
 func (c *Client) resolveContextLengthFromLMStudioModels(ctx context.Context, modelsURL string) (int, error) {
@@ -395,26 +391,15 @@ func (c *Client) resolveContextLengthFromLMStudioModels(ctx context.Context, mod
 		return 0, fmt.Errorf("models endpoint status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, err
-	}
-
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return 0, err
 	}
 
-	modelsRaw, field, ok := extractModelsArray(payload)
+	modelsRaw, _, ok := extractModelsArray(payload)
 	if !ok || len(modelsRaw) == 0 {
 		return 0, fmt.Errorf("models payload does not contain models list")
 	}
-	slog.Debug("auto context length parsed models payload",
-		"model", c.model,
-		"url", modelsURL,
-		"models_field", field,
-		"models_count", len(modelsRaw),
-	)
 
 	modelMatched := false
 	modelHasLoadedInstances := false
@@ -431,11 +416,6 @@ func (c *Client) resolveContextLengthFromLMStudioModels(ctx context.Context, mod
 			modelHasLoadedInstances = true
 		}
 		if length, ok := extractLMStudioContextLength(modelObj, c.model); ok {
-			slog.Debug("auto context length extracted from models payload",
-				"model", c.model,
-				"url", modelsURL,
-				"value", length,
-			)
 			return length, nil
 		}
 	}
@@ -553,53 +533,34 @@ func extractModelsArray(payload map[string]any) ([]any, string, bool) {
 func extractLMStudioContextLength(model map[string]any, targetModel string) (int, bool) {
 	loaded, ok := model["loaded_instances"].([]any)
 	if ok {
+		var fallbackLength int
+		var hasFallback bool
 		for _, raw := range loaded {
 			instance, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			length, ok := extractContextLengthFromLoadedInstance(instance)
 			if !ok {
 				continue
 			}
 			if id, ok := instance["id"].(string); ok && strings.TrimSpace(id) == targetModel {
-				if length, ok := extractContextLengthFromLoadedInstance(instance); ok {
-					return length, true
-				}
-			}
-		}
-		for _, raw := range loaded {
-			instance, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			if length, ok := extractContextLengthFromLoadedInstance(instance); ok {
 				return length, true
 			}
+			if !hasFallback {
+				fallbackLength = length
+				hasFallback = true
+			}
 		}
-		if len(loaded) == 0 {
-			return 0, false
+		if hasFallback {
+			return fallbackLength, true
 		}
 	}
 
-	if length, ok := asPositiveInt(model["max_context_length"]); ok {
-		return length, true
-	}
 	if length, ok := asPositiveInt(model["context_length"]); ok {
 		return length, true
 	}
 	return 0, false
-}
-
-func (c *Client) warmupModel(ctx context.Context) error {
-	req := openai.ChatCompletionRequest{
-		Model: c.model,
-		Messages: []openai.ChatCompletionMessage{
-			{
-				Role:    openai.ChatMessageRoleUser,
-				Content: "ping",
-			},
-		},
-		MaxCompletionTokens: 1,
-	}
-	_, err := c.doRequestOnce(ctx, req)
-	return err
 }
 
 func extractContextLengthFromLoadedInstance(instance map[string]any) (int, bool) {
@@ -608,14 +569,8 @@ func extractContextLengthFromLoadedInstance(instance map[string]any) (int, bool)
 		if length, ok := asPositiveInt(config["context_length"]); ok {
 			return length, true
 		}
-		if length, ok := asPositiveInt(config["max_context_length"]); ok {
-			return length, true
-		}
 	}
 	if length, ok := asPositiveInt(instance["context_length"]); ok {
-		return length, true
-	}
-	if length, ok := asPositiveInt(instance["max_context_length"]); ok {
 		return length, true
 	}
 	return 0, false

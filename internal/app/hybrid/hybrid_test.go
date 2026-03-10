@@ -31,7 +31,6 @@ type scriptedChat struct {
 	responses         []string
 	requests          []openai.ChatCompletionRequest
 	autoContextLength int
-	autoContextSource string
 	autoContextErr    error
 	autoContextCalls  int
 }
@@ -49,19 +48,15 @@ func (s *scriptedChat) SendRequestWithMetrics(_ context.Context, req openai.Chat
 	}, llm.RequestMetrics{}, nil
 }
 
-func (s *scriptedChat) ResolveAutoContextLength(_ context.Context) (int, string, error) {
+func (s *scriptedChat) ResolveAutoContextLength(_ context.Context) (int, error) {
 	s.autoContextCalls++
 	if s.autoContextErr != nil {
-		return 0, "", s.autoContextErr
+		return 0, s.autoContextErr
 	}
 	if s.autoContextLength < 1 {
-		return 0, "", errors.New("no auto context length configured")
+		return 0, errors.New("no auto context length configured")
 	}
-	source := s.autoContextSource
-	if source == "" {
-		source = "lmstudio_api"
-	}
-	return s.autoContextLength, source, nil
+	return s.autoContextLength, nil
 }
 
 func TestProfileDocument(t *testing.T) {

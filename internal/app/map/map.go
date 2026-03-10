@@ -61,10 +61,6 @@ type pipelineStats struct {
 	ReduceIterations int
 }
 
-type autoContextLengthResolver interface {
-	ResolveAutoContextLength(ctx context.Context) (int, string, error)
-}
-
 //
 // PROMPTS
 //
@@ -804,22 +800,17 @@ func fanInReduce(ctx context.Context, client llm.ChatRequester, results []string
 	return results[0], nil
 }
 
-func resolveChunkLength(ctx context.Context, client llm.ChatRequester, opts Options) (int, string) {
+func resolveChunkLength(ctx context.Context, client llm.AutoContextLengthResolver, opts Options) int {
 	if opts.LengthExplicit {
-		return opts.ChunkLength, "explicit_length"
+		return opts.ChunkLength
 	}
 
-	resolver, ok := client.(autoContextLengthResolver)
-	if !ok {
-		return defaultChunkLengthFallback, "default_10000"
-	}
-
-	length, source, err := resolver.ResolveAutoContextLength(ctx)
+	length, err := client.ResolveAutoContextLength(ctx)
 	if err != nil || length < 1 {
-		return defaultChunkLengthFallback, "default_10000"
+		length = defaultChunkLengthFallback
 	}
 
-	return length, source
+	return length
 }
 
 //
@@ -855,7 +846,7 @@ func selfRefine(ctx context.Context, client llm.ChatRequester, question, facts, 
 // PIPELINE
 //
 
-func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Options, question string, plan *verbose.Plan) (string, error) {
+func Run(ctx context.Context, client llm.ChatAutoContextRequester, input io.Reader, opts Options, question string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
 	inputMode := "stdin"
 	if opts.InputPath != "" {
@@ -878,13 +869,11 @@ func Run(ctx context.Context, client llm.ChatRequester, input io.Reader, opts Op
 	verifyMeter := plan.Stage("verify")
 	finalMeter := plan.Stage("final")
 	chunkingMeter.Start("разбиваю файл на чанки")
-	effectiveChunkLength, chunkLengthSource := resolveChunkLength(ctx, client, opts)
-	opts.ChunkLength = effectiveChunkLength
+	opts.ChunkLength = resolveChunkLength(ctx, client, opts)
 
 	slog.Debug("map-reduce pipeline started",
 		"input_mode", inputMode,
 		"chunk_length", opts.ChunkLength,
-		"chunk_length_source", chunkLengthSource,
 		"chunk_length_unit", "approx_tokens",
 		"concurrency", opts.Concurrency,
 		"map_token_budget", effectiveMapApproxTokenBudget(opts.ChunkLength),

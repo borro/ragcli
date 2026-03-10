@@ -143,7 +143,7 @@ var (
 	errReasoningOnlyOutput = errors.New("chat response returned reasoning-only output")
 )
 
-func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester, source Source, opts Options, question string, plan *verbose.Plan) (string, error) {
 	if plan == nil {
 		plan = verbose.NewPlan(nil, "hybrid",
 			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
@@ -1415,7 +1415,7 @@ func mergeFactBlocks(left, right string) string {
 	return normalizeFacts(combined)
 }
 
-func fallbackToMap(ctx context.Context, chat llm.ChatRequester, source Source, opts Options, question string, content []byte, plan *verbose.Plan) (string, error) {
+func fallbackToMap(ctx context.Context, chat llm.ChatAutoContextRequester, source Source, opts Options, question string, content []byte, plan *verbose.Plan) (string, error) {
 	slog.Debug("hybrid map fallback started", "chunk_length_mode", "auto_or_default")
 	return mapmode.Run(ctx, chat, bytes.NewReader(content), mapmode.Options{
 		InputPath:      source.Path,

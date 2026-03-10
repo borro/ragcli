@@ -556,7 +556,6 @@ type resolverScriptedChat struct {
 	responses    []string
 	requestIndex int
 	autoValue    int
-	autoSource   string
 	autoError    error
 	resolveCalls int
 }
@@ -579,16 +578,12 @@ func (s *resolverScriptedChat) SendRequestWithMetrics(_ context.Context, _ opena
 	}, llm.RequestMetrics{}, nil
 }
 
-func (s *resolverScriptedChat) ResolveAutoContextLength(_ context.Context) (int, string, error) {
+func (s *resolverScriptedChat) ResolveAutoContextLength(_ context.Context) (int, error) {
 	s.resolveCalls++
 	if s.autoError != nil {
-		return 0, "", s.autoError
+		return 0, s.autoError
 	}
-	source := s.autoSource
-	if source == "" {
-		source = "lmstudio_api"
-	}
-	return s.autoValue, source, nil
+	return s.autoValue, nil
 }
 
 type capturedChatRequest struct {
