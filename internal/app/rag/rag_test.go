@@ -17,17 +17,21 @@ import (
 )
 
 type fakeEmbedder struct {
+	mu          sync.Mutex
 	calls       int
 	totalTokens int
 }
 
 func (f *fakeEmbedder) CreateEmbeddingsWithMetrics(_ context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
+	f.mu.Lock()
 	f.calls++
+	f.totalTokens += len(inputs) * 7
+	f.mu.Unlock()
+
 	vectors := make([][]float32, 0, len(inputs))
 	for _, input := range inputs {
 		vectors = append(vectors, vectorFor(input))
 	}
-	f.totalTokens += len(inputs) * 7
 	return vectors, llm.EmbeddingMetrics{
 		Attempt:      1,
 		InputCount:   len(inputs),
@@ -38,18 +42,23 @@ func (f *fakeEmbedder) CreateEmbeddingsWithMetrics(_ context.Context, inputs []s
 }
 
 type fakeChat struct {
+	mu       sync.Mutex
 	requests []openai.ChatCompletionRequest
 	answer   string
 }
 
 func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
+	f.mu.Lock()
 	f.requests = append(f.requests, req)
+	answer := f.answer
+	f.mu.Unlock()
+
 	return &openai.ChatCompletionResponse{
 			Choices: []openai.ChatCompletionChoice{
 				{
 					Message: openai.ChatCompletionMessage{
 						Role:    "assistant",
-						Content: f.answer,
+						Content: answer,
 					},
 				},
 			},
