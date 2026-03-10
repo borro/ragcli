@@ -12,6 +12,7 @@ import (
 
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
+	"github.com/borro/ragcli/internal/retrieval"
 	"github.com/borro/ragcli/internal/testutil"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
@@ -393,12 +394,12 @@ func TestPersistedIndexFilesExist(t *testing.T) {
 			t.Fatalf("os.Stat(%s) error = %v", name, err)
 		}
 	}
-	if index.Manifest.ChunkCount == 0 {
+	if index.Manifest.ItemCount == 0 {
 		t.Fatal("manifest chunk count = 0, want persisted chunks")
 	}
 	for _, chunk := range index.Chunks {
-		if chunk.DocID != index.Manifest.DocID {
-			t.Fatalf("chunk.DocID = %q, want manifest DocID %q", chunk.DocID, index.Manifest.DocID)
+		if chunk.DocID != index.Manifest.InputHash {
+			t.Fatalf("chunk.DocID = %q, want manifest InputHash %q", chunk.DocID, index.Manifest.InputHash)
 		}
 	}
 }
@@ -411,12 +412,11 @@ func TestPersistIndexUsesPrivatePermissions(t *testing.T) {
 			SchemaVersion:  indexSchemaVersion,
 			CreatedAt:      time.Now().UTC(),
 			InputHash:      "hash",
-			DocID:          "doc",
 			SourcePath:     "source.txt",
 			EmbeddingModel: "embed",
 			ChunkSize:      100,
 			ChunkOverlap:   10,
-			ChunkCount:     1,
+			ItemCount:      1,
 		},
 		Chunks:     []Chunk{{DocID: "doc", SourcePath: "source.txt", ChunkID: 0, StartLine: 1, EndLine: 1, Text: "alpha"}},
 		Embeddings: [][]float32{{1, 0, 0}},
@@ -442,6 +442,36 @@ func TestPersistIndexUsesPrivatePermissions(t *testing.T) {
 		if info.Mode().Perm()&0o077 != 0 {
 			t.Fatalf("%s perms = %o, want private perms", name, info.Mode().Perm())
 		}
+	}
+}
+
+func TestLoadIndexRejectsOldSchemaVersion(t *testing.T) {
+	indexDir := filepath.Join(t.TempDir(), "index")
+	index := &Index{
+		Manifest: Manifest{
+			SchemaVersion:  indexSchemaVersion - 1,
+			CreatedAt:      time.Now().UTC(),
+			InputHash:      "hash",
+			SourcePath:     "source.txt",
+			EmbeddingModel: "embed",
+			ChunkSize:      100,
+			ChunkOverlap:   10,
+			ItemCount:      1,
+		},
+		Chunks:     []Chunk{{DocID: "hash", SourcePath: "source.txt", ChunkID: 0, StartLine: 1, EndLine: 1, Text: "alpha"}},
+		Embeddings: [][]float32{{1, 0, 0}},
+	}
+
+	if err := persistIndex(indexDir, index); err != nil {
+		t.Fatalf("persistIndex() error = %v", err)
+	}
+
+	_, err := loadIndex(indexDir, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "rag index schema mismatch") {
+		t.Fatalf("loadIndex() error = %v, want rag schema mismatch", err)
+	}
+	if !errors.Is(err, retrieval.ErrIndexSchemaMismatch) {
+		t.Fatalf("errors.Is(schema mismatch) = false for %v", err)
 	}
 }
 
@@ -510,7 +540,7 @@ func TestNormalizeSourcePath(t *testing.T) {
 	}
 }
 
-func TestEmbedQueryAndHelpers(t *testing.T) {
+func TestEmbedQuery(t *testing.T) {
 	vector, metrics, err := embedQuery(context.Background(), &fakeEmbedder{}, " retry\n policy ")
 	if err != nil {
 		t.Fatalf("embedQuery() error = %v", err)
@@ -520,9 +550,6 @@ func TestEmbedQueryAndHelpers(t *testing.T) {
 	}
 	if metrics.InputCount != 1 {
 		t.Fatalf("metrics.InputCount = %d, want 1", metrics.InputCount)
-	}
-	if got := normalizeEmbeddingInput(" a \n b\tc "); got != "a b c" {
-		t.Fatalf("normalizeEmbeddingInput() = %q, want %q", got, "a b c")
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/retrieval"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -154,7 +155,7 @@ func TestPersistIndexPublishesIndexDir(t *testing.T) {
 			EmbeddingModel: "embed",
 			ChunkSize:      128,
 			ChunkOverlap:   16,
-			ChunkCount:     1,
+			ItemCount:      1,
 		},
 		Segments:   []Segment{{ID: 1, StartLine: 1, EndLine: 2, Text: "alpha"}},
 		Embeddings: [][]float32{{1, 0, 0}},
@@ -168,6 +169,36 @@ func TestPersistIndexPublishesIndexDir(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(indexDir, name)); err != nil {
 			t.Fatalf("expected published index file %s: %v", name, err)
 		}
+	}
+}
+
+func TestLoadIndexRejectsOldSchemaVersion(t *testing.T) {
+	indexDir := filepath.Join(t.TempDir(), "index")
+	index := &cachedIndex{
+		Manifest: indexManifest{
+			SchemaVersion:  hybridIndexSchemaVersion - 1,
+			CreatedAt:      time.Now().UTC(),
+			InputHash:      "hash",
+			SourcePath:     "source.txt",
+			EmbeddingModel: "embed",
+			ChunkSize:      128,
+			ChunkOverlap:   16,
+			ItemCount:      1,
+		},
+		Segments:   []Segment{{ID: 1, StartLine: 1, EndLine: 2, Text: "alpha"}},
+		Embeddings: [][]float32{{1, 0, 0}},
+	}
+
+	if err := persistIndex(indexDir, index); err != nil {
+		t.Fatalf("persistIndex() error = %v", err)
+	}
+
+	_, err := loadIndex(indexDir, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "hybrid index schema mismatch") {
+		t.Fatalf("loadIndex() error = %v, want hybrid schema mismatch", err)
+	}
+	if !errors.Is(err, retrieval.ErrIndexSchemaMismatch) {
+		t.Fatalf("errors.Is(schema mismatch) = false for %v", err)
 	}
 }
 
@@ -272,6 +303,11 @@ func TestParseCoverageReport(t *testing.T) {
 	}
 	if len(report.Conflicts) != 1 || report.Conflicts[0] != "outdated section" {
 		t.Fatalf("Conflicts = %#v, want parsed conflict", report.Conflicts)
+	}
+
+	report = parseCoverageReport("covered: no\ngaps:\n- release process\nconflicts:\n- outdated section\nfollow_up_query: release process rollback checklist")
+	if report.FollowUpQuery != "release process rollback checklist" {
+		t.Fatalf("FollowUpQuery(lowercase) = %q, want parsed query", report.FollowUpQuery)
 	}
 }
 

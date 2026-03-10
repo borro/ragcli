@@ -1,26 +1,21 @@
 package rag
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
+	"github.com/borro/ragcli/internal/retrieval"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -37,7 +32,7 @@ type Options struct {
 }
 
 const (
-	indexSchemaVersion = 1
+	indexSchemaVersion = 2
 	chunksFilename     = "chunks.jsonl"
 	embeddingsFilename = "embeddings.jsonl"
 	manifestFilename   = "manifest.json"
@@ -53,17 +48,7 @@ type Source struct {
 	Reader      io.Reader
 }
 
-type Manifest struct {
-	SchemaVersion  int       `json:"schema_version"`
-	CreatedAt      time.Time `json:"created_at"`
-	InputHash      string    `json:"input_hash"`
-	DocID          string    `json:"doc_id"`
-	SourcePath     string    `json:"source_path"`
-	EmbeddingModel string    `json:"embedding_model"`
-	ChunkSize      int       `json:"chunk_size"`
-	ChunkOverlap   int       `json:"chunk_overlap"`
-	ChunkCount     int       `json:"chunk_count"`
-}
+type Manifest = retrieval.Manifest
 
 type Chunk struct {
 	DocID      string `json:"doc_id"`
@@ -180,18 +165,24 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 	if err := os.MkdirAll(opts.IndexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create rag index dir: %w", err)
 	}
-	cleanupExpiredIndexes(opts.IndexDir, opts.IndexTTL)
+	retrieval.CleanupExpiredIndexes(opts.IndexDir, opts.IndexTTL)
 
 	sourcePath := normalizeSourcePath(source)
-	tempSourcePath, sourceBytes, hash, err := spoolSourceToTemp(source.Reader, sourcePath, opts)
+	spooled, err := retrieval.SpoolSource(source.Reader, "ragcli-rag-source-*", []string{
+		sourcePath,
+		fmt.Sprintf("%d", indexSchemaVersion),
+		fmt.Sprintf("%d", opts.ChunkSize),
+		fmt.Sprintf("%d", opts.ChunkOverlap),
+		opts.EmbeddingModel,
+	}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to spool source: %w", err)
 	}
 	defer func() {
-		_ = os.Remove(tempSourcePath)
+		_ = os.Remove(spooled.TempPath)
 	}()
-	indexMeter.Note(localize.T("progress.rag.read_done", localize.Data{"Bytes": sourceBytes}))
-	indexDir := filepath.Join(opts.IndexDir, hash)
+	indexMeter.Note(localize.T("progress.rag.read_done", localize.Data{"Bytes": spooled.Bytes}))
+	indexDir := filepath.Join(opts.IndexDir, spooled.Hash)
 
 	if cached, err := loadIndex(indexDir, opts.IndexTTL); err == nil {
 		stats.CacheHit = true
@@ -199,11 +190,11 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 		return cached, nil
 	}
 
-	sourceFile, err := os.Open(tempSourcePath)
+	sourceFile, err := os.Open(spooled.TempPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reopen spooled source: %w", err)
 	}
-	chunks, err := chunkTextReader(sourceFile, sourcePath, hash, opts.ChunkSize, opts.ChunkOverlap)
+	chunks, err := chunkTextReader(sourceFile, sourcePath, spooled.Hash, opts.ChunkSize, opts.ChunkOverlap)
 	_ = sourceFile.Close()
 	if err != nil {
 		return nil, fmt.Errorf("failed to chunk source: %w", err)
@@ -223,13 +214,12 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 		Manifest: Manifest{
 			SchemaVersion:  indexSchemaVersion,
 			CreatedAt:      time.Now().UTC(),
-			InputHash:      hash,
-			DocID:          hash,
+			InputHash:      spooled.Hash,
 			SourcePath:     sourcePath,
 			EmbeddingModel: opts.EmbeddingModel,
 			ChunkSize:      opts.ChunkSize,
 			ChunkOverlap:   opts.ChunkOverlap,
-			ChunkCount:     len(chunks),
+			ItemCount:      len(chunks),
 		},
 		Chunks:     chunks,
 		Embeddings: embeddings,
@@ -258,122 +248,15 @@ func normalizeSourcePath(source Source) string {
 	return "stdin"
 }
 
-func walkRawLines(reader io.Reader, onLine func(rawLine string, lineNo, byteStart, byteEnd int) error) (int, error) {
-	buffered := bufio.NewReader(reader)
-	byteOffset := 0
-	lineNo := 1
-
-	for {
-		rawLine, err := buffered.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return byteOffset, err
-		}
-		if rawLine == "" && errors.Is(err, io.EOF) {
-			break
-		}
-
-		nextOffset := byteOffset + len(rawLine)
-		if err := onLine(rawLine, lineNo, byteOffset, nextOffset); err != nil {
-			return byteOffset, err
-		}
-		byteOffset = nextOffset
-		lineNo++
-
-		if errors.Is(err, io.EOF) {
-			break
-		}
-	}
-	return byteOffset, nil
-}
-
-func spoolSourceToTemp(reader io.Reader, sourcePath string, opts Options) (string, int, string, error) {
-	tempFile, err := os.CreateTemp("", "ragcli-rag-source-*")
-	if err != nil {
-		return "", 0, "", err
-	}
-	defer func() {
-		_ = tempFile.Close()
-	}()
-
-	hasher := sha256.New()
-	written, err := walkRawLines(reader, func(rawLine string, _ int, _, _ int) error {
-		if _, writeErr := io.WriteString(tempFile, rawLine); writeErr != nil {
-			return writeErr
-		}
-		if _, writeErr := io.WriteString(hasher, rawLine); writeErr != nil {
-			return writeErr
-		}
-		return nil
+func loadIndex(indexDir string, ttl time.Duration) (*Index, error) {
+	manifest, chunks, embeddings, err := retrieval.LoadIndex[Chunk](indexDir, ttl, indexSchemaVersion, retrieval.Filenames{
+		Manifest:   manifestFilename,
+		Items:      chunksFilename,
+		Embeddings: embeddingsFilename,
 	})
 	if err != nil {
-		_ = os.Remove(tempFile.Name())
-		return "", 0, "", err
+		return nil, retrieval.WrapIndexError("rag", err, "chunks and embeddings count mismatch")
 	}
-	writeHashMetadata(hasher, sourcePath, opts)
-	return tempFile.Name(), written, hex.EncodeToString(hasher.Sum(nil)), nil
-}
-
-func writeHashMetadata(w io.Writer, sourcePath string, opts Options) {
-	_, _ = fmt.Fprintf(w, "|%s|%d|%d|%d|%s",
-		sourcePath,
-		indexSchemaVersion,
-		opts.ChunkSize,
-		opts.ChunkOverlap,
-		opts.EmbeddingModel,
-	)
-}
-
-func cleanupExpiredIndexes(baseDir string, ttl time.Duration) {
-	entries, err := os.ReadDir(baseDir)
-	if err != nil {
-		return
-	}
-	now := time.Now()
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if now.Sub(info.ModTime()) <= ttl {
-			continue
-		}
-		_ = os.RemoveAll(filepath.Join(baseDir, entry.Name()))
-	}
-}
-
-func loadIndex(indexDir string, ttl time.Duration) (*Index, error) {
-	manifestPath := filepath.Join(indexDir, manifestFilename)
-	manifestData, err := os.ReadFile(manifestPath)
-	if err != nil {
-		return nil, err
-	}
-
-	var manifest Manifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, fmt.Errorf("failed to decode manifest: %w", err)
-	}
-	if manifest.SchemaVersion != indexSchemaVersion {
-		return nil, errors.New("rag index schema mismatch")
-	}
-	if time.Since(manifest.CreatedAt) > ttl {
-		return nil, errors.New("rag index ttl expired")
-	}
-
-	chunks, err := readChunks(filepath.Join(indexDir, chunksFilename))
-	if err != nil {
-		return nil, err
-	}
-	embeddings, err := readEmbeddings(filepath.Join(indexDir, embeddingsFilename))
-	if err != nil {
-		return nil, err
-	}
-	if len(chunks) != len(embeddings) {
-		return nil, errors.New("rag index corrupted: chunks and embeddings count mismatch")
-	}
-
 	return &Index{
 		Manifest:   manifest,
 		Chunks:     chunks,
@@ -381,135 +264,12 @@ func loadIndex(indexDir string, ttl time.Duration) (*Index, error) {
 	}, nil
 }
 
-func writeJSONFile(path string, value any, createErr, encodeErr, closeErr string) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("%s: %w", createErr, err)
-	}
-	if err := json.NewEncoder(file).Encode(value); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("%s: %w", encodeErr, err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("%s: %w", closeErr, err)
-	}
-	return nil
-}
-
-func writeJSONLines[T any](path string, values []T, createErr, encodeErr, closeErr string) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("%s: %w", createErr, err)
-	}
-
-	encoder := json.NewEncoder(file)
-	for _, value := range values {
-		if err := encoder.Encode(value); err != nil {
-			_ = file.Close()
-			return fmt.Errorf("%s: %w", encodeErr, err)
-		}
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("%s: %w", closeErr, err)
-	}
-	return nil
-}
-
-func readJSONLines[T any](path string, maxTokenSize int, openErr, decodeErr, scanErr string) ([]T, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", openErr, err)
-	}
-	defer func() {
-		_ = file.Close()
-	}()
-
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxTokenSize)
-	values := make([]T, 0, 32)
-	for scanner.Scan() {
-		var value T
-		if err := json.Unmarshal(scanner.Bytes(), &value); err != nil {
-			return nil, fmt.Errorf("%s: %w", decodeErr, err)
-		}
-		values = append(values, value)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", scanErr, err)
-	}
-	return values, nil
-}
-
 func persistIndex(indexDir string, index *Index) error {
-	parentDir := filepath.Dir(indexDir)
-	if err := os.MkdirAll(parentDir, 0o700); err != nil {
-		return fmt.Errorf("failed to create parent index dir: %w", err)
-	}
-
-	tempDir, err := os.MkdirTemp(parentDir, "."+filepath.Base(indexDir)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp index dir: %w", err)
-	}
-	defer func() {
-		_ = os.RemoveAll(tempDir)
-	}()
-
-	if err := os.Chmod(tempDir, 0o700); err != nil {
-		return fmt.Errorf("failed to secure temp index dir: %w", err)
-	}
-
-	if _, err := os.Stat(indexDir); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("failed to stat index dir: %w", err)
-	}
-
-	if err := writeJSONLines(filepath.Join(tempDir, chunksFilename), index.Chunks,
-		"failed to create chunks file",
-		"failed to write chunk metadata",
-		"failed to close chunks file",
-	); err != nil {
-		return err
-	}
-	if err := writeJSONLines(filepath.Join(tempDir, embeddingsFilename), index.Embeddings,
-		"failed to create embeddings file",
-		"failed to write embeddings",
-		"failed to close embeddings file",
-	); err != nil {
-		return err
-	}
-	if err := writeJSONFile(filepath.Join(tempDir, manifestFilename), index.Manifest,
-		"failed to create manifest file",
-		"failed to write manifest",
-		"failed to close manifest file",
-	); err != nil {
-		return err
-	}
-
-	if err := os.Rename(tempDir, indexDir); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return nil
-		}
-		return fmt.Errorf("failed to publish index dir: %w", err)
-	}
-
-	return nil
-}
-
-func readChunks(path string) ([]Chunk, error) {
-	return readJSONLines[Chunk](path, 2*1024*1024,
-		"failed to open chunks file",
-		"failed to decode chunk metadata",
-		"failed to scan chunks file",
-	)
-}
-
-func readEmbeddings(path string) ([][]float32, error) {
-	return readJSONLines[[]float32](path, 8*1024*1024,
-		"failed to open embeddings file",
-		"failed to decode embedding vector",
-		"failed to scan embeddings file",
-	)
+	return retrieval.PersistIndex(indexDir, index.Manifest, index.Chunks, index.Embeddings, retrieval.Filenames{
+		Manifest:   manifestFilename,
+		Items:      chunksFilename,
+		Embeddings: embeddingsFilename,
+	})
 }
 
 func chunkText(content []byte, sourcePath string, chunkSize, overlap int) []Chunk {
@@ -577,9 +337,9 @@ func chunkTextReader(reader io.Reader, sourcePath, docID string, chunkSize, over
 		return retained
 	}
 
-	_, err := walkRawLines(reader, func(rawLine string, lineNo, byteStart, _ int) error {
+	_, err := retrieval.WalkLines(reader, func(rawLine, text string, lineNo, byteStart, _ int) error {
 		line := lineInfo{
-			text:      strings.TrimSuffix(rawLine, "\n"),
+			text:      text,
 			byteStart: byteStart,
 			byteLen:   len(rawLine),
 			lineNo:    lineNo,
@@ -615,11 +375,11 @@ func embedChunks(ctx context.Context, embedder llm.EmbeddingRequester, chunks []
 		end := min(start+batchSize, len(chunks))
 		inputs := make([]string, 0, end-start)
 		for _, chunk := range chunks[start:end] {
-			inputs = append(inputs, normalizeEmbeddingInput(chunk.Text))
+			inputs = append(inputs, chunk.Text)
 		}
 		indexMeter.Note(localize.T("progress.rag.embed_batch", localize.Data{"Index": calls + 1, "Total": totalBatches}))
 
-		vectorsBatch, metrics, err := embedder.CreateEmbeddingsWithMetrics(ctx, inputs)
+		vectorsBatch, metrics, err := retrieval.EmbedTexts(ctx, embedder, inputs)
 		if err != nil {
 			return nil, calls, totalTokens, fmt.Errorf("failed to embed chunks: %w", err)
 		}
@@ -636,24 +396,17 @@ func embedChunks(ctx context.Context, embedder llm.EmbeddingRequester, chunks []
 }
 
 func embedQuery(ctx context.Context, embedder llm.EmbeddingRequester, question string) ([]float32, llm.EmbeddingMetrics, error) {
-	vectors, metrics, err := embedder.CreateEmbeddingsWithMetrics(ctx, []string{normalizeEmbeddingInput(question)})
-	if err != nil {
-		return nil, llm.EmbeddingMetrics{}, fmt.Errorf("failed to embed query: %w", err)
-	}
-	if len(vectors) != 1 {
-		return nil, llm.EmbeddingMetrics{}, fmt.Errorf("query embeddings count = %d, want 1", len(vectors))
-	}
-	return vectors[0], metrics, nil
+	return retrieval.EmbedQuery(ctx, embedder, question, "query")
 }
 
 func retrieve(index *Index, query []float32, question string, opts Options) []candidate {
 	ranked := make([]candidate, 0, len(index.Chunks))
 	for i, chunk := range index.Chunks {
-		similarity := cosineSimilarity(query, index.Embeddings[i])
+		similarity := retrieval.CosineSimilarity(query, index.Embeddings[i])
 		ranked = append(ranked, candidate{
 			Chunk:      chunk,
 			Similarity: similarity,
-			Overlap:    tokenOverlapRatio(question, chunk.Text),
+			Overlap:    retrieval.TokenOverlapRatio(question, chunk.Text),
 			Score:      similarity,
 		})
 	}
@@ -814,74 +567,15 @@ func synthesizeAnswer(ctx context.Context, chat llm.ChatRequester, question stri
 }
 
 func appendSources(answer string, evidence []candidate) string {
-	seen := make(map[string]struct{}, len(evidence))
-	lines := make([]string, 0, len(evidence))
+	citations := make([]retrieval.Citation, 0, len(evidence))
 	for _, cand := range evidence {
-		citation := fmt.Sprintf("%s:%d-%d", cand.Chunk.SourcePath, cand.Chunk.StartLine, cand.Chunk.EndLine)
-		if _, exists := seen[citation]; exists {
-			continue
-		}
-		seen[citation] = struct{}{}
-		lines = append(lines, "- "+citation)
+		citations = append(citations, retrieval.Citation{
+			SourcePath: cand.Chunk.SourcePath,
+			StartLine:  cand.Chunk.StartLine,
+			EndLine:    cand.Chunk.EndLine,
+		})
 	}
-	if len(lines) == 0 {
-		lines = append(lines, "- none")
-	}
-	return strings.TrimSpace(answer) + "\n\nSources:\n" + strings.Join(lines, "\n")
-}
-
-func normalizeEmbeddingInput(raw string) string {
-	return strings.Join(strings.Fields(raw), " ")
-}
-
-func cosineSimilarity(a, b []float32) float64 {
-	if len(a) == 0 || len(a) != len(b) {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		dot += float64(a[i] * b[i])
-		normA += float64(a[i] * a[i])
-		normB += float64(b[i] * b[i])
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
-}
-
-func tokenOverlapRatio(query, text string) float64 {
-	queryTokens := tokenize(query)
-	if len(queryTokens) == 0 {
-		return 0
-	}
-	textLower := strings.ToLower(text)
-	matched := 0
-	for _, token := range queryTokens {
-		if strings.Contains(textLower, token) {
-			matched++
-		}
-	}
-	return float64(matched) / float64(len(queryTokens))
-}
-
-func tokenize(input string) []string {
-	raw := strings.FieldsFunc(strings.ToLower(input), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	})
-	seen := make(map[string]struct{}, len(raw))
-	tokens := make([]string, 0, len(raw))
-	for _, token := range raw {
-		if len([]rune(token)) < 2 {
-			continue
-		}
-		if _, exists := seen[token]; exists {
-			continue
-		}
-		seen[token] = struct{}{}
-		tokens = append(tokens, token)
-	}
-	return tokens
+	return retrieval.AppendSources(answer, citations)
 }
 
 func sanitizeUntrustedBlock(raw string) string {

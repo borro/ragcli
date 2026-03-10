@@ -1,29 +1,25 @@
 package hybrid
 
 import (
-	"bufio"
 	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/borro/ragcli/internal/app/tools/filetools"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
+	"github.com/borro/ragcli/internal/retrieval"
 	"github.com/borro/ragcli/internal/verbose"
 
 	mapmode "github.com/borro/ragcli/internal/app/map"
@@ -118,19 +114,10 @@ type cachedIndex struct {
 	Embeddings [][]float32
 }
 
-type indexManifest struct {
-	SchemaVersion  int       `json:"schema_version"`
-	CreatedAt      time.Time `json:"created_at"`
-	InputHash      string    `json:"input_hash"`
-	SourcePath     string    `json:"source_path"`
-	EmbeddingModel string    `json:"embedding_model"`
-	ChunkSize      int       `json:"chunk_size"`
-	ChunkOverlap   int       `json:"chunk_overlap"`
-	ChunkCount     int       `json:"chunk_count"`
-}
+type indexManifest = retrieval.Manifest
 
 const (
-	hybridIndexSchemaVersion = 1
+	hybridIndexSchemaVersion = 2
 	hybridManifestFilename   = "manifest.json"
 	hybridSegmentsFilename   = "segments.jsonl"
 	hybridEmbeddingsFilename = "embeddings.jsonl"
@@ -472,35 +459,6 @@ func collectProfileStats(text string, stats *profileStats) {
 	}
 }
 
-func walkRawLines(reader io.Reader, onLine func(rawLine, text string, lineNo, byteStart, byteEnd int) error) (int, error) {
-	buffered := bufio.NewReader(reader)
-	byteOffset := 0
-	lineNo := 1
-
-	for {
-		rawLine, err := buffered.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return byteOffset, err
-		}
-		if rawLine == "" && errors.Is(err, io.EOF) {
-			break
-		}
-
-		nextOffset := byteOffset + len(rawLine)
-		text := strings.TrimSuffix(rawLine, "\n")
-		if err := onLine(rawLine, text, lineNo, byteOffset, nextOffset); err != nil {
-			return byteOffset, err
-		}
-		byteOffset = nextOffset
-		lineNo++
-
-		if errors.Is(err, io.EOF) {
-			break
-		}
-	}
-	return byteOffset, nil
-}
-
 func readLines(path string) ([]lineInfo, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -509,7 +467,7 @@ func readLines(path string) ([]lineInfo, error) {
 	defer func() { _ = file.Close() }()
 
 	lines := make([]lineInfo, 0, 128)
-	_, err = walkRawLines(file, func(_ string, text string, lineNo, byteStart, byteEnd int) error {
+	_, err = retrieval.WalkLines(file, func(_ string, text string, lineNo, byteStart, byteEnd int) error {
 		lines = append(lines, lineInfo{
 			text:      text,
 			lineNo:    lineNo,
@@ -525,39 +483,26 @@ func readLines(path string) ([]lineInfo, error) {
 }
 
 func spoolSourceSnapshot(reader io.Reader, sourcePath string, opts Options) (*sourceSnapshot, error) {
-	tempFile, err := os.CreateTemp("", "ragcli-hybrid-source-*")
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = tempFile.Close()
-	}()
-
-	hasher := sha256.New()
 	stats := profileStats{}
-
-	byteCount, err := walkRawLines(reader, func(rawLine, text string, _ int, _, _ int) error {
-		if _, writeErr := io.WriteString(tempFile, rawLine); writeErr != nil {
-			return writeErr
-		}
-		if _, writeErr := io.WriteString(hasher, rawLine); writeErr != nil {
-			return writeErr
-		}
+	spooled, err := retrieval.SpoolSource(reader, "ragcli-hybrid-source-*", []string{
+		sourcePath,
+		fmt.Sprintf("%d", hybridIndexSchemaVersion),
+		fmt.Sprintf("%d", opts.ChunkSize),
+		fmt.Sprintf("%d", opts.ChunkOverlap),
+		opts.EmbeddingModel,
+	}, func(_ string, text string, _ int, _, _ int) error {
 		collectProfileStats(text, &stats)
 		return nil
 	})
 	if err != nil {
-		_ = os.Remove(tempFile.Name())
 		return nil, err
 	}
 
-	writeHashMetadata(hasher, sourcePath, opts)
-
 	return &sourceSnapshot{
-		Path:    tempFile.Name(),
-		Bytes:   byteCount,
+		Path:    spooled.TempPath,
+		Bytes:   spooled.Bytes,
 		Profile: detectProfile(sourcePath, stats.headingCount, stats.logLikeCount, stats.nonEmpty),
-		Hash:    hex.EncodeToString(hasher.Sum(nil)),
+		Hash:    spooled.Hash,
 	}, nil
 }
 
@@ -788,14 +733,14 @@ func buildSegment(id int, level, kind string, lines []lineInfo) Segment {
 
 func lexicalRetrieve(question string, segments []Segment) []RetrievedHit {
 	lowerQuestion := strings.ToLower(strings.TrimSpace(question))
-	queryTokens := tokenize(question)
+	queryText := strings.Join(retrieval.Tokenize(question), " ")
 	if lowerQuestion == "" || len(segments) == 0 {
 		return nil
 	}
 
 	hits := make([]RetrievedHit, 0, len(segments))
 	for _, segment := range segments {
-		score, lineNo, matchedLines := lexicalScoreSegment(lowerQuestion, queryTokens, segment)
+		score, lineNo, matchedLines := lexicalScoreSegment(lowerQuestion, queryText, segment)
 		if score <= 0 {
 			continue
 		}
@@ -821,7 +766,7 @@ func lexicalRetrieve(question string, segments []Segment) []RetrievedHit {
 	return hits
 }
 
-func lexicalScoreSegment(lowerQuestion string, queryTokens []string, segment Segment) (float64, int, []int) {
+func lexicalScoreSegment(lowerQuestion, queryText string, segment Segment) (float64, int, []int) {
 	lowerText := strings.ToLower(segment.Text)
 	bestScore := 0.0
 	bestLine := segment.StartLine
@@ -837,7 +782,7 @@ func lexicalScoreSegment(lowerQuestion string, queryTokens []string, segment Seg
 		if strings.Contains(lowerLine, lowerQuestion) {
 			literal = 1.5
 		}
-		overlap := tokenOverlapRatio(questionTokensString(queryTokens), line)
+		overlap := retrieval.TokenOverlapRatio(queryText, line)
 		score := literal + overlap
 		if score > 0 {
 			matchedLines = append(matchedLines, segment.StartLine+offset)
@@ -848,18 +793,14 @@ func lexicalScoreSegment(lowerQuestion string, queryTokens []string, segment Seg
 		}
 	}
 
-	if bestScore == 0 && len(queryTokens) > 0 {
-		overlap := tokenOverlapRatio(questionTokensString(queryTokens), segment.Text)
+	if bestScore == 0 && queryText != "" {
+		overlap := retrieval.TokenOverlapRatio(queryText, segment.Text)
 		if overlap > 0 {
 			bestScore = overlap
 		}
 	}
 
 	return bestScore, bestLine, matchedLines
-}
-
-func questionTokensString(tokens []string) string {
-	return strings.Join(tokens, " ")
 }
 
 func semanticRetrieve(ctx context.Context, embedder llm.EmbeddingRequester, sourcePath, inputHash string, segments []Segment, opts Options, question string) ([]RetrievedHit, error) {
@@ -875,7 +816,7 @@ func semanticRetrieve(ctx context.Context, embedder llm.EmbeddingRequester, sour
 
 	hits := make([]RetrievedHit, 0, len(index.Segments))
 	for i, segment := range index.Segments {
-		score := cosineSimilarity(queryEmbedding, index.Embeddings[i])
+		score := retrieval.CosineSimilarity(queryEmbedding, index.Embeddings[i])
 		if score <= 0 {
 			continue
 		}
@@ -931,7 +872,7 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 	if err := os.MkdirAll(opts.IndexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create hybrid index dir: %w", err)
 	}
-	cleanupExpiredIndexes(opts.IndexDir, opts.IndexTTL)
+	retrieval.CleanupExpiredIndexes(opts.IndexDir, opts.IndexTTL)
 
 	indexDir := filepath.Join(opts.IndexDir, "hybrid-"+inputHash)
 	if cached, err := loadIndex(indexDir, opts.IndexTTL); err == nil {
@@ -952,7 +893,7 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 			EmbeddingModel: opts.EmbeddingModel,
 			ChunkSize:      opts.ChunkSize,
 			ChunkOverlap:   opts.ChunkOverlap,
-			ChunkCount:     len(segments),
+			ItemCount:      len(segments),
 		},
 		Segments:   segments,
 		Embeddings: embeddings,
@@ -964,66 +905,15 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 	return index, nil
 }
 
-func writeHashMetadata(w io.Writer, sourcePath string, opts Options) {
-	_, _ = fmt.Fprintf(w, "|%s|%d|%d|%d|%s",
-		sourcePath,
-		hybridIndexSchemaVersion,
-		opts.ChunkSize,
-		opts.ChunkOverlap,
-		opts.EmbeddingModel,
-	)
-}
-
-func cleanupExpiredIndexes(baseDir string, ttl time.Duration) {
-	entries, err := os.ReadDir(baseDir)
-	if err != nil {
-		return
-	}
-	now := time.Now()
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if now.Sub(info.ModTime()) <= ttl {
-			continue
-		}
-		_ = os.RemoveAll(filepath.Join(baseDir, entry.Name()))
-	}
-}
-
 func loadIndex(indexDir string, ttl time.Duration) (*cachedIndex, error) {
-	manifestData, err := os.ReadFile(filepath.Join(indexDir, hybridManifestFilename))
+	manifest, segments, embeddings, err := retrieval.LoadIndex[Segment](indexDir, ttl, hybridIndexSchemaVersion, retrieval.Filenames{
+		Manifest:   hybridManifestFilename,
+		Items:      hybridSegmentsFilename,
+		Embeddings: hybridEmbeddingsFilename,
+	})
 	if err != nil {
-		return nil, err
+		return nil, retrieval.WrapIndexError("hybrid", err, "")
 	}
-
-	var manifest indexManifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, fmt.Errorf("failed to decode hybrid manifest: %w", err)
-	}
-	if manifest.SchemaVersion != hybridIndexSchemaVersion {
-		return nil, errors.New("hybrid index schema mismatch")
-	}
-	if time.Since(manifest.CreatedAt) > ttl {
-		return nil, errors.New("hybrid index ttl expired")
-	}
-
-	segments, err := readSegments(filepath.Join(indexDir, hybridSegmentsFilename))
-	if err != nil {
-		return nil, err
-	}
-	embeddings, err := readEmbeddings(filepath.Join(indexDir, hybridEmbeddingsFilename))
-	if err != nil {
-		return nil, err
-	}
-	if len(segments) != len(embeddings) {
-		return nil, errors.New("hybrid index corrupted")
-	}
-
 	return &cachedIndex{
 		Manifest:   manifest,
 		Segments:   segments,
@@ -1032,109 +922,11 @@ func loadIndex(indexDir string, ttl time.Duration) (*cachedIndex, error) {
 }
 
 func persistIndex(indexDir string, index *cachedIndex) error {
-	parentDir := filepath.Dir(indexDir)
-	if err := os.MkdirAll(parentDir, 0o700); err != nil {
-		return err
-	}
-
-	tempDir, err := os.MkdirTemp(parentDir, "."+filepath.Base(indexDir)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(tempDir) }()
-
-	manifestFile, err := os.OpenFile(filepath.Join(tempDir, hybridManifestFilename), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	if err := json.NewEncoder(manifestFile).Encode(index.Manifest); err != nil {
-		_ = manifestFile.Close()
-		return err
-	}
-	if err := manifestFile.Close(); err != nil {
-		return err
-	}
-
-	embeddingsFile, err := os.OpenFile(filepath.Join(tempDir, hybridEmbeddingsFilename), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	embeddingEncoder := json.NewEncoder(embeddingsFile)
-	for _, embedding := range index.Embeddings {
-		if err := embeddingEncoder.Encode(embedding); err != nil {
-			_ = embeddingsFile.Close()
-			return err
-		}
-	}
-	if err := embeddingsFile.Close(); err != nil {
-		return err
-	}
-
-	segmentsFile, err := os.OpenFile(filepath.Join(tempDir, hybridSegmentsFilename), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	encoder := json.NewEncoder(segmentsFile)
-	for _, segment := range index.Segments {
-		if err := encoder.Encode(segment); err != nil {
-			_ = segmentsFile.Close()
-			return err
-		}
-	}
-	if err := segmentsFile.Close(); err != nil {
-		return err
-	}
-
-	if _, err := os.Stat(indexDir); err == nil {
-		return nil
-	}
-	return os.Rename(tempDir, indexDir)
-}
-
-func readSegments(path string) ([]Segment, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
-	segments := make([]Segment, 0, 32)
-	for scanner.Scan() {
-		var segment Segment
-		if err := json.Unmarshal(scanner.Bytes(), &segment); err != nil {
-			return nil, err
-		}
-		segments = append(segments, segment)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return segments, nil
-}
-
-func readEmbeddings(path string) ([][]float32, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	embeddings := make([][]float32, 0, 32)
-	for scanner.Scan() {
-		var embedding []float32
-		if err := json.Unmarshal(scanner.Bytes(), &embedding); err != nil {
-			return nil, err
-		}
-		embeddings = append(embeddings, embedding)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return embeddings, nil
+	return retrieval.PersistIndex(indexDir, index.Manifest, index.Segments, index.Embeddings, retrieval.Filenames{
+		Manifest:   hybridManifestFilename,
+		Items:      hybridSegmentsFilename,
+		Embeddings: hybridEmbeddingsFilename,
+	})
 }
 
 func embedSegments(ctx context.Context, embedder llm.EmbeddingRequester, segments []Segment) ([][]float32, error) {
@@ -1144,9 +936,9 @@ func embedSegments(ctx context.Context, embedder llm.EmbeddingRequester, segment
 		end := min(start+batchSize, len(segments))
 		inputs := make([]string, 0, end-start)
 		for _, segment := range segments[start:end] {
-			inputs = append(inputs, normalizeEmbeddingInput(segment.Text))
+			inputs = append(inputs, segment.Text)
 		}
-		batch, _, err := embedder.CreateEmbeddingsWithMetrics(ctx, inputs)
+		batch, _, err := retrieval.EmbedTexts(ctx, embedder, inputs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to embed hybrid segments: %w", err)
 		}
@@ -1156,14 +948,7 @@ func embedSegments(ctx context.Context, embedder llm.EmbeddingRequester, segment
 }
 
 func embedQuery(ctx context.Context, embedder llm.EmbeddingRequester, question string) ([]float32, llm.EmbeddingMetrics, error) {
-	vectors, metrics, err := embedder.CreateEmbeddingsWithMetrics(ctx, []string{normalizeEmbeddingInput(question)})
-	if err != nil {
-		return nil, llm.EmbeddingMetrics{}, fmt.Errorf("failed to embed hybrid query: %w", err)
-	}
-	if len(vectors) != 1 {
-		return nil, llm.EmbeddingMetrics{}, fmt.Errorf("hybrid query embeddings count = %d, want 1", len(vectors))
-	}
-	return vectors[0], metrics, nil
+	return retrieval.EmbedQuery(ctx, embedder, question, "hybrid query")
 }
 
 func fuseAndExpandRegions(lexicalHits, semanticHits []RetrievedHit, segments []Segment, sourcePath, displayName string, opts Options) []Region {
@@ -1524,20 +1309,15 @@ func synthesizeAnswer(ctx context.Context, chat llm.ChatRequester, question, fac
 }
 
 func appendSources(answer string, evidence []EvidenceBlock) string {
-	seen := make(map[string]struct{}, len(evidence))
-	lines := make([]string, 0, len(evidence))
+	citations := make([]retrieval.Citation, 0, len(evidence))
 	for _, block := range evidence {
-		citation := fmt.Sprintf("%s:%d-%d", block.SourcePath, block.StartLine, block.EndLine)
-		if _, ok := seen[citation]; ok {
-			continue
-		}
-		seen[citation] = struct{}{}
-		lines = append(lines, "- "+citation)
+		citations = append(citations, retrieval.Citation{
+			SourcePath: block.SourcePath,
+			StartLine:  block.StartLine,
+			EndLine:    block.EndLine,
+		})
 	}
-	if len(lines) == 0 {
-		lines = append(lines, "- none")
-	}
-	return strings.TrimSpace(answer) + "\n\nSources:\n" + strings.Join(lines, "\n")
+	return retrieval.AppendSources(answer, citations)
 }
 
 func appendEvidence(base, extra []EvidenceBlock) []EvidenceBlock {
@@ -1690,7 +1470,7 @@ func parseCoverageReport(raw string) CoverageReport {
 		case strings.HasPrefix(lower, "conflicts:"):
 			section = "conflicts"
 		case strings.HasPrefix(lower, "follow_up_query:"):
-			report.FollowUpQuery = strings.TrimSpace(strings.TrimPrefix(trimmed, "FOLLOW_UP_QUERY:"))
+			report.FollowUpQuery = strings.TrimSpace(trimmed[len("follow_up_query:"):])
 			section = ""
 		case strings.HasPrefix(trimmed, "- "):
 			switch section {
@@ -1798,10 +1578,6 @@ func normalizeSourceReadPath(source Source) string {
 	return ""
 }
 
-func normalizeEmbeddingInput(raw string) string {
-	return strings.Join(strings.Fields(raw), " ")
-}
-
 func hasFollowUpQuery(query string) bool {
 	trimmed := strings.TrimSpace(query)
 	return trimmed != "" && !strings.EqualFold(trimmed, "none")
@@ -1876,7 +1652,7 @@ func deriveFollowUpQuery(question string, coverage CoverageReport) string {
 		}
 	}
 	if len(parts) == 0 {
-		tokens := tokenize(question)
+		tokens := retrieval.Tokenize(question)
 		if len(tokens) > 6 {
 			tokens = tokens[:6]
 		}
@@ -1890,56 +1666,6 @@ func maxFloat(left, right float64) float64 {
 		return left
 	}
 	return right
-}
-
-func cosineSimilarity(a, b []float32) float64 {
-	if len(a) == 0 || len(a) != len(b) {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		dot += float64(a[i] * b[i])
-		normA += float64(a[i] * a[i])
-		normB += float64(b[i] * b[i])
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
-}
-
-func tokenize(input string) []string {
-	raw := strings.FieldsFunc(strings.ToLower(input), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	})
-	seen := make(map[string]struct{}, len(raw))
-	tokens := make([]string, 0, len(raw))
-	for _, token := range raw {
-		if len([]rune(token)) < 2 {
-			continue
-		}
-		if _, ok := seen[token]; ok {
-			continue
-		}
-		seen[token] = struct{}{}
-		tokens = append(tokens, token)
-	}
-	return tokens
-}
-
-func tokenOverlapRatio(query, text string) float64 {
-	queryTokens := tokenize(query)
-	if len(queryTokens) == 0 {
-		return 0
-	}
-	textLower := strings.ToLower(text)
-	matched := 0
-	for _, token := range queryTokens {
-		if strings.Contains(textLower, token) {
-			matched++
-		}
-	}
-	return float64(matched) / float64(len(queryTokens))
 }
 
 func hybridMapPrompt() string {
