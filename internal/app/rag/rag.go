@@ -2,6 +2,7 @@ package rag
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -38,7 +39,7 @@ type Options struct {
 const (
 	indexSchemaVersion = 1
 	chunksFilename     = "chunks.jsonl"
-	embeddingsFilename = "embeddings.json"
+	embeddingsFilename = "embeddings.jsonl"
 	manifestFilename   = "manifest.json"
 )
 
@@ -181,14 +182,15 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 	}
 	cleanupExpiredIndexes(opts.IndexDir, opts.IndexTTL)
 
-	content, err := io.ReadAll(source.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read source: %w", err)
-	}
-	indexMeter.Note(localize.T("progress.rag.read_done", localize.Data{"Bytes": len(content)}))
-
 	sourcePath := normalizeSourcePath(source)
-	hash := hashInput(content, sourcePath, opts)
+	tempSourcePath, sourceBytes, hash, err := spoolSourceToTemp(source.Reader, sourcePath, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to spool source: %w", err)
+	}
+	defer func() {
+		_ = os.Remove(tempSourcePath)
+	}()
+	indexMeter.Note(localize.T("progress.rag.read_done", localize.Data{"Bytes": sourceBytes}))
 	indexDir := filepath.Join(opts.IndexDir, hash)
 
 	if cached, err := loadIndex(indexDir, opts.IndexTTL); err == nil {
@@ -197,7 +199,15 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 		return cached, nil
 	}
 
-	chunks := chunkText(content, sourcePath, opts.ChunkSize, opts.ChunkOverlap)
+	sourceFile, err := os.Open(tempSourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reopen spooled source: %w", err)
+	}
+	chunks, err := chunkTextReader(sourceFile, sourcePath, hash, opts.ChunkSize, opts.ChunkOverlap)
+	_ = sourceFile.Close()
+	if err != nil {
+		return nil, fmt.Errorf("failed to chunk source: %w", err)
+	}
 	if len(chunks) == 0 {
 		return nil, errors.New("input did not produce retrieval chunks")
 	}
@@ -248,16 +258,69 @@ func normalizeSourcePath(source Source) string {
 	return "stdin"
 }
 
-func hashInput(content []byte, sourcePath string, opts Options) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d|%d|%d|%s",
-		content,
+func walkRawLines(reader io.Reader, onLine func(rawLine string, lineNo, byteStart, byteEnd int) error) (int, error) {
+	buffered := bufio.NewReader(reader)
+	byteOffset := 0
+	lineNo := 1
+
+	for {
+		rawLine, err := buffered.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return byteOffset, err
+		}
+		if rawLine == "" && errors.Is(err, io.EOF) {
+			break
+		}
+
+		nextOffset := byteOffset + len(rawLine)
+		if err := onLine(rawLine, lineNo, byteOffset, nextOffset); err != nil {
+			return byteOffset, err
+		}
+		byteOffset = nextOffset
+		lineNo++
+
+		if errors.Is(err, io.EOF) {
+			break
+		}
+	}
+	return byteOffset, nil
+}
+
+func spoolSourceToTemp(reader io.Reader, sourcePath string, opts Options) (string, int, string, error) {
+	tempFile, err := os.CreateTemp("", "ragcli-rag-source-*")
+	if err != nil {
+		return "", 0, "", err
+	}
+	defer func() {
+		_ = tempFile.Close()
+	}()
+
+	hasher := sha256.New()
+	written, err := walkRawLines(reader, func(rawLine string, _ int, _, _ int) error {
+		if _, writeErr := io.WriteString(tempFile, rawLine); writeErr != nil {
+			return writeErr
+		}
+		if _, writeErr := io.WriteString(hasher, rawLine); writeErr != nil {
+			return writeErr
+		}
+		return nil
+	})
+	if err != nil {
+		_ = os.Remove(tempFile.Name())
+		return "", 0, "", err
+	}
+	writeHashMetadata(hasher, sourcePath, opts)
+	return tempFile.Name(), written, hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func writeHashMetadata(w io.Writer, sourcePath string, opts Options) {
+	_, _ = fmt.Fprintf(w, "|%s|%d|%d|%d|%s",
 		sourcePath,
 		indexSchemaVersion,
 		opts.ChunkSize,
 		opts.ChunkOverlap,
 		opts.EmbeddingModel,
-	)))
-	return hex.EncodeToString(sum[:])
+	)
 }
 
 func cleanupExpiredIndexes(baseDir string, ttl time.Duration) {
@@ -303,13 +366,9 @@ func loadIndex(indexDir string, ttl time.Duration) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	embeddingData, err := os.ReadFile(filepath.Join(indexDir, embeddingsFilename))
+	embeddings, err := readEmbeddings(filepath.Join(indexDir, embeddingsFilename))
 	if err != nil {
 		return nil, err
-	}
-	var embeddings [][]float32
-	if err := json.Unmarshal(embeddingData, &embeddings); err != nil {
-		return nil, fmt.Errorf("failed to decode embeddings: %w", err)
 	}
 	if len(chunks) != len(embeddings) {
 		return nil, errors.New("rag index corrupted: chunks and embeddings count mismatch")
@@ -320,6 +379,65 @@ func loadIndex(indexDir string, ttl time.Duration) (*Index, error) {
 		Chunks:     chunks,
 		Embeddings: embeddings,
 	}, nil
+}
+
+func writeJSONFile(path string, value any, createErr, encodeErr, closeErr string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("%s: %w", createErr, err)
+	}
+	if err := json.NewEncoder(file).Encode(value); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("%s: %w", encodeErr, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("%s: %w", closeErr, err)
+	}
+	return nil
+}
+
+func writeJSONLines[T any](path string, values []T, createErr, encodeErr, closeErr string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("%s: %w", createErr, err)
+	}
+
+	encoder := json.NewEncoder(file)
+	for _, value := range values {
+		if err := encoder.Encode(value); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("%s: %w", encodeErr, err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("%s: %w", closeErr, err)
+	}
+	return nil
+}
+
+func readJSONLines[T any](path string, maxTokenSize int, openErr, decodeErr, scanErr string) ([]T, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", openErr, err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxTokenSize)
+	values := make([]T, 0, 32)
+	for scanner.Scan() {
+		var value T
+		if err := json.Unmarshal(scanner.Bytes(), &value); err != nil {
+			return nil, fmt.Errorf("%s: %w", decodeErr, err)
+		}
+		values = append(values, value)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", scanErr, err)
+	}
+	return values, nil
 }
 
 func persistIndex(indexDir string, index *Index) error {
@@ -346,36 +464,26 @@ func persistIndex(indexDir string, index *Index) error {
 		return fmt.Errorf("failed to stat index dir: %w", err)
 	}
 
-	manifestData, err := json.Marshal(index.Manifest)
-	if err != nil {
-		return fmt.Errorf("failed to encode manifest: %w", err)
+	if err := writeJSONLines(filepath.Join(tempDir, chunksFilename), index.Chunks,
+		"failed to create chunks file",
+		"failed to write chunk metadata",
+		"failed to close chunks file",
+	); err != nil {
+		return err
 	}
-
-	chunksFile, err := os.OpenFile(filepath.Join(tempDir, chunksFilename), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("failed to create chunks file: %w", err)
+	if err := writeJSONLines(filepath.Join(tempDir, embeddingsFilename), index.Embeddings,
+		"failed to create embeddings file",
+		"failed to write embeddings",
+		"failed to close embeddings file",
+	); err != nil {
+		return err
 	}
-
-	encoder := json.NewEncoder(chunksFile)
-	for _, chunk := range index.Chunks {
-		if err := encoder.Encode(chunk); err != nil {
-			_ = chunksFile.Close()
-			return fmt.Errorf("failed to write chunk metadata: %w", err)
-		}
-	}
-	if err := chunksFile.Close(); err != nil {
-		return fmt.Errorf("failed to close chunks file: %w", err)
-	}
-
-	embeddingsData, err := json.Marshal(index.Embeddings)
-	if err != nil {
-		return fmt.Errorf("failed to encode embeddings: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(tempDir, embeddingsFilename), embeddingsData, 0o600); err != nil {
-		return fmt.Errorf("failed to write embeddings: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(tempDir, manifestFilename), manifestData, 0o600); err != nil {
-		return fmt.Errorf("failed to write manifest: %w", err)
+	if err := writeJSONFile(filepath.Join(tempDir, manifestFilename), index.Manifest,
+		"failed to create manifest file",
+		"failed to write manifest",
+		"failed to close manifest file",
+	); err != nil {
+		return err
 	}
 
 	if err := os.Rename(tempDir, indexDir); err != nil {
@@ -389,35 +497,30 @@ func persistIndex(indexDir string, index *Index) error {
 }
 
 func readChunks(path string) ([]Chunk, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open chunks file: %w", err)
-	}
-	defer func() {
-		_ = file.Close()
-	}()
+	return readJSONLines[Chunk](path, 2*1024*1024,
+		"failed to open chunks file",
+		"failed to decode chunk metadata",
+		"failed to scan chunks file",
+	)
+}
 
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
-	chunks := make([]Chunk, 0, 32)
-	for scanner.Scan() {
-		var chunk Chunk
-		if err := json.Unmarshal(scanner.Bytes(), &chunk); err != nil {
-			return nil, fmt.Errorf("failed to decode chunk metadata: %w", err)
-		}
-		chunks = append(chunks, chunk)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("failed to scan chunks file: %w", err)
-	}
-	return chunks, nil
+func readEmbeddings(path string) ([][]float32, error) {
+	return readJSONLines[[]float32](path, 8*1024*1024,
+		"failed to open embeddings file",
+		"failed to decode embedding vector",
+		"failed to scan embeddings file",
+	)
 }
 
 func chunkText(content []byte, sourcePath string, chunkSize, overlap int) []Chunk {
-	if len(content) == 0 {
+	chunks, err := chunkTextReader(bytes.NewReader(content), sourcePath, sourcePath, chunkSize, overlap)
+	if err != nil {
 		return nil
 	}
+	return chunks
+}
 
+func chunkTextReader(reader io.Reader, sourcePath, docID string, chunkSize, overlap int) ([]Chunk, error) {
 	type lineInfo struct {
 		text      string
 		byteStart int
@@ -425,82 +528,80 @@ func chunkText(content []byte, sourcePath string, chunkSize, overlap int) []Chun
 		lineNo    int
 	}
 
-	rawLines := strings.Split(string(content), "\n")
-	if len(rawLines) > 0 && rawLines[len(rawLines)-1] == "" && len(content) > 0 && content[len(content)-1] == '\n' {
-		rawLines = rawLines[:len(rawLines)-1]
-	}
-	lines := make([]lineInfo, 0, len(rawLines))
-	offset := 0
-	for i, line := range rawLines {
-		lineLen := len(line)
-		if i < len(rawLines)-1 {
-			lineLen++
-		}
-		lines = append(lines, lineInfo{
-			text:      line,
-			byteStart: offset,
-			byteLen:   lineLen,
-			lineNo:    i + 1,
-		})
-		offset += lineLen
-	}
+	window := make([]lineInfo, 0, 32)
+	chunks := make([]Chunk, 0, 32)
+	windowBytes := 0
 
-	chunks := make([]Chunk, 0, max(1, len(lines)/4))
-	for start := 0; start < len(lines); {
-		currentSize := 0
-		end := start
-		for end < len(lines) {
-			next := currentSize + lines[end].byteLen
-			if currentSize > 0 && next > chunkSize {
-				break
-			}
-			currentSize = next
-			end++
+	emitChunk := func(lines []lineInfo) {
+		if len(lines) == 0 {
+			return
 		}
-		if end == start {
-			end++
-		}
-
-		textParts := make([]string, 0, end-start)
-		for _, line := range lines[start:end] {
+		textParts := make([]string, 0, len(lines))
+		for _, line := range lines {
 			textParts = append(textParts, line.text)
 		}
 		chunks = append(chunks, Chunk{
-			DocID:      "",
+			DocID:      docID,
 			SourcePath: sourcePath,
 			ChunkID:    len(chunks),
-			StartLine:  lines[start].lineNo,
-			EndLine:    lines[end-1].lineNo,
-			ByteOffset: lines[start].byteStart,
+			StartLine:  lines[0].lineNo,
+			EndLine:    lines[len(lines)-1].lineNo,
+			ByteOffset: lines[0].byteStart,
 			Text:       strings.Join(textParts, "\n"),
 		})
+	}
 
-		if end >= len(lines) {
-			break
+	retainOverlap := func(lines []lineInfo) []lineInfo {
+		if overlap <= 0 || len(lines) == 0 {
+			windowBytes = 0
+			return nil
 		}
-
-		nextStart := end
-		if overlap > 0 {
-			backBytes := 0
-			for i := end - 1; i >= start; i-- {
-				backBytes += lines[i].byteLen
-				nextStart = i
-				if backBytes >= overlap {
-					break
-				}
+		backBytes := 0
+		start := len(lines)
+		for i := len(lines) - 1; i >= 0; i-- {
+			backBytes += lines[i].byteLen
+			start = i
+			if backBytes >= overlap {
+				break
 			}
 		}
-		if nextStart <= start {
-			nextStart = end
+		if start <= 0 {
+			windowBytes = 0
+			return nil
 		}
-		start = nextStart
+		retained := append([]lineInfo(nil), lines[start:]...)
+		windowBytes = 0
+		for _, line := range retained {
+			windowBytes += line.byteLen
+		}
+		return retained
 	}
 
-	docID := sourcePath
-	for i := range chunks {
-		chunks[i].DocID = docID
+	_, err := walkRawLines(reader, func(rawLine string, lineNo, byteStart, _ int) error {
+		line := lineInfo{
+			text:      strings.TrimSuffix(rawLine, "\n"),
+			byteStart: byteStart,
+			byteLen:   len(rawLine),
+			lineNo:    lineNo,
+		}
+
+		for len(window) > 0 && windowBytes+line.byteLen > chunkSize {
+			emitChunk(window)
+			window = retainOverlap(window)
+		}
+
+		window = append(window, line)
+		windowBytes += line.byteLen
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return chunks
+
+	if len(window) > 0 {
+		emitChunk(window)
+	}
+	return chunks, nil
 }
 
 func embedChunks(ctx context.Context, embedder llm.EmbeddingRequester, chunks []Chunk, indexMeter verbose.Meter) ([][]float32, int, int, error) {

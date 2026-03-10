@@ -2,7 +2,6 @@ package hybrid
 
 import (
 	"bufio"
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -134,7 +133,7 @@ const (
 	hybridIndexSchemaVersion = 1
 	hybridManifestFilename   = "manifest.json"
 	hybridSegmentsFilename   = "segments.jsonl"
-	hybridEmbeddingsFilename = "embeddings.json"
+	hybridEmbeddingsFilename = "embeddings.jsonl"
 )
 
 var (
@@ -170,22 +169,25 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 
 	startedAt := time.Now()
 	prepareMeter.Start(localize.T("progress.hybrid.read_input"))
-	content, err := io.ReadAll(source.Reader)
+	displayName := normalizeSourceDisplayName(source)
+	snapshot, err := spoolSourceSnapshot(source.Reader, displayName, opts)
 	if err != nil {
-		return "", fmt.Errorf("failed to read source: %w", err)
+		return "", fmt.Errorf("failed to spool source: %w", err)
 	}
-	prepareMeter.Done(localize.T("progress.hybrid.read_done", localize.Data{"Bytes": len(content)}))
-	if len(content) == 0 {
+	defer func() {
+		_ = os.Remove(snapshot.Path)
+	}()
+	prepareMeter.Done(localize.T("progress.hybrid.read_done", localize.Data{"Bytes": snapshot.Bytes}))
+	if snapshot.Bytes == 0 {
 		slog.Info("hybrid processing finished", "reason", "empty_input")
 		return localize.T("map.answer.empty_file"), nil
 	}
 
-	displayName := normalizeSourceDisplayName(source)
 	readPath := normalizeSourceReadPath(source)
 	slog.Info("hybrid processing started",
 		"source", displayName,
 		"has_file_path", strings.TrimSpace(readPath) != "",
-		"content_bytes", len(content),
+		"content_bytes", snapshot.Bytes,
 		"top_k", opts.TopK,
 		"final_k", opts.FinalK,
 		"map_k", opts.MapK,
@@ -193,8 +195,11 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 		"fallback", opts.Fallback,
 	)
 
-	profile := profileDocument(displayName, string(content))
-	micro, meso := segmentDocument(content, profile, opts)
+	profile := snapshot.Profile
+	microCount, meso, err := segmentDocumentFromFile(snapshot.Path, profile, opts)
+	if err != nil {
+		return "", fmt.Errorf("failed to segment source: %w", err)
+	}
 	if len(meso) == 0 {
 		slog.Info("hybrid processing finished", "reason", "no_segments", "source", displayName)
 		return localize.T("map.answer.no_info"), nil
@@ -202,7 +207,7 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 
 	slog.Info("hybrid document prepared",
 		"profile", profile,
-		"micro_segments", len(micro),
+		"micro_segments", microCount,
 		"meso_segments", len(meso),
 	)
 	segmentsMeter.Start(localize.T("progress.hybrid.segment_start"))
@@ -216,13 +221,13 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 
 	retrievalMeter.Note(localize.T("progress.hybrid.semantic_start"))
 	slog.Debug("hybrid semantic retrieval started", "segment_count", len(meso))
-	semanticHits, semanticErr := semanticRetrieve(ctx, embedder, displayName, content, meso, opts, question)
+	semanticHits, semanticErr := semanticRetrieve(ctx, embedder, displayName, snapshot.Hash, meso, opts, question)
 	if semanticErr != nil {
 		slog.Warn("hybrid semantic retrieval failed", "fallback", opts.Fallback, "error", semanticErr)
 		switch opts.Fallback {
 		case "map":
 			slog.Info("hybrid switching to map fallback", "reason", "semantic_retrieval_failed")
-			return fallbackToMap(ctx, chat, source, opts, question, content, nil)
+			return fallbackToMap(ctx, chat, source, opts, question, snapshot.Path, nil)
 		case "rag-only":
 			slog.Warn("hybrid semantic retrieval unavailable, continuing with lexical retrieval only", "error", semanticErr)
 		default:
@@ -244,7 +249,7 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 		slog.Warn("hybrid retrieval too weak", "regions", len(regions), "fallback", opts.Fallback)
 		if opts.Fallback == "map" {
 			slog.Info("hybrid switching to map fallback", "reason", "weak_retrieval")
-			return fallbackToMap(ctx, chat, source, opts, question, content, nil)
+			return fallbackToMap(ctx, chat, source, opts, question, snapshot.Path, nil)
 		}
 		if len(regions) == 0 {
 			slog.Info("hybrid processing finished", "reason", "no_evidence", "duration", roundDuration(time.Since(startedAt)))
@@ -308,7 +313,7 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 		extraLexical := lexicalRetrieve(followUpQuery, meso)
 		extraSemantic := []RetrievedHit(nil)
 		if semanticErr == nil {
-			extraSemantic, _ = semanticRetrieve(ctx, embedder, displayName, content, meso, opts, followUpQuery)
+			extraSemantic, _ = semanticRetrieve(ctx, embedder, displayName, snapshot.Hash, meso, opts, followUpQuery)
 		}
 		extra := fuseAndExpandRegions(extraLexical, extraSemantic, meso, readPath, displayName, opts)
 		extra = filterRegionsBySegments(extra, existing)
@@ -347,7 +352,7 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 	if err != nil {
 		if (errors.Is(err, errEmptyChatContent) || errors.Is(err, errReasoningOnlyOutput)) && opts.Fallback == "map" {
 			slog.Warn("hybrid answer synthesis returned empty content, switching to map fallback")
-			return fallbackToMap(ctx, chat, source, opts, question, content, nil)
+			return fallbackToMap(ctx, chat, source, opts, question, snapshot.Path, nil)
 		}
 		return "", err
 	}
@@ -365,40 +370,12 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 }
 
 func profileDocument(sourcePath, content string) DocumentProfile {
-	lowerPath := strings.ToLower(strings.TrimSpace(sourcePath))
-	switch {
-	case strings.HasSuffix(lowerPath, ".md"), strings.HasSuffix(lowerPath, ".markdown"):
-		return ProfileMarkdown
-	case strings.HasSuffix(lowerPath, ".log"), strings.HasSuffix(lowerPath, ".out"):
-		return ProfileLogs
-	}
-
 	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
-	headingCount := 0
-	logLikeCount := 0
+	stats := profileStats{}
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if markdownHeadingPattern.MatchString(trimmed) {
-			headingCount++
-		}
-		if logTimestampPattern.MatchString(trimmed) || logLevelPattern.MatchString(trimmed) {
-			logLikeCount++
-		}
+		collectProfileStats(line, &stats)
 	}
-
-	switch {
-	case headingCount >= 2:
-		return ProfileMarkdown
-	case logLikeCount >= 3:
-		return ProfileLogs
-	case strings.TrimSpace(content) == "":
-		return ProfileUnknown
-	default:
-		return ProfilePlain
-	}
+	return detectProfile(sourcePath, stats.headingCount, stats.logLikeCount, stats.nonEmpty)
 }
 
 type lineInfo struct {
@@ -408,6 +385,19 @@ type lineInfo struct {
 	byteEnd   int
 }
 
+type sourceSnapshot struct {
+	Path    string
+	Bytes   int
+	Profile DocumentProfile
+	Hash    string
+}
+
+type profileStats struct {
+	headingCount int
+	logLikeCount int
+	nonEmpty     bool
+}
+
 type segmentGroup struct {
 	lines []lineInfo
 	kind  string
@@ -415,6 +405,18 @@ type segmentGroup struct {
 
 func segmentDocument(content []byte, profile DocumentProfile, opts Options) ([]Segment, []Segment) {
 	lines := splitLines(content)
+	return segmentLines(lines, profile, opts)
+}
+
+func segmentDocumentFromFile(path string, profile DocumentProfile, opts Options) (int, []Segment, error) {
+	lines, err := readLines(path)
+	if err != nil {
+		return 0, nil, err
+	}
+	return microSegmentCount(lines, opts.ReadWindow), buildMesoSegments(lines, profile, opts), nil
+}
+
+func segmentLines(lines []lineInfo, profile DocumentProfile, opts Options) ([]Segment, []Segment) {
 	if len(lines) == 0 {
 		return nil, nil
 	}
@@ -422,6 +424,14 @@ func segmentDocument(content []byte, profile DocumentProfile, opts Options) ([]S
 	micro := buildMicroSegments(lines, opts.ReadWindow)
 	meso := buildMesoSegments(lines, profile, opts)
 	return micro, meso
+}
+
+func microSegmentCount(lines []lineInfo, readWindow int) int {
+	if len(lines) == 0 {
+		return 0
+	}
+	window := max(readWindow*2+1, 8)
+	return (len(lines) + window - 1) / window
 }
 
 func splitLines(content []byte) []lineInfo {
@@ -448,9 +458,133 @@ func splitLines(content []byte) []lineInfo {
 	return lines
 }
 
+func collectProfileStats(text string, stats *profileStats) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return
+	}
+	stats.nonEmpty = true
+	if markdownHeadingPattern.MatchString(trimmed) {
+		stats.headingCount++
+	}
+	if logTimestampPattern.MatchString(trimmed) || logLevelPattern.MatchString(trimmed) {
+		stats.logLikeCount++
+	}
+}
+
+func walkRawLines(reader io.Reader, onLine func(rawLine, text string, lineNo, byteStart, byteEnd int) error) (int, error) {
+	buffered := bufio.NewReader(reader)
+	byteOffset := 0
+	lineNo := 1
+
+	for {
+		rawLine, err := buffered.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return byteOffset, err
+		}
+		if rawLine == "" && errors.Is(err, io.EOF) {
+			break
+		}
+
+		nextOffset := byteOffset + len(rawLine)
+		text := strings.TrimSuffix(rawLine, "\n")
+		if err := onLine(rawLine, text, lineNo, byteOffset, nextOffset); err != nil {
+			return byteOffset, err
+		}
+		byteOffset = nextOffset
+		lineNo++
+
+		if errors.Is(err, io.EOF) {
+			break
+		}
+	}
+	return byteOffset, nil
+}
+
+func readLines(path string) ([]lineInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	lines := make([]lineInfo, 0, 128)
+	_, err = walkRawLines(file, func(_ string, text string, lineNo, byteStart, byteEnd int) error {
+		lines = append(lines, lineInfo{
+			text:      text,
+			lineNo:    lineNo,
+			byteStart: byteStart,
+			byteEnd:   byteEnd,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return lines, nil
+}
+
+func spoolSourceSnapshot(reader io.Reader, sourcePath string, opts Options) (*sourceSnapshot, error) {
+	tempFile, err := os.CreateTemp("", "ragcli-hybrid-source-*")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = tempFile.Close()
+	}()
+
+	hasher := sha256.New()
+	stats := profileStats{}
+
+	byteCount, err := walkRawLines(reader, func(rawLine, text string, _ int, _, _ int) error {
+		if _, writeErr := io.WriteString(tempFile, rawLine); writeErr != nil {
+			return writeErr
+		}
+		if _, writeErr := io.WriteString(hasher, rawLine); writeErr != nil {
+			return writeErr
+		}
+		collectProfileStats(text, &stats)
+		return nil
+	})
+	if err != nil {
+		_ = os.Remove(tempFile.Name())
+		return nil, err
+	}
+
+	writeHashMetadata(hasher, sourcePath, opts)
+
+	return &sourceSnapshot{
+		Path:    tempFile.Name(),
+		Bytes:   byteCount,
+		Profile: detectProfile(sourcePath, stats.headingCount, stats.logLikeCount, stats.nonEmpty),
+		Hash:    hex.EncodeToString(hasher.Sum(nil)),
+	}, nil
+}
+
+func detectProfile(sourcePath string, headingCount, logLikeCount int, nonEmpty bool) DocumentProfile {
+	lowerPath := strings.ToLower(strings.TrimSpace(sourcePath))
+	switch {
+	case strings.HasSuffix(lowerPath, ".md"), strings.HasSuffix(lowerPath, ".markdown"):
+		return ProfileMarkdown
+	case strings.HasSuffix(lowerPath, ".log"), strings.HasSuffix(lowerPath, ".out"):
+		return ProfileLogs
+	}
+
+	switch {
+	case headingCount >= 2:
+		return ProfileMarkdown
+	case logLikeCount >= 3:
+		return ProfileLogs
+	case !nonEmpty:
+		return ProfileUnknown
+	default:
+		return ProfilePlain
+	}
+}
+
 func buildMicroSegments(lines []lineInfo, readWindow int) []Segment {
 	window := max(readWindow*2+1, 8)
-	segments := make([]Segment, 0, max(1, len(lines)/window))
+	segments := make([]Segment, 0, microSegmentCount(lines, readWindow))
 	for start := 0; start < len(lines); start += window {
 		end := min(start+window, len(lines))
 		segments = append(segments, buildSegment(len(segments), "micro", "window", lines[start:end]))
@@ -728,8 +862,8 @@ func questionTokensString(tokens []string) string {
 	return strings.Join(tokens, " ")
 }
 
-func semanticRetrieve(ctx context.Context, embedder llm.EmbeddingRequester, sourcePath string, content []byte, segments []Segment, opts Options, question string) ([]RetrievedHit, error) {
-	index, err := buildOrLoadIndex(ctx, embedder, sourcePath, content, segments, opts)
+func semanticRetrieve(ctx context.Context, embedder llm.EmbeddingRequester, sourcePath, inputHash string, segments []Segment, opts Options, question string) ([]RetrievedHit, error) {
+	index, err := buildOrLoadIndex(ctx, embedder, sourcePath, inputHash, segments, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -793,14 +927,13 @@ func trimSemanticHits(hits []RetrievedHit, topK int) []RetrievedHit {
 	return trimmed
 }
 
-func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sourcePath string, content []byte, segments []Segment, opts Options) (*cachedIndex, error) {
+func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sourcePath, inputHash string, segments []Segment, opts Options) (*cachedIndex, error) {
 	if err := os.MkdirAll(opts.IndexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create hybrid index dir: %w", err)
 	}
 	cleanupExpiredIndexes(opts.IndexDir, opts.IndexTTL)
 
-	hash := hashInput(content, sourcePath, opts)
-	indexDir := filepath.Join(opts.IndexDir, "hybrid-"+hash)
+	indexDir := filepath.Join(opts.IndexDir, "hybrid-"+inputHash)
 	if cached, err := loadIndex(indexDir, opts.IndexTTL); err == nil {
 		return cached, nil
 	}
@@ -814,7 +947,7 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 		Manifest: indexManifest{
 			SchemaVersion:  hybridIndexSchemaVersion,
 			CreatedAt:      time.Now().UTC(),
-			InputHash:      hash,
+			InputHash:      inputHash,
 			SourcePath:     sourcePath,
 			EmbeddingModel: opts.EmbeddingModel,
 			ChunkSize:      opts.ChunkSize,
@@ -831,16 +964,14 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 	return index, nil
 }
 
-func hashInput(content []byte, sourcePath string, opts Options) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d|%d|%d|%s",
-		content,
+func writeHashMetadata(w io.Writer, sourcePath string, opts Options) {
+	_, _ = fmt.Fprintf(w, "|%s|%d|%d|%d|%s",
 		sourcePath,
 		hybridIndexSchemaVersion,
 		opts.ChunkSize,
 		opts.ChunkOverlap,
 		opts.EmbeddingModel,
-	)))
-	return hex.EncodeToString(sum[:])
+	)
 }
 
 func cleanupExpiredIndexes(baseDir string, ttl time.Duration) {
@@ -885,13 +1016,9 @@ func loadIndex(indexDir string, ttl time.Duration) (*cachedIndex, error) {
 	if err != nil {
 		return nil, err
 	}
-	embeddingData, err := os.ReadFile(filepath.Join(indexDir, hybridEmbeddingsFilename))
+	embeddings, err := readEmbeddings(filepath.Join(indexDir, hybridEmbeddingsFilename))
 	if err != nil {
 		return nil, err
-	}
-	var embeddings [][]float32
-	if err := json.Unmarshal(embeddingData, &embeddings); err != nil {
-		return nil, fmt.Errorf("failed to decode hybrid embeddings: %w", err)
 	}
 	if len(segments) != len(embeddings) {
 		return nil, errors.New("hybrid index corrupted")
@@ -916,18 +1043,30 @@ func persistIndex(indexDir string, index *cachedIndex) error {
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
-	manifestData, err := json.Marshal(index.Manifest)
+	manifestFile, err := os.OpenFile(filepath.Join(tempDir, hybridManifestFilename), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	embeddingsData, err := json.Marshal(index.Embeddings)
+	if err := json.NewEncoder(manifestFile).Encode(index.Manifest); err != nil {
+		_ = manifestFile.Close()
+		return err
+	}
+	if err := manifestFile.Close(); err != nil {
+		return err
+	}
+
+	embeddingsFile, err := os.OpenFile(filepath.Join(tempDir, hybridEmbeddingsFilename), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(tempDir, hybridManifestFilename), manifestData, 0o600); err != nil {
-		return err
+	embeddingEncoder := json.NewEncoder(embeddingsFile)
+	for _, embedding := range index.Embeddings {
+		if err := embeddingEncoder.Encode(embedding); err != nil {
+			_ = embeddingsFile.Close()
+			return err
+		}
 	}
-	if err := os.WriteFile(filepath.Join(tempDir, hybridEmbeddingsFilename), embeddingsData, 0o600); err != nil {
+	if err := embeddingsFile.Close(); err != nil {
 		return err
 	}
 
@@ -973,6 +1112,29 @@ func readSegments(path string) ([]Segment, error) {
 		return nil, err
 	}
 	return segments, nil
+}
+
+func readEmbeddings(path string) ([][]float32, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	embeddings := make([][]float32, 0, 32)
+	for scanner.Scan() {
+		var embedding []float32
+		if err := json.Unmarshal(scanner.Bytes(), &embedding); err != nil {
+			return nil, err
+		}
+		embeddings = append(embeddings, embedding)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return embeddings, nil
 }
 
 func embedSegments(ctx context.Context, embedder llm.EmbeddingRequester, segments []Segment) ([][]float32, error) {
@@ -1416,9 +1578,15 @@ func mergeFactBlocks(left, right string) string {
 	return normalizeFacts(combined)
 }
 
-func fallbackToMap(ctx context.Context, chat llm.ChatAutoContextRequester, source Source, opts Options, question string, content []byte, plan *verbose.Plan) (string, error) {
+func fallbackToMap(ctx context.Context, chat llm.ChatAutoContextRequester, source Source, opts Options, question string, sourcePath string, plan *verbose.Plan) (string, error) {
 	slog.Debug("hybrid map fallback started", "chunk_length_mode", "auto_or_default")
-	return mapmode.Run(ctx, chat, bytes.NewReader(content), mapmode.Options{
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open fallback source: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	return mapmode.Run(ctx, chat, file, mapmode.Options{
 		InputPath:      source.Path,
 		Concurrency:    1,
 		ChunkLength:    10000,

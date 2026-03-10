@@ -387,8 +387,7 @@ func TestPersistedIndexFilesExist(t *testing.T) {
 		t.Fatalf("buildOrLoadIndex() error = %v", err)
 	}
 
-	hash := hashInput([]byte("one\ntwo\nthree\nfour\n"), "source.txt", cfg)
-	indexDir := filepath.Join(tempDir, hash)
+	indexDir := filepath.Join(tempDir, index.Manifest.InputHash)
 	for _, name := range []string{manifestFilename, chunksFilename, embeddingsFilename} {
 		if _, err := os.Stat(filepath.Join(indexDir, name)); err != nil {
 			t.Fatalf("os.Stat(%s) error = %v", name, err)
@@ -396,6 +395,11 @@ func TestPersistedIndexFilesExist(t *testing.T) {
 	}
 	if index.Manifest.ChunkCount == 0 {
 		t.Fatal("manifest chunk count = 0, want persisted chunks")
+	}
+	for _, chunk := range index.Chunks {
+		if chunk.DocID != index.Manifest.DocID {
+			t.Fatalf("chunk.DocID = %q, want manifest DocID %q", chunk.DocID, index.Manifest.DocID)
+		}
 	}
 }
 
@@ -480,8 +484,16 @@ func TestBuildOrLoadIndexConcurrentWritersSharePublishedIndex(t *testing.T) {
 		}
 	}
 
-	hash := hashInput([]byte(content), "source.txt", cfg)
-	indexDir := filepath.Join(cfg.IndexDir, hash)
+	index, err := buildOrLoadIndex(context.Background(), embedder, Source{
+		Path:        "/tmp/source.txt",
+		DisplayName: "source.txt",
+		Reader:      strings.NewReader(content),
+	}, cfg, &pipelineStats{}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("buildOrLoadIndex() verification error = %v", err)
+	}
+
+	indexDir := filepath.Join(cfg.IndexDir, index.Manifest.InputHash)
 	for _, name := range []string{manifestFilename, chunksFilename, embeddingsFilename} {
 		if _, err := os.Stat(filepath.Join(indexDir, name)); err != nil {
 			t.Fatalf("expected published index file %s: %v", name, err)
