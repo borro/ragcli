@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/borro/ragcli/internal/localize"
 )
 
 type readCloser interface {
@@ -35,7 +37,7 @@ func Open(path string, stdin io.Reader) (*Handle, error) {
 	if path != "" {
 		file, err := openFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("failed to open file: %w", err)
+			return nil, fmt.Errorf("%s", localize.T("error.input.open_file", localize.Data{"Error": err}))
 		}
 		return &Handle{
 			Reader:      file,
@@ -51,23 +53,23 @@ func Open(path string, stdin io.Reader) (*Handle, error) {
 
 	tmpFile, err := createTemp("", "ragcli-stdin-*.txt")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file: %w", err)
+		return nil, fmt.Errorf("%s", localize.T("error.input.create_temp", localize.Data{"Error": err}))
 	}
 
 	if _, err := io.Copy(tmpFile, stdin); err != nil {
 		_ = tmpFile.Close()
 		_ = os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("failed to read stdin: %w", err)
+		return nil, fmt.Errorf("%s", localize.T("error.input.read_stdin", localize.Data{"Error": err}))
 	}
 	if err := tmpFile.Close(); err != nil {
 		_ = os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("failed to close temp file: %w", err)
+		return nil, fmt.Errorf("%s", localize.T("error.input.close_temp", localize.Data{"Error": err}))
 	}
 
 	reader, err := openFile(tmpFile.Name())
 	if err != nil {
 		_ = os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("failed to reopen temp file: %w", err)
+		return nil, fmt.Errorf("%s", localize.T("error.input.reopen_temp", localize.Data{"Error": err}))
 	}
 
 	return &Handle{

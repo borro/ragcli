@@ -19,6 +19,7 @@ import (
 	"github.com/borro/ragcli/internal/app/tools"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/logging"
 	"github.com/borro/ragcli/internal/verbose"
 	"github.com/joho/godotenv"
@@ -32,6 +33,11 @@ func Run(args []string, stdout io.Writer, stderr io.Writer, stdin io.Reader, ver
 
 	envErr := godotenv.Load()
 	adjustedArgs := applyPromptArgCompatibility(args)
+	localeCode, _ := localize.Detect(adjustedArgs)
+	if err := localize.SetCurrent(localeCode); err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 1
+	}
 	debug := debugEnabled(adjustedArgs)
 	logging.Configure(stderr, debug)
 
@@ -112,7 +118,7 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 	reporter := verbose.New(stderr, cmd.Common.Verbose, cmd.Common.Debug)
 	plan := progressPlanForCommand(cmd.Name, reporter)
 	prepareMeter := plan.Stage("prepare")
-	prepareMeter.Start("открываю входные данные")
+	prepareMeter.Start(localize.T("progress.detail.prepare.open_input"))
 
 	slog.Info("application run started",
 		"args_count", argsCount,
@@ -157,7 +163,7 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 		"input_source", handle.DisplayName,
 		"has_path", strings.TrimSpace(handle.Path) != "",
 	)
-	prepareMeter.Done("входные данные готовы")
+	prepareMeter.Done(localize.T("progress.detail.prepare.input_ready"))
 	slog.Debug("creating llm client",
 		"command", cmd.Name,
 		"api_url_set", strings.TrimSpace(cmd.LLM.APIURL) != "",
@@ -200,7 +206,7 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 			Reader:      handle.Reader,
 		}, cmd.RAG, cmd.Common.Prompt, plan)
 	default:
-		err = fmt.Errorf("unknown subcommand: %s", cmd.Name)
+		err = fmt.Errorf("%s", localize.T("error.app.unknown_subcommand", localize.Data{"Name": cmd.Name}))
 	}
 	if err != nil {
 		return err
@@ -226,40 +232,40 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 func progressPlanForCommand(command string, reporter verbose.Reporter) *verbose.Plan {
 	switch command {
 	case "map":
-		return verbose.NewPlan(reporter, "map",
-			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
-			verbose.StageDef{Key: "chunking", Label: "чанкинг", Slots: 4},
-			verbose.StageDef{Key: "chunks", Label: "обработка чанков", Slots: 9},
-			verbose.StageDef{Key: "reduce", Label: "reduce", Slots: 5},
-			verbose.StageDef{Key: "verify", Label: "проверка ответа", Slots: 2},
-			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+		return verbose.NewPlan(reporter, localize.T("progress.mode.map"),
+			verbose.StageDef{Key: "prepare", Label: localize.T("progress.stage.prepare"), Slots: 2},
+			verbose.StageDef{Key: "chunking", Label: localize.T("progress.stage.chunking"), Slots: 4},
+			verbose.StageDef{Key: "chunks", Label: localize.T("progress.stage.chunks"), Slots: 9},
+			verbose.StageDef{Key: "reduce", Label: localize.T("progress.stage.reduce"), Slots: 5},
+			verbose.StageDef{Key: "verify", Label: localize.T("progress.stage.verify"), Slots: 2},
+			verbose.StageDef{Key: "final", Label: localize.T("progress.stage.final"), Slots: 2},
 		)
 	case "tools":
-		return verbose.NewPlan(reporter, "tools",
-			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
-			verbose.StageDef{Key: "init", Label: "инициализация", Slots: 2},
-			verbose.StageDef{Key: "loop", Label: "LLM turn", Slots: 18},
-			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+		return verbose.NewPlan(reporter, localize.T("progress.mode.tools"),
+			verbose.StageDef{Key: "prepare", Label: localize.T("progress.stage.prepare"), Slots: 2},
+			verbose.StageDef{Key: "init", Label: localize.T("progress.stage.init"), Slots: 2},
+			verbose.StageDef{Key: "loop", Label: localize.T("progress.stage.loop"), Slots: 18},
+			verbose.StageDef{Key: "final", Label: localize.T("progress.stage.final"), Slots: 2},
 		)
 	case "hybrid":
-		return verbose.NewPlan(reporter, "hybrid",
-			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
-			verbose.StageDef{Key: "segments", Label: "сегментация", Slots: 2},
-			verbose.StageDef{Key: "retrieval", Label: "retrieval", Slots: 9},
-			verbose.StageDef{Key: "grounding", Label: "grounding", Slots: 4},
-			verbose.StageDef{Key: "facts", Label: "извлечение фактов", Slots: 3},
-			verbose.StageDef{Key: "coverage", Label: "coverage", Slots: 2},
-			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+		return verbose.NewPlan(reporter, localize.T("progress.mode.hybrid"),
+			verbose.StageDef{Key: "prepare", Label: localize.T("progress.stage.prepare"), Slots: 2},
+			verbose.StageDef{Key: "segments", Label: localize.T("progress.stage.segments"), Slots: 2},
+			verbose.StageDef{Key: "retrieval", Label: localize.T("progress.stage.retrieval"), Slots: 9},
+			verbose.StageDef{Key: "grounding", Label: localize.T("progress.stage.grounding"), Slots: 4},
+			verbose.StageDef{Key: "facts", Label: localize.T("progress.stage.facts"), Slots: 3},
+			verbose.StageDef{Key: "coverage", Label: localize.T("progress.stage.coverage"), Slots: 2},
+			verbose.StageDef{Key: "final", Label: localize.T("progress.stage.final"), Slots: 2},
 		)
 	case "rag":
-		return verbose.NewPlan(reporter, "rag",
-			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
-			verbose.StageDef{Key: "index", Label: "индекс", Slots: 8},
-			verbose.StageDef{Key: "retrieval", Label: "retrieval", Slots: 7},
-			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 7},
+		return verbose.NewPlan(reporter, localize.T("progress.mode.rag"),
+			verbose.StageDef{Key: "prepare", Label: localize.T("progress.stage.prepare"), Slots: 2},
+			verbose.StageDef{Key: "index", Label: localize.T("progress.stage.index"), Slots: 8},
+			verbose.StageDef{Key: "retrieval", Label: localize.T("progress.stage.retrieval"), Slots: 7},
+			verbose.StageDef{Key: "final", Label: localize.T("progress.stage.final"), Slots: 7},
 		)
 	default:
-		return verbose.NewPlan(reporter, command, verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 1})
+		return verbose.NewPlan(reporter, command, verbose.StageDef{Key: "prepare", Label: localize.T("progress.stage.prepare"), Slots: 1})
 	}
 }
 

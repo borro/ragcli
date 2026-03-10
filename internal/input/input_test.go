@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/borro/ragcli/internal/localize"
 )
 
 type failingReader struct {
@@ -44,6 +46,13 @@ func stubInputDeps(t *testing.T) {
 	})
 }
 
+func initLocale(t *testing.T) {
+	t.Helper()
+	if err := localize.SetCurrent(localize.EN); err != nil {
+		t.Fatalf("SetCurrent(en) error = %v", err)
+	}
+}
+
 func TestOpenFile(t *testing.T) {
 	filePath := t.TempDir() + "/sample.txt"
 	if err := os.WriteFile(filePath, []byte("hello"), 0o600); err != nil {
@@ -74,6 +83,7 @@ func TestOpenFile(t *testing.T) {
 }
 
 func TestOpenFileMissing(t *testing.T) {
+	initLocale(t)
 	_, err := Open(t.TempDir()+"/missing.txt", nil)
 	if err == nil {
 		t.Fatal("Open() error = nil, want error")
@@ -139,6 +149,7 @@ func TestOpenUsesDefaultStdinWhenNil(t *testing.T) {
 }
 
 func TestOpenCreateTempError(t *testing.T) {
+	initLocale(t)
 	stubInputDeps(t)
 	wantErr := errors.New("create temp failed")
 	createTemp = func(_, _ string) (tempFile, error) {
@@ -158,6 +169,7 @@ func TestOpenCreateTempError(t *testing.T) {
 }
 
 func TestOpenReadStdinError(t *testing.T) {
+	initLocale(t)
 	stubInputDeps(t)
 	wantErr := errors.New("stdin read failed")
 
@@ -174,6 +186,7 @@ func TestOpenReadStdinError(t *testing.T) {
 }
 
 func TestOpenCloseTempFileError(t *testing.T) {
+	initLocale(t)
 	stubInputDeps(t)
 	wantErr := errors.New("close temp failed")
 	createTemp = func(_, _ string) (tempFile, error) {
@@ -193,6 +206,7 @@ func TestOpenCloseTempFileError(t *testing.T) {
 }
 
 func TestOpenReopenTempFileError(t *testing.T) {
+	initLocale(t)
 	stubInputDeps(t)
 	wantErr := errors.New("reopen failed")
 	originalOpenFile := openFile

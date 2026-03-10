@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/borro/ragcli/internal/localize"
 	"github.com/charmbracelet/glamour"
 	"golang.org/x/term"
 )
@@ -45,12 +46,12 @@ func formatOutput(result string, stdout io.Writer, raw bool) (string, error) {
 
 	renderer, err := glamour.NewTermRenderer(options...)
 	if err != nil {
-		return "", fmt.Errorf("create renderer: %w", err)
+		return "", fmt.Errorf("%s", localize.T("error.output.create_renderer", localize.Data{"Error": err}))
 	}
 
 	rendered, err := renderer.Render(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("render markdown: %w", err)
+		return "", fmt.Errorf("%s", localize.T("error.output.render_markdown", localize.Data{"Error": err}))
 	}
 	return strings.TrimSpace(rendered), nil
 }

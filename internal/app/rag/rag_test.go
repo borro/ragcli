@@ -11,10 +11,25 @@ import (
 	"time"
 
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/testutil"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
+
+func setRussianLocale(t *testing.T) {
+	t.Helper()
+	if err := localize.SetCurrent(localize.RU); err != nil {
+		t.Fatalf("SetCurrent(ru) error = %v", err)
+	}
+}
+
+func TestMain(m *testing.M) {
+	if err := localize.SetCurrent(localize.RU); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
 
 type fakeEmbedder struct {
 	mu          sync.Mutex
@@ -234,6 +249,7 @@ func TestRunReturnsAnswerWithCitations(t *testing.T) {
 }
 
 func TestRunReturnsHonestInsufficientAnswer(t *testing.T) {
+	setRussianLocale(t)
 	cfg := Options{
 		EmbeddingModel: "embed",
 		TopK:           3,

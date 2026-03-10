@@ -11,9 +11,24 @@ import (
 	"testing"
 
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
+
+func setRussianLocale(t *testing.T) {
+	t.Helper()
+	if err := localize.SetCurrent(localize.RU); err != nil {
+		t.Fatalf("SetCurrent(ru) error = %v", err)
+	}
+}
+
+func TestMain(m *testing.M) {
+	if err := localize.SetCurrent(localize.RU); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
 
 type scriptedRequester struct {
 	responses []*openai.ChatCompletionResponse
@@ -45,6 +60,7 @@ func (s *scriptedRequester) SendRequestWithMetrics(_ context.Context, req openai
 }
 
 func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
+	setRussianLocale(t)
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "Готовый ответ", nil)),
@@ -68,6 +84,7 @@ func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 }
 
 func TestRunTools_VerboseEmitsSingleFinalCompletionLine(t *testing.T) {
+	setRussianLocale(t)
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "Готовый ответ", nil)),
@@ -98,6 +115,7 @@ func TestRunTools_VerboseEmitsSingleFinalCompletionLine(t *testing.T) {
 }
 
 func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
+	setRussianLocale(t)
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", nil)),
@@ -125,6 +143,7 @@ func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
 }
 
 func TestRunTools_MultiStepToolLoop(t *testing.T) {
+	setRussianLocale(t)
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "Сначала найду раздел.", []openai.ToolCall{
@@ -199,6 +218,7 @@ func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
 }
 
 func TestRunTools_ToolErrorJSONDoesNotBreakLoop(t *testing.T) {
+	setRussianLocale(t)
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "", []openai.ToolCall{
@@ -365,6 +385,7 @@ func TestToolLoopState_ReadAroundSeenLinesMarksNoProgress(t *testing.T) {
 }
 
 func TestRunTools_SystemPromptMentionsAgentPolicy(t *testing.T) {
+	setRussianLocale(t)
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "ok", nil)),
@@ -392,6 +413,7 @@ func TestRunTools_SystemPromptMentionsAgentPolicy(t *testing.T) {
 }
 
 func TestRunTools_UserPromptMentionsToolsFileContext(t *testing.T) {
+	setRussianLocale(t)
 	client := &scriptedRequester{
 		responses: []*openai.ChatCompletionResponse{
 			chatResponse(message("assistant", "ok", nil)),

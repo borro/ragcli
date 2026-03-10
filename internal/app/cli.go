@@ -12,6 +12,7 @@ import (
 	mapmode "github.com/borro/ragcli/internal/app/map"
 	"github.com/borro/ragcli/internal/app/rag"
 	"github.com/borro/ragcli/internal/app/tools"
+	"github.com/borro/ragcli/internal/localize"
 	"github.com/urfave/cli/v3"
 )
 
@@ -30,18 +31,19 @@ func newCLI(cfg cliConfig) *cli.Command {
 	cli.ShowCommandHelp = showCommandHelp
 	cli.VersionFlag = &cli.BoolFlag{
 		Name:        "version",
-		Usage:       "print the version",
+		Usage:       localize.T("cli.version.flag.usage"),
 		HideDefault: true,
 		Local:       true,
 	}
 
 	return &cli.Command{
 		Name:                  "ragcli",
-		Usage:                 "Work with local text through map, RAG, and tool-based retrieval",
+		Usage:                 localize.T("cli.root.usage"),
 		Version:               strings.TrimSpace(cfg.version),
 		Flags:                 globalFlags(),
 		Action:                showRootHelp,
 		OnUsageError:          showUsageHelp,
+		Before:                validateGlobalLocale,
 		Commands:              buildCLICommands(cfg),
 		Writer:                cfg.stdout,
 		ErrWriter:             cfg.stderr,
@@ -55,20 +57,20 @@ func buildCLICommands(cfg cliConfig) []*cli.Command {
 	commands := []*cli.Command{
 		newPromptCLICommand(promptCommandConfig{
 			name:        "map",
-			usage:       "Обработать большой текст чанками через map-reduce",
+			usage:       localize.T("cli.command.map.usage"),
 			description: mapCommandDescription(),
 			flags: []cli.Flag{
 				&cli.IntFlag{
 					Name:    "concurrency",
 					Aliases: []string{"c"},
-					Usage:   "Количество параллельных запросов к chat-модели.",
+					Usage:   localize.T("cli.flag.map.concurrency.usage"),
 					Value:   1,
 					Sources: cli.EnvVars("CONCURRENCY"),
 				},
 				&cli.IntFlag{
 					Name:    "length",
 					Aliases: []string{"l"},
-					Usage:   "Строгий override лимита токенов на chunk для map; без него включается автоопределение.",
+					Usage:   localize.T("cli.flag.map.length.usage"),
 					Value:   10000,
 					Sources: cli.EnvVars("LENGTH"),
 				},
@@ -78,54 +80,54 @@ func buildCLICommands(cfg cliConfig) []*cli.Command {
 		}),
 		newPromptCLICommand(promptCommandConfig{
 			name:        "rag",
-			usage:       "Построить локальный retrieval index и ответить по evidence chunks",
+			usage:       localize.T("cli.command.rag.usage"),
 			description: ragCommandDescription(),
 			flags: []cli.Flag{
 				&cli.StringFlag{
 					Name:    "embedding-model",
-					Usage:   "Embedding-модель для retrieval index.",
+					Usage:   localize.T("cli.flag.rag.embedding_model.usage"),
 					Value:   defaultLLMOptions().EmbeddingModel,
 					Sources: cli.EnvVars("EMBEDDING_MODEL"),
 				},
 				&cli.IntFlag{
 					Name:    "rag-top-k",
-					Usage:   "Сколько чанков взять после vector search.",
+					Usage:   localize.T("cli.flag.rag.top_k.usage"),
 					Value:   8,
 					Sources: cli.EnvVars("RAG_TOP_K"),
 				},
 				&cli.IntFlag{
 					Name:    "rag-final-k",
-					Usage:   "Сколько evidence chunks оставить перед финальным ответом.",
+					Usage:   localize.T("cli.flag.rag.final_k.usage"),
 					Value:   4,
 					Sources: cli.EnvVars("RAG_FINAL_K"),
 				},
 				&cli.IntFlag{
 					Name:    "rag-chunk-size",
-					Usage:   "Размер чанка для индекса.",
+					Usage:   localize.T("cli.flag.rag.chunk_size.usage"),
 					Value:   1800,
 					Sources: cli.EnvVars("RAG_CHUNK_SIZE"),
 				},
 				&cli.IntFlag{
 					Name:    "rag-chunk-overlap",
-					Usage:   "Перекрытие между соседними чанками.",
+					Usage:   localize.T("cli.flag.rag.chunk_overlap.usage"),
 					Value:   200,
 					Sources: cli.EnvVars("RAG_CHUNK_OVERLAP"),
 				},
 				&cli.DurationFlag{
 					Name:    "rag-index-ttl",
-					Usage:   "Время жизни локального индекса.",
+					Usage:   localize.T("cli.flag.rag.index_ttl.usage"),
 					Value:   24 * time.Hour,
 					Sources: cli.EnvVars("RAG_INDEX_TTL"),
 				},
 				&cli.StringFlag{
 					Name:    "rag-index-dir",
-					Usage:   "Каталог локального индекса.",
+					Usage:   localize.T("cli.flag.rag.index_dir.usage"),
 					Value:   defaultRAGIndexDir(),
 					Sources: cli.EnvVars("RAG_INDEX_DIR"),
 				},
 				&cli.StringFlag{
 					Name:    "rag-rerank",
-					Usage:   "Стратегия rerank: heuristic, off, model.",
+					Usage:   localize.T("cli.flag.rag.rerank.usage"),
 					Value:   "heuristic",
 					Sources: cli.EnvVars("RAG_RERANK"),
 				},
@@ -135,66 +137,66 @@ func buildCLICommands(cfg cliConfig) []*cli.Command {
 		}),
 		newPromptCLICommand(promptCommandConfig{
 			name:        "hybrid",
-			usage:       "Комбинировать retrieval, локальное дочитывание и map-агрегацию",
+			usage:       localize.T("cli.command.hybrid.usage"),
 			description: hybridCommandDescription(),
 			flags: []cli.Flag{
 				&cli.StringFlag{
 					Name:    "embedding-model",
-					Usage:   "Embedding-модель для semantic retrieval.",
+					Usage:   localize.T("cli.flag.hybrid.embedding_model.usage"),
 					Value:   defaultLLMOptions().EmbeddingModel,
 					Sources: cli.EnvVars("EMBEDDING_MODEL"),
 				},
 				&cli.IntFlag{
 					Name:    "rag-chunk-size",
-					Usage:   "Целевой размер meso-сегмента для semantic retrieval.",
+					Usage:   localize.T("cli.flag.hybrid.chunk_size.usage"),
 					Value:   1800,
 					Sources: cli.EnvVars("RAG_CHUNK_SIZE"),
 				},
 				&cli.IntFlag{
 					Name:    "rag-chunk-overlap",
-					Usage:   "Перекрытие соседних meso-сегментов.",
+					Usage:   localize.T("cli.flag.hybrid.chunk_overlap.usage"),
 					Value:   200,
 					Sources: cli.EnvVars("RAG_CHUNK_OVERLAP"),
 				},
 				&cli.DurationFlag{
 					Name:    "rag-index-ttl",
-					Usage:   "Время жизни локального semantic индекса.",
+					Usage:   localize.T("cli.flag.hybrid.index_ttl.usage"),
 					Value:   24 * time.Hour,
 					Sources: cli.EnvVars("RAG_INDEX_TTL"),
 				},
 				&cli.StringFlag{
 					Name:    "rag-index-dir",
-					Usage:   "Каталог локального semantic индекса.",
+					Usage:   localize.T("cli.flag.hybrid.index_dir.usage"),
 					Value:   defaultRAGIndexDir(),
 					Sources: cli.EnvVars("RAG_INDEX_DIR"),
 				},
 				&cli.IntFlag{
 					Name:    "hybrid-top-k",
-					Usage:   "Сколько fusion-кандидатов брать после retrieval.",
+					Usage:   localize.T("cli.flag.hybrid.top_k.usage"),
 					Value:   8,
 					Sources: cli.EnvVars("HYBRID_TOP_K"),
 				},
 				&cli.IntFlag{
 					Name:    "hybrid-final-k",
-					Usage:   "Сколько регионов оставить для финального синтеза.",
+					Usage:   localize.T("cli.flag.hybrid.final_k.usage"),
 					Value:   4,
 					Sources: cli.EnvVars("HYBRID_FINAL_K"),
 				},
 				&cli.IntFlag{
 					Name:    "hybrid-map-k",
-					Usage:   "По скольким регионам запускать map-извлечение фактов.",
+					Usage:   localize.T("cli.flag.hybrid.map_k.usage"),
 					Value:   4,
 					Sources: cli.EnvVars("HYBRID_MAP_K"),
 				},
 				&cli.IntFlag{
 					Name:    "hybrid-read-window",
-					Usage:   "Сколько строк дочитывать вокруг сильного совпадения.",
+					Usage:   localize.T("cli.flag.hybrid.read_window.usage"),
 					Value:   3,
 					Sources: cli.EnvVars("HYBRID_READ_WINDOW"),
 				},
 				&cli.StringFlag{
 					Name:    "hybrid-fallback",
-					Usage:   "Fallback при слабом retrieval или недоступных embeddings: map, rag-only, fail.",
+					Usage:   localize.T("cli.flag.hybrid.fallback.usage"),
 					Value:   "map",
 					Sources: cli.EnvVars("HYBRID_FALLBACK"),
 				},
@@ -204,7 +206,7 @@ func buildCLICommands(cfg cliConfig) []*cli.Command {
 		}),
 		newPromptCLICommand(promptCommandConfig{
 			name:        "tools",
-			usage:       "Дать модели инструменты для точечного исследования файла",
+			usage:       localize.T("cli.command.tools.usage"),
 			description: toolsCommandDescription(),
 			bind:        bindToolsCommand,
 			execute:     cfg.execute,
@@ -267,7 +269,7 @@ func showRootHelp(ctx context.Context, cmd *cli.Command) error {
 func newVersionCLICommand() *cli.Command {
 	return &cli.Command{
 		Name:  "version",
-		Usage: "Показать версию ragcli",
+		Usage: localize.T("cli.command.version.usage"),
 		Action: func(_ context.Context, cmd *cli.Command) error {
 			cli.ShowVersion(cmd.Root())
 			return nil
@@ -308,49 +310,54 @@ func globalFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:    "file",
 			Aliases: []string{"f"},
-			Usage:   "Путь к входному файлу. Если не задан, команда читает stdin.",
+			Usage:   localize.T("cli.flag.file.usage"),
 			Sources: cli.EnvVars("INPUT_FILE"),
 		},
 		&cli.StringFlag{
 			Name:    "api-url",
-			Usage:   "URL OpenAI-compatible API.",
+			Usage:   localize.T("cli.flag.api_url.usage"),
 			Value:   defaultLLMOptions().APIURL,
 			Sources: cli.EnvVars("LLM_API_URL"),
 		},
 		&cli.StringFlag{
 			Name:    "api-key",
-			Usage:   "API key для OpenAI-compatible API.",
+			Usage:   localize.T("cli.flag.api_key.usage"),
 			Sources: cli.EnvVars("OPENAI_API_KEY"),
 		},
 		&cli.StringFlag{
 			Name:    "model",
-			Usage:   "Chat-модель для map/tools/rag answer generation.",
+			Usage:   localize.T("cli.flag.model.usage"),
 			Value:   defaultLLMOptions().Model,
 			Sources: cli.EnvVars("LLM_MODEL"),
 		},
 		&cli.IntFlag{
 			Name:    "retry",
 			Aliases: []string{"r"},
-			Usage:   "Количество retry для LLM HTTP-клиента.",
+			Usage:   localize.T("cli.flag.retry.usage"),
 			Value:   defaultLLMOptions().RetryCount,
 			Sources: cli.EnvVars("RETRY"),
 		},
 		&cli.BoolFlag{
 			Name:    "raw",
-			Usage:   "Печатать финальный ответ как есть, без markdown-рендера в терминале.",
+			Usage:   localize.T("cli.flag.raw.usage"),
 			Sources: cli.EnvVars("RAW"),
 		},
 		&cli.BoolFlag{
 			Name:    "debug",
 			Aliases: []string{"d"},
-			Usage:   "Включить debug runtime-логи в stderr; без флага ошибки печатаются одной строкой.",
+			Usage:   localize.T("cli.flag.debug.usage"),
 			Sources: cli.EnvVars("DEBUG"),
 		},
 		&cli.BoolFlag{
 			Name:    "verbose",
 			Aliases: []string{"v"},
-			Usage:   "Показывать ход выполнения в stderr отдельными строками статуса.",
+			Usage:   localize.T("cli.flag.verbose.usage"),
 			Sources: cli.EnvVars("VERBOSE"),
+		},
+		&cli.StringFlag{
+			Name:    "lang",
+			Usage:   localize.T("cli.flag.lang.usage"),
+			Sources: cli.EnvVars("RAGCLI_LANG"),
 		},
 	}
 }
@@ -520,7 +527,7 @@ func bindToolsCommand(cmd *cli.Command) (Command, error) {
 
 func validatePrompt(prompt string) error {
 	if strings.TrimSpace(prompt) == "" {
-		return fmt.Errorf("missing required argument: prompt")
+		return fmt.Errorf("%s", localize.T("error.prompt.required"))
 	}
 	return nil
 }
@@ -573,43 +580,27 @@ func maxInt(value int, min int) int {
 }
 
 func mapCommandDescription() string {
-	return strings.TrimSpace(`
-Разбивает входной текст на чанки, отправляет их в chat-модель и затем агрегирует промежуточные ответы.
-
-Examples:
-  ragcli map --file document.txt -c 4 "Какие основные выводы?"
-  ragcli map --file document.txt --length 8000 --api-url http://localhost:1234/v1 --model my-model "Какие основные выводы? (strict override)"
-  cat document.txt | ragcli map "Какие основные выводы из этого документа?"
-`)
+	return strings.TrimSpace(localize.T("cli.description.map"))
 }
 
 func ragCommandDescription() string {
-	return strings.TrimSpace(`
-Строит локальный retrieval index по входному файлу или stdin, подбирает релевантные evidence chunks и формирует ответ только по ним.
-
-Examples:
-  ragcli rag --file file.txt --model qwen2.5 --embedding-model text-embedding-3-small "Что сказано про retry policy?"
-  cat spec.txt | ragcli rag --rag-top-k 10 "Какие ограничения описаны в документе?"
-`)
+	return strings.TrimSpace(localize.T("cli.description.rag"))
 }
 
 func toolsCommandDescription() string {
-	return strings.TrimSpace(`
-Дает модели инструменты search_file, read_lines и read_around, чтобы она сама исследовала файл и нашла нужные строки.
-
-Examples:
-  ragcli tools --file file.txt "Какие ключевые моменты обсуждаются в разделе про архитектуру?"
-  ragcli tools --file app.log --debug "Где в логах причины 5xx?"
-`)
+	return strings.TrimSpace(localize.T("cli.description.tools"))
 }
 
 func hybridCommandDescription() string {
-	return strings.TrimSpace(`
-Комбинирует lexical и semantic retrieval, дочитывает точные строки локально и агрегирует факты только по найденным регионам.
+	return strings.TrimSpace(localize.T("cli.description.hybrid"))
+}
 
-Examples:
-  ragcli hybrid --file file.txt "Что в документе сказано про retry policy и ограничения?"
-  ragcli hybrid --file app.log --hybrid-fallback rag-only "Где причина 5xx и что происходит рядом?"
-  cat handbook.md | ragcli hybrid --hybrid-top-k 10 --hybrid-map-k 5 "Какие шаги release process и rollback?"
-`)
+func validateGlobalLocale(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+	if !cmd.IsSet("lang") {
+		return ctx, nil
+	}
+	if _, valid := localize.Normalize(cmd.String("lang")); valid {
+		return ctx, nil
+	}
+	return ctx, fmt.Errorf("%s", localize.T("error.locale.unsupported", localize.Data{"Value": cmd.String("lang")}))
 }

@@ -22,11 +22,13 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	mapmode "github.com/borro/ragcli/internal/app/map"
 	"github.com/borro/ragcli/internal/app/tools/filetools"
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/verbose"
-	openai "github.com/sashabaranov/go-openai"
+
+	mapmode "github.com/borro/ragcli/internal/app/map"
+	"github.com/sashabaranov/go-openai"
 )
 
 type Options struct {
@@ -145,14 +147,14 @@ var (
 
 func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester, source Source, opts Options, question string, plan *verbose.Plan) (string, error) {
 	if plan == nil {
-		plan = verbose.NewPlan(nil, "hybrid",
-			verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
-			verbose.StageDef{Key: "segments", Label: "сегментация", Slots: 2},
-			verbose.StageDef{Key: "retrieval", Label: "retrieval", Slots: 9},
-			verbose.StageDef{Key: "grounding", Label: "grounding", Slots: 4},
-			verbose.StageDef{Key: "facts", Label: "извлечение фактов", Slots: 3},
-			verbose.StageDef{Key: "coverage", Label: "coverage", Slots: 2},
-			verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+		plan = verbose.NewPlan(nil, localize.T("progress.mode.hybrid"),
+			verbose.StageDef{Key: "prepare", Label: localize.T("progress.stage.prepare"), Slots: 2},
+			verbose.StageDef{Key: "segments", Label: localize.T("progress.stage.segments"), Slots: 2},
+			verbose.StageDef{Key: "retrieval", Label: localize.T("progress.stage.retrieval"), Slots: 9},
+			verbose.StageDef{Key: "grounding", Label: localize.T("progress.stage.grounding"), Slots: 4},
+			verbose.StageDef{Key: "facts", Label: localize.T("progress.stage.facts"), Slots: 3},
+			verbose.StageDef{Key: "coverage", Label: localize.T("progress.stage.coverage"), Slots: 2},
+			verbose.StageDef{Key: "final", Label: localize.T("progress.stage.final"), Slots: 2},
 		)
 	}
 	prepareMeter := plan.Stage("prepare")
@@ -167,15 +169,15 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 	}
 
 	startedAt := time.Now()
-	prepareMeter.Start("читаю входной документ")
+	prepareMeter.Start(localize.T("progress.hybrid.read_input"))
 	content, err := io.ReadAll(source.Reader)
 	if err != nil {
 		return "", fmt.Errorf("failed to read source: %w", err)
 	}
-	prepareMeter.Done(fmt.Sprintf("прочитал документ, %d байт", len(content)))
+	prepareMeter.Done(localize.T("progress.hybrid.read_done", localize.Data{"Bytes": len(content)}))
 	if len(content) == 0 {
 		slog.Info("hybrid processing finished", "reason", "empty_input")
-		return "Файл пустой", nil
+		return localize.T("map.answer.empty_file"), nil
 	}
 
 	displayName := normalizeSourceDisplayName(source)
@@ -195,7 +197,7 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 	micro, meso := segmentDocument(content, profile, opts)
 	if len(meso) == 0 {
 		slog.Info("hybrid processing finished", "reason", "no_segments", "source", displayName)
-		return "Нет информации для ответа", nil
+		return localize.T("map.answer.no_info"), nil
 	}
 
 	slog.Info("hybrid document prepared",
@@ -203,16 +205,16 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 		"micro_segments", len(micro),
 		"meso_segments", len(meso),
 	)
-	segmentsMeter.Start("готовлю сегменты документа")
-	segmentsMeter.Done(fmt.Sprintf("профиль %s, сегментов %d", profile, len(meso)))
+	segmentsMeter.Start(localize.T("progress.hybrid.segment_start"))
+	segmentsMeter.Done(localize.T("progress.hybrid.segment_done", localize.Data{"Profile": profile, "Count": len(meso)}))
 
 	slog.Debug("hybrid lexical retrieval started", "segment_count", len(meso))
-	retrievalMeter.Start("выполняю lexical retrieval")
+	retrievalMeter.Start(localize.T("progress.hybrid.lexical_start"))
 	lexicalHits := lexicalRetrieve(question, meso)
 	slog.Debug("hybrid lexical retrieval finished", "hits", len(lexicalHits))
-	retrievalMeter.Note(fmt.Sprintf("lexical retrieval дал %d совпадений", len(lexicalHits)))
+	retrievalMeter.Note(localize.T("progress.hybrid.lexical_done", localize.Data{"Count": len(lexicalHits)}))
 
-	retrievalMeter.Note("отправляю запрос на semantic retrieval")
+	retrievalMeter.Note(localize.T("progress.hybrid.semantic_start"))
 	slog.Debug("hybrid semantic retrieval started", "segment_count", len(meso))
 	semanticHits, semanticErr := semanticRetrieve(ctx, embedder, displayName, content, meso, opts, question)
 	if semanticErr != nil {
@@ -229,15 +231,15 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 	}
 	if semanticErr == nil {
 		slog.Debug("hybrid semantic retrieval finished", "hits", len(semanticHits))
-		retrievalMeter.Note(fmt.Sprintf("semantic retrieval дал %d совпадений", len(semanticHits)))
+		retrievalMeter.Note(localize.T("progress.hybrid.semantic_done", localize.Data{"Count": len(semanticHits)}))
 	} else {
-		retrievalMeter.Note("semantic retrieval недоступен, продолжаю без него")
+		retrievalMeter.Note(localize.T("progress.hybrid.semantic_unavailable"))
 	}
 
 	slog.Debug("hybrid fusion started", "lexical_hits", len(lexicalHits), "semantic_hits", len(semanticHits))
 	regions := fuseAndExpandRegions(lexicalHits, semanticHits, meso, readPath, displayName, opts)
 	slog.Info("hybrid fusion finished", "regions", len(regions))
-	retrievalMeter.Done(fmt.Sprintf("нашёл %d регионов", len(regions)))
+	retrievalMeter.Done(localize.T("progress.hybrid.regions_found", localize.Data{"Count": len(regions)}))
 	if len(regions) == 0 || retrievalTooWeak(regions) {
 		slog.Warn("hybrid retrieval too weak", "regions", len(regions), "fallback", opts.Fallback)
 		if opts.Fallback == "map" {
@@ -246,7 +248,7 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 		}
 		if len(regions) == 0 {
 			slog.Info("hybrid processing finished", "reason", "no_evidence", "duration", roundDuration(time.Since(startedAt)))
-			return "Недостаточно данных, чтобы честно ответить на вопрос.\n\nSources:\n- none", nil
+			return localize.T("hybrid.answer.insufficient"), nil
 		}
 	}
 
@@ -260,16 +262,16 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 	}
 
 	slog.Debug("hybrid grounding started", "regions", len(finalRegions))
-	groundingMeter.Start("дочитываю точные строки")
+	groundingMeter.Start(localize.T("progress.hybrid.grounding_start"))
 	evidence, err := groundEvidence(finalRegions, opts.ReadWindow, groundingMeter)
 	if err != nil {
 		return "", err
 	}
-	groundingMeter.Done(fmt.Sprintf("подготовил %d evidence blocks", len(evidence)))
+	groundingMeter.Done(localize.T("progress.hybrid.grounding_done", localize.Data{"Count": len(evidence)}))
 	slog.Info("hybrid grounding finished", "evidence_blocks", len(evidence))
 
 	slog.Debug("hybrid map extraction started", "regions", len(mapRegions))
-	factMeter.Start("собираю факты по регионам")
+	factMeter.Start(localize.T("progress.hybrid.fact_start"))
 	factBlocks, reducedFacts, err := mapExtractFacts(ctx, chat, mapRegions, question, factMeter)
 	if err != nil {
 		return "", err
@@ -280,12 +282,12 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 	)
 
 	slog.Debug("hybrid coverage check started")
-	coverageMeter.Start("отправляю facts и evidence в LLM на coverage-check")
+	coverageMeter.Start(localize.T("progress.hybrid.coverage_start"))
 	coverage, err := checkCoverage(ctx, chat, question, reducedFacts, evidence)
 	if err != nil {
 		return "", err
 	}
-	coverageMeter.Done("coverage-check завершён")
+	coverageMeter.Done(localize.T("progress.hybrid.coverage_done"))
 	slog.Info("hybrid coverage check finished",
 		"covered", coverage.Covered,
 		"gaps", len(coverage.Gaps),
@@ -315,12 +317,12 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 				extra = extra[:opts.FinalK]
 			}
 			slog.Debug("hybrid targeted reread grounding started", "regions", len(extra))
-			groundingMeter.Start("дочитываю дополнительные регионы")
+			groundingMeter.Start(localize.T("progress.hybrid.extra_start"))
 			extraEvidence, err := groundEvidence(extra, opts.ReadWindow, groundingMeter)
 			if err != nil {
 				return "", err
 			}
-			groundingMeter.Done(fmt.Sprintf("дочитал %d дополнительных регионов", len(extra)))
+			groundingMeter.Done(localize.T("progress.hybrid.extra_done", localize.Data{"Count": len(extra)}))
 			evidence = appendEvidence(evidence, extraEvidence)
 
 			slog.Debug("hybrid targeted reread map extraction started", "regions", len(extra))
@@ -340,7 +342,7 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 	}
 
 	slog.Debug("hybrid answer synthesis started", "evidence_blocks", len(evidence), "fact_lines", countFactLines(reducedFacts))
-	finalMeter.Start(fmt.Sprintf("передаю в LLM %d evidence blocks и %d строк фактов", len(evidence), countFactLines(reducedFacts)))
+	finalMeter.Start(localize.T("progress.hybrid.final_start", localize.Data{"Evidence": len(evidence), "Facts": countFactLines(reducedFacts)}))
 	answer, err := synthesizeAnswer(ctx, chat, question, reducedFacts, evidence)
 	if err != nil {
 		if (errors.Is(err, errEmptyChatContent) || errors.Is(err, errReasoningOnlyOutput)) && opts.Fallback == "map" {
@@ -350,8 +352,8 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 		return "", err
 	}
 	result := appendSources(answer, evidence)
-	finalMeter.Note("получил ответ от LLM, добавляю ссылки на источники")
-	finalMeter.Done("ответ готов")
+	finalMeter.Note(localize.T("progress.hybrid.final_citations"))
+	finalMeter.Done(localize.T("progress.hybrid.final_done"))
 	slog.Info("hybrid processing finished",
 		"reason", "success",
 		"duration", roundDuration(time.Since(startedAt)),
@@ -1215,7 +1217,7 @@ func groundEvidence(regions []Region, readWindow int, meter verbose.Meter) ([]Ev
 		}
 
 		evidence = append(evidence, block)
-		meter.Report(index+1, len(regions), fmt.Sprintf("дочитал %d/%d регионов", index+1, len(regions)))
+		meter.Report(index+1, len(regions), localize.T("progress.hybrid.regions_read", localize.Data{"Index": index + 1, "Total": len(regions)}))
 	}
 	return evidence, nil
 }
@@ -1246,14 +1248,14 @@ func mapExtractFacts(ctx context.Context, chat llm.ChatRequester, regions []Regi
 	result := make([]RegionFacts, 0, len(regions))
 	blocks := make([]string, 0, len(regions))
 	for index, region := range regions {
-		meter.Note(fmt.Sprintf("отправляю регион %d/%d в LLM", index+1, len(regions)))
+		meter.Note(localize.T("progress.hybrid.region_send", localize.Data{"Index": index + 1, "Total": len(regions)}))
 		facts, err := callChat(ctx, chat, chatCallOptions{
 			Stage:                   "map_extract_region",
 			MaxCompletionTokens:     220,
-			EmptyContentRetryPrompt: "Верни только итоговый список фактов обычным текстом. Без рассуждений. Если фактов нет, напиши SKIP.",
+			EmptyContentRetryPrompt: localize.T("hybrid.prompt.region_retry"),
 		}, []openai.ChatCompletionMessage{
-			{Role: "system", Content: hybridMapPrompt},
-			{Role: "user", Content: fmt.Sprintf("Вопрос:\n%s\n\nРегион:\n```\n%s\n```", strings.TrimSpace(question), sanitize(region.Text))},
+			{Role: "system", Content: hybridMapPrompt()},
+			{Role: "user", Content: localize.T("hybrid.prompt.region_user", localize.Data{"Question": strings.TrimSpace(question), "Region": sanitize(region.Text)})},
 		})
 		if err != nil {
 			if errors.Is(err, errEmptyChatContent) || errors.Is(err, errReasoningOnlyOutput) {
@@ -1267,13 +1269,13 @@ func mapExtractFacts(ctx context.Context, chat llm.ChatRequester, regions []Regi
 		}
 		normalized := normalizeFacts(facts)
 		if normalized == "" || strings.EqualFold(normalized, "SKIP") {
-			meter.Report(index+1, len(regions), fmt.Sprintf("обработано %d/%d регионов", index+1, len(regions)))
+			meter.Report(index+1, len(regions), localize.T("progress.hybrid.regions_processed", localize.Data{"Index": index + 1, "Total": len(regions)}))
 			continue
 		}
 		factList := strings.Split(normalized, "\n")
 		result = append(result, RegionFacts{Region: region, Facts: factList})
 		blocks = append(blocks, normalized)
-		meter.Report(index+1, len(regions), fmt.Sprintf("обработано %d/%d регионов", index+1, len(regions)))
+		meter.Report(index+1, len(regions), localize.T("progress.hybrid.regions_processed", localize.Data{"Index": index + 1, "Total": len(regions)}))
 	}
 	if len(blocks) == 0 {
 		return result, "", nil
@@ -1285,10 +1287,10 @@ func mapExtractFacts(ctx context.Context, chat llm.ChatRequester, regions []Regi
 	reduced, err := callChat(ctx, chat, chatCallOptions{
 		Stage:                   "map_extract_reduce",
 		MaxCompletionTokens:     320,
-		EmptyContentRetryPrompt: "Верни только объединённый список фактов, по одному на строку. Без рассуждений.",
+		EmptyContentRetryPrompt: localize.T("hybrid.prompt.reduce_retry"),
 	}, []openai.ChatCompletionMessage{
-		{Role: "system", Content: hybridReducePrompt},
-		{Role: "user", Content: fmt.Sprintf("Вопрос:\n%s\n\nФакты:\n```\n%s\n```", strings.TrimSpace(question), strings.Join(blocks, "\n\n---\n\n"))},
+		{Role: "system", Content: hybridReducePrompt()},
+		{Role: "user", Content: localize.T("hybrid.prompt.reduce_user", localize.Data{"Question": strings.TrimSpace(question), "Facts": strings.Join(blocks, "\n\n---\n\n")})},
 	})
 	if err != nil {
 		if errors.Is(err, errEmptyChatContent) || errors.Is(err, errReasoningOnlyOutput) {
@@ -1311,16 +1313,16 @@ func checkCoverage(ctx context.Context, chat llm.ChatRequester, question, facts 
 	content, err := callChat(ctx, chat, chatCallOptions{
 		Stage:                   "coverage_check",
 		MaxCompletionTokens:     220,
-		EmptyContentRetryPrompt: "Ответь строго в формате COVERED/GAPS/CONFLICTS/FOLLOW_UP_QUERY без пояснений.",
+		EmptyContentRetryPrompt: localize.T("hybrid.prompt.coverage_retry"),
 	}, []openai.ChatCompletionMessage{
-		{Role: "system", Content: coveragePrompt},
-		{Role: "user", Content: fmt.Sprintf("Вопрос:\n%s\n\nФакты:\n```\n%s\n```\n\nEvidence:\n%s", strings.TrimSpace(question), sanitize(facts), strings.Join(evidenceSummary, "\n"))},
+		{Role: "system", Content: coveragePrompt()},
+		{Role: "user", Content: localize.T("hybrid.prompt.coverage_user", localize.Data{"Question": strings.TrimSpace(question), "Facts": sanitize(facts), "Evidence": strings.Join(evidenceSummary, "\n")})},
 	})
 	if err != nil {
 		if errors.Is(err, errEmptyChatContent) || errors.Is(err, errReasoningOnlyOutput) {
 			return CoverageReport{
 				Covered:       false,
-				Gaps:          []string{"coverage response was empty or invalid"},
+				Gaps:          []string{localize.T("hybrid.coverage.empty")},
 				FollowUpQuery: question,
 			}, nil
 		}
@@ -1334,7 +1336,7 @@ func synthesizeAnswer(ctx context.Context, chat llm.ChatRequester, question, fac
 	for i, block := range evidence {
 		extra := block.Text
 		if block.AroundText != "" && block.AroundText != block.Text {
-			extra += "\n\nЛокальное окно:\n" + block.AroundText
+			extra += localize.T("hybrid.prompt.local_window", localize.Data{"Text": block.AroundText})
 		}
 		contextBlocks = append(contextBlocks, fmt.Sprintf("[source %d] %s:%d-%d\n%s", i+1, block.SourcePath, block.StartLine, block.EndLine, sanitize(extra)))
 	}
@@ -1342,16 +1344,12 @@ func synthesizeAnswer(ctx context.Context, chat llm.ChatRequester, question, fac
 	answer, err := callChat(ctx, chat, chatCallOptions{
 		Stage:                   "synthesize_answer",
 		MaxCompletionTokens:     1400,
-		EmptyContentRetryPrompt: "Верни только финальный ответ обычным текстом. Без рассуждений, без скрытых цепочек, без пустого ответа.",
+		EmptyContentRetryPrompt: localize.T("hybrid.prompt.answer_retry"),
 	}, []openai.ChatCompletionMessage{
-		{Role: "system", Content: synthesizePrompt},
+		{Role: "system", Content: synthesizePrompt()},
 		{
-			Role: "user",
-			Content: fmt.Sprintf("Вопрос:\n%s\n\nФакты:\n```\n%s\n```\n\nИсточники:\n%s",
-				strings.TrimSpace(question),
-				sanitize(facts),
-				strings.Join(contextBlocks, "\n\n---\n\n"),
-			),
+			Role:    "user",
+			Content: localize.T("hybrid.prompt.answer_user", localize.Data{"Question": strings.TrimSpace(question), "Facts": sanitize(facts), "Sources": strings.Join(contextBlocks, "\n\n---\n\n")}),
 		},
 	})
 	if err != nil {
@@ -1439,7 +1437,7 @@ func callChat(ctx context.Context, chat llm.ChatRequester, opts chatCallOptions,
 func callChatAttempt(ctx context.Context, chat llm.ChatRequester, opts chatCallOptions, messages []openai.ChatCompletionMessage, allowRetry bool) (string, error) {
 	req := openai.ChatCompletionRequest{
 		Messages: messages,
-		ChatTemplateKwargs: map[string]any{
+		ChatTemplateKwargs: localize.Data{
 			"enable_thinking": false,
 		},
 	}
@@ -1491,7 +1489,7 @@ func callChatAttempt(ctx context.Context, chat llm.ChatRequester, opts chatCallO
 		if allowRetry && strings.TrimSpace(opts.EmptyContentRetryPrompt) != "" {
 			retryMessages := append(slices.Clone(messages), openai.ChatCompletionMessage{
 				Role:    "user",
-				Content: strings.TrimSpace(opts.EmptyContentRetryPrompt) + " Не показывай thinking process, chain-of-thought, analysis, reasoning trace или внутренние шаги.",
+				Content: strings.TrimSpace(opts.EmptyContentRetryPrompt) + localize.T("hybrid.prompt.no_reasoning_suffix"),
 			})
 			slog.Warn("hybrid llm call returned reasoning-like trace, retrying", "stage", opts.Stage)
 			return callChatAttempt(ctx, chat, opts, retryMessages, false)
@@ -1773,54 +1771,18 @@ func tokenOverlapRatio(query, text string) float64 {
 	return float64(matched) / float64(len(queryTokens))
 }
 
-const hybridMapPrompt = `
-Извлеки краткие факты из текста, которые помогают ответить на вопрос.
+func hybridMapPrompt() string {
+	return localize.T("hybrid.prompt.map_system")
+}
 
-Правила:
-- отвечай по-русски
-- каждый факт отдельной строкой
-- максимум 5 фактов
-- только факты из текста
-- не показывай thinking process, chain-of-thought, analysis, reasoning trace или внутренние шаги
-- если данных нет, ответь SKIP
-`
+func hybridReducePrompt() string {
+	return localize.T("hybrid.prompt.reduce_system")
+}
 
-const hybridReducePrompt = `
-Объедини факты.
+func coveragePrompt() string {
+	return localize.T("hybrid.prompt.coverage_system")
+}
 
-Правила:
-- отвечай по-русски
-- убери явные дубли
-- не добавляй новую информацию
-- сохрани различающиеся по смыслу факты
-- каждый факт отдельной строкой
-- не показывай thinking process, chain-of-thought, analysis, reasoning trace или внутренние шаги
-`
-
-const coveragePrompt = `
-Проверь, достаточно ли фактов и evidence для ответа.
-
-Отвечай по-русски.
-
-Формат:
-COVERED: yes/no
-GAPS:
-- ...
-CONFLICTS:
-- ...
-FOLLOW_UP_QUERY: ...
-
-Если пробелов нет, пиши FOLLOW_UP_QUERY: none
-Не показывай thinking process, chain-of-thought, analysis, reasoning trace или внутренние шаги.
-`
-
-const synthesizePrompt = `
-Сформулируй ответ на вопрос, используя только факты и источники ниже.
-
-Правила:
-- отвечай по-русски
-- не придумывай факты
-- если данных недостаточно, прямо скажи это
-- ссылайся на источники в формате [source N]
-- не показывай thinking process, chain-of-thought, analysis, reasoning trace или внутренние шаги
-`
+func synthesizePrompt() string {
+	return localize.T("hybrid.prompt.answer_system")
+}

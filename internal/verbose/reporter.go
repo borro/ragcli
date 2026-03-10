@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"sync"
+
+	"github.com/borro/ragcli/internal/localize"
 )
 
 type Reporter interface {
@@ -76,10 +78,10 @@ func (r *stateReporter) renderLocked() {
 func renderLine(mode string, stage string, detail string, current int, total int) string {
 	return fmt.Sprintf(
 		"%s %5s: %s (%s)",
-		defaultText(mode, "режим"),
+		defaultText(mode, localize.T("verbose.fallback.mode")),
 		formatPercentField(current, total),
-		defaultText(stage, "выполняю"),
-		defaultText(detail, "обновляю статус"),
+		defaultText(stage, localize.T("verbose.fallback.stage")),
+		defaultText(detail, localize.T("verbose.fallback.detail")),
 	)
 }
 

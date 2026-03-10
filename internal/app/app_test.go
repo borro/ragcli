@@ -5,7 +5,14 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/borro/ragcli/internal/localize"
 )
+
+func setLangEnv(t *testing.T, value string) {
+	t.Helper()
+	t.Setenv("RAGCLI_LANG", value)
+}
 
 func TestRunVersionCommand(t *testing.T) {
 	var stdout bytes.Buffer
@@ -324,6 +331,7 @@ func TestApplyPromptArgCompatibilitySkipsUnsupportedCommands(t *testing.T) {
 }
 
 func TestRunMapMissingPromptShowsHelp(t *testing.T) {
+	setLangEnv(t, "en")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -343,6 +351,7 @@ func TestRunMapMissingPromptShowsHelp(t *testing.T) {
 }
 
 func TestRunMapMissingInputFile(t *testing.T) {
+	setLangEnv(t, "en")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -359,6 +368,7 @@ func TestRunMapMissingInputFile(t *testing.T) {
 }
 
 func TestRunMapMissingInputFileVerboseDoesNotDuplicateError(t *testing.T) {
+	setLangEnv(t, "en")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -374,12 +384,13 @@ func TestRunMapMissingInputFileVerboseDoesNotDuplicateError(t *testing.T) {
 	if strings.Count(output, "failed to open file: open missing.txt: no such file or directory") != 1 {
 		t.Fatalf("stderr = %q, want single file error occurrence", output)
 	}
-	if !strings.Contains(output, "подготовка") {
+	if !strings.Contains(output, "prepare") {
 		t.Fatalf("stderr = %q, want verbose preparation status before failure", output)
 	}
 }
 
 func TestRunMapMissingInputFileDebugLogsToStderr(t *testing.T) {
+	setLangEnv(t, "en")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -422,6 +433,7 @@ func TestRunMapInvalidFlagShowsHelpOnStdoutAndErrorOnStderr(t *testing.T) {
 }
 
 func TestRunMapWithEmptyStdin(t *testing.T) {
+	setLangEnv(t, "en")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -429,7 +441,7 @@ func TestRunMapWithEmptyStdin(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("Run(map empty stdin) exit code = %d, want 0", exitCode)
 	}
-	if stdout.String() != "Файл пустой\n" {
+	if stdout.String() != "The file is empty\n" {
 		t.Fatalf("stdout = %q, want empty-input result", stdout.String())
 	}
 	if stderr.Len() != 0 {
@@ -475,6 +487,9 @@ func runCLIForTest(args []string) (Command, string, error) {
 	var captured Command
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	if err := localize.SetCurrent(localize.EN); err != nil {
+		return Command{}, "", err
+	}
 
 	root := newCLI(cliConfig{
 		stdout:  &stdout,
