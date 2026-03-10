@@ -935,12 +935,15 @@ func persistIndex(indexDir string, index *cachedIndex) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = segmentsFile.Close() }()
 	encoder := json.NewEncoder(segmentsFile)
 	for _, segment := range index.Segments {
 		if err := encoder.Encode(segment); err != nil {
+			_ = segmentsFile.Close()
 			return err
 		}
+	}
+	if err := segmentsFile.Close(); err != nil {
+		return err
 	}
 
 	if _, err := os.Stat(indexDir); err == nil {

@@ -355,15 +355,16 @@ func persistIndex(indexDir string, index *Index) error {
 	if err != nil {
 		return fmt.Errorf("failed to create chunks file: %w", err)
 	}
-	defer func() {
-		_ = chunksFile.Close()
-	}()
 
 	encoder := json.NewEncoder(chunksFile)
 	for _, chunk := range index.Chunks {
 		if err := encoder.Encode(chunk); err != nil {
+			_ = chunksFile.Close()
 			return fmt.Errorf("failed to write chunk metadata: %w", err)
 		}
+	}
+	if err := chunksFile.Close(); err != nil {
+		return fmt.Errorf("failed to close chunks file: %w", err)
 	}
 
 	embeddingsData, err := json.Marshal(index.Embeddings)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -138,6 +139,35 @@ func TestRunHybridFallsBackToMapWhenEmbeddingsFail(t *testing.T) {
 	}
 	if answer != "fallback answer" {
 		t.Fatalf("Run() answer = %q, want fallback answer", answer)
+	}
+}
+
+func TestPersistIndexPublishesIndexDir(t *testing.T) {
+	tempDir := t.TempDir()
+	indexDir := filepath.Join(tempDir, "index")
+	index := &cachedIndex{
+		Manifest: indexManifest{
+			SchemaVersion:  hybridIndexSchemaVersion,
+			CreatedAt:      time.Now().UTC(),
+			InputHash:      "hash",
+			SourcePath:     "source.txt",
+			EmbeddingModel: "embed",
+			ChunkSize:      128,
+			ChunkOverlap:   16,
+			ChunkCount:     1,
+		},
+		Segments:   []Segment{{ID: 1, StartLine: 1, EndLine: 2, Text: "alpha"}},
+		Embeddings: [][]float32{{1, 0, 0}},
+	}
+
+	if err := persistIndex(indexDir, index); err != nil {
+		t.Fatalf("persistIndex() error = %v", err)
+	}
+
+	for _, name := range []string{hybridManifestFilename, hybridSegmentsFilename, hybridEmbeddingsFilename} {
+		if _, err := os.Stat(filepath.Join(indexDir, name)); err != nil {
+			t.Fatalf("expected published index file %s: %v", name, err)
+		}
 	}
 }
 
