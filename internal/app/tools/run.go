@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	toolsMaxTurns                 = 10
+	toolsMaxTurns                 = 20
 	toolsMaxConsecutiveNoProgress = 2
 	toolsMaxConsecutiveDuplicates = 2
 	emptyFinalAnswerRetryLimit    = 1
 	stalledToolRetryLimit         = 1
+	maxTurnFinalizationRetries    = 1
 )
 
 type Options struct{}
@@ -214,6 +215,7 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 	var toolChoiceToSend interface{} = "auto"
 	emptyFinalAnswerRetries := 0
 	stalledToolRetries := 0
+	haveToolResults := false
 
 	logStop := func(reason string, turns int) {
 		slog.Debug("tools processing finished",
@@ -308,6 +310,7 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 					ToolCallID: choice.Message.ToolCalls[i].ID,
 				})
 			}
+			haveToolResults = haveToolResults || len(results) > 0
 			if err != nil {
 				var orchErr orchestrationError
 				if errorsAsOrchestration(err, &orchErr) && shouldRetryWithoutTools(orchErr) && stalledToolRetries < stalledToolRetryLimit {
@@ -355,6 +358,18 @@ func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string,
 		finalMeter.Done(localize.T("progress.tools.final_done", localize.Data{"Turn": turn}))
 		logStop("final_answer", turn)
 		return choice.Message.Content, nil
+	}
+
+	if haveToolResults {
+		finalMeter.Start(localize.T("progress.tools.text_answer", localize.Data{"Turn": toolsMaxTurns + 1}))
+		result, err := requestFinalAnswerWithoutTools(ctx, client, messages, toolsConfig.tools, maxTurnFinalizationRetries)
+		if err == nil {
+			finalMeter.Done(localize.T("progress.tools.final_done", localize.Data{"Turn": toolsMaxTurns + 1}))
+			logStop("forced_final_answer", toolsMaxTurns)
+			return result, nil
+		}
+		logStop("orchestration_limit_finalization_failed", toolsMaxTurns)
+		return "", err
 	}
 
 	logStop("orchestration_limit", toolsMaxTurns)
@@ -733,5 +748,40 @@ func shouldRetryWithoutTools(err orchestrationError) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func requestFinalAnswerWithoutTools(ctx context.Context, client llm.ChatRequester, messages []openai.ChatCompletionMessage, tools []openai.Tool, retries int) (string, error) {
+	attemptMessages := append([]openai.ChatCompletionMessage{}, messages...)
+
+	for attempt := 0; attempt <= retries; attempt++ {
+		attemptMessages = append(attemptMessages, openai.ChatCompletionMessage{
+			Role:    "user",
+			Content: localize.T("tools.prompt.stop_calls"),
+		})
+
+		resp, _, err := client.SendRequestWithMetrics(ctx, openai.ChatCompletionRequest{
+			Messages:   attemptMessages,
+			Tools:      tools,
+			ToolChoice: "none",
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to send forced finalization request: %w", err)
+		}
+		if len(resp.Choices) == 0 {
+			return "", fmt.Errorf("forced finalization returned no choices")
+		}
+
+		choice := resp.Choices[0]
+		attemptMessages = append(attemptMessages, choice.Message)
+		if strings.TrimSpace(choice.Message.Content) != "" {
+			return choice.Message.Content, nil
+		}
+	}
+
+	return "", orchestrationError{
+		Code:    "orchestration_limit",
+		Message: fmt.Sprintf("tools orchestration exceeded %d turns and forced finalization returned no answer", toolsMaxTurns),
+		Details: map[string]any{"max_turns": toolsMaxTurns},
 	}
 }

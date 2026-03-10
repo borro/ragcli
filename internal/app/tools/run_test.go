@@ -199,16 +199,52 @@ func TestRunTools_MultiStepToolLoop(t *testing.T) {
 	}
 }
 
-func TestRunTools_StopsAfterMaxTurns(t *testing.T) {
+func TestRunTools_FinalizesWithoutToolsAfterMaxTurns(t *testing.T) {
 	responses := make([]*openai.ChatCompletionResponse, 0, toolsMaxTurns)
 	for i := 0; i < toolsMaxTurns; i++ {
 		responses = append(responses, chatResponse(message("assistant", "", []openai.ToolCall{
 			toolCall("loop-call", "search_file", fmt.Sprintf(`{"query":"x","limit":1,"offset":%d}`, i)),
 		})))
 	}
+	responses = append(responses, chatResponse(message("assistant", "Итог после принудительной финализации", nil)))
 
 	client := &scriptedRequester{responses: responses}
-	filePath := writeTempFile(t, "x1\nx2\nx3\nx4\nx5\nx6\nx7\nx8\nx9\nx10\n")
+	filePath := writeTempFile(t, strings.Join(buildNumberedLines("x", toolsMaxTurns+5), "\n")+"\n")
+
+	result, err := Run(context.Background(), client, filePath, "loop?", nil)
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "Итог после принудительной финализации" {
+		t.Fatalf("RunTools() result = %q, want forced finalization answer", result)
+	}
+	if len(client.requests) != toolsMaxTurns+1 {
+		t.Fatalf("requests = %d, want %d", len(client.requests), toolsMaxTurns+1)
+	}
+	lastReq := client.requests[len(client.requests)-1]
+	if lastReq.ToolChoice != "none" {
+		t.Fatalf("ToolChoice = %#v, want none", lastReq.ToolChoice)
+	}
+	lastMsg := lastReq.Messages[len(lastReq.Messages)-1]
+	if !strings.Contains(lastMsg.Content, "Останови вызовы инструментов") {
+		t.Fatalf("finalization message = %q, want stop-tools instruction", lastMsg.Content)
+	}
+}
+
+func TestRunTools_ReturnsOrchestrationLimitWhenForcedFinalizationStillEmpty(t *testing.T) {
+	responses := make([]*openai.ChatCompletionResponse, 0, toolsMaxTurns+2)
+	for i := 0; i < toolsMaxTurns; i++ {
+		responses = append(responses, chatResponse(message("assistant", "", []openai.ToolCall{
+			toolCall("loop-call", "search_file", fmt.Sprintf(`{"query":"x","limit":1,"offset":%d}`, i)),
+		})))
+	}
+	responses = append(responses,
+		chatResponse(message("assistant", "", nil)),
+		chatResponse(message("assistant", "", nil)),
+	)
+
+	client := &scriptedRequester{responses: responses}
+	filePath := writeTempFile(t, strings.Join(buildNumberedLines("x", toolsMaxTurns+5), "\n")+"\n")
 
 	_, err := Run(context.Background(), client, filePath, "loop?", nil)
 	var orchErr orchestrationError
@@ -523,6 +559,14 @@ func toolCall(id string, name string, arguments string) openai.ToolCall {
 			Arguments: arguments,
 		},
 	}
+}
+
+func buildNumberedLines(prefix string, count int) []string {
+	lines := make([]string, 0, count)
+	for i := 1; i <= count; i++ {
+		lines = append(lines, fmt.Sprintf("%s%d", prefix, i))
+	}
+	return lines
 }
 
 func writeTempFile(t *testing.T, content string) string {
