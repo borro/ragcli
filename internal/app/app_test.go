@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/borro/ragcli/internal/hybrid"
 	"github.com/borro/ragcli/internal/localize"
+	mapmode "github.com/borro/ragcli/internal/map"
+	"github.com/borro/ragcli/internal/rag"
 )
 
 func setLangEnv(t *testing.T, value string) {
@@ -170,17 +173,17 @@ func TestCLIMapCommandBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runCLIForTest() error = %v", err)
 	}
-	if captured.Name != "map" {
-		t.Fatalf("Name = %q, want map", captured.Name)
+	if captured.Name() != "map" {
+		t.Fatalf("Name = %q, want map", captured.Name())
 	}
 	if captured.Common.InputPath != "doc.txt" {
 		t.Fatalf("InputPath = %q, want doc.txt", captured.Common.InputPath)
 	}
-	if captured.Map.Concurrency != 4 {
-		t.Fatalf("Concurrency = %d, want 4", captured.Map.Concurrency)
+	if mustPayload[mapmode.Options](t, captured).Concurrency != 4 {
+		t.Fatalf("Concurrency = %d, want 4", mustPayload[mapmode.Options](t, captured).Concurrency)
 	}
-	if captured.Map.LengthExplicit {
-		t.Fatalf("LengthExplicit = %v, want false", captured.Map.LengthExplicit)
+	if mustPayload[mapmode.Options](t, captured).LengthExplicit {
+		t.Fatalf("LengthExplicit = %v, want false", mustPayload[mapmode.Options](t, captured).LengthExplicit)
 	}
 	if captured.Common.Prompt != "what changed?" {
 		t.Fatalf("Prompt = %q, want combined prompt", captured.Common.Prompt)
@@ -192,11 +195,11 @@ func TestCLIMapCommandLengthExplicitFromFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runCLIForTest() error = %v", err)
 	}
-	if !captured.Map.LengthExplicit {
-		t.Fatalf("LengthExplicit = %v, want true", captured.Map.LengthExplicit)
+	if !mustPayload[mapmode.Options](t, captured).LengthExplicit {
+		t.Fatalf("LengthExplicit = %v, want true", mustPayload[mapmode.Options](t, captured).LengthExplicit)
 	}
-	if captured.Map.ChunkLength != 4321 {
-		t.Fatalf("ChunkLength = %d, want 4321", captured.Map.ChunkLength)
+	if mustPayload[mapmode.Options](t, captured).ChunkLength != 4321 {
+		t.Fatalf("ChunkLength = %d, want 4321", mustPayload[mapmode.Options](t, captured).ChunkLength)
 	}
 }
 
@@ -207,11 +210,11 @@ func TestCLIMapCommandLengthExplicitFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runCLIForTest() error = %v", err)
 	}
-	if !captured.Map.LengthExplicit {
-		t.Fatalf("LengthExplicit = %v, want true", captured.Map.LengthExplicit)
+	if !mustPayload[mapmode.Options](t, captured).LengthExplicit {
+		t.Fatalf("LengthExplicit = %v, want true", mustPayload[mapmode.Options](t, captured).LengthExplicit)
 	}
-	if captured.Map.ChunkLength != 5432 {
-		t.Fatalf("ChunkLength = %d, want 5432", captured.Map.ChunkLength)
+	if mustPayload[mapmode.Options](t, captured).ChunkLength != 5432 {
+		t.Fatalf("ChunkLength = %d, want 5432", mustPayload[mapmode.Options](t, captured).ChunkLength)
 	}
 }
 
@@ -220,8 +223,8 @@ func TestCLIGlobalFlagsApplyBeforeSubcommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runCLIForTest() error = %v", err)
 	}
-	if captured.Name != "map" {
-		t.Fatalf("Name = %q, want map", captured.Name)
+	if captured.Name() != "map" {
+		t.Fatalf("Name = %q, want map", captured.Name())
 	}
 	if captured.Common.InputPath != "doc.txt" {
 		t.Fatalf("InputPath = %q, want doc.txt", captured.Common.InputPath)
@@ -296,8 +299,8 @@ func TestCLIRAGCommandBindingFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runCLIForTest() error = %v", err)
 	}
-	if captured.RAG.TopK != 9 {
-		t.Fatalf("TopK = %d, want 9", captured.RAG.TopK)
+	if mustPayload[rag.Options](t, captured).TopK != 9 {
+		t.Fatalf("TopK = %d, want 9", mustPayload[rag.Options](t, captured).TopK)
 	}
 	if captured.LLM.EmbeddingModel != "embed-v2" {
 		t.Fatalf("EmbeddingModel = %q, want embed-v2", captured.LLM.EmbeddingModel)
@@ -319,29 +322,29 @@ func TestCLIHybridCommandBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runCLIForTest() error = %v", err)
 	}
-	if captured.Name != "hybrid" {
-		t.Fatalf("Name = %q, want hybrid", captured.Name)
+	if captured.Name() != "hybrid" {
+		t.Fatalf("Name = %q, want hybrid", captured.Name())
 	}
 	if captured.LLM.EmbeddingModel != "embed-v2" {
 		t.Fatalf("EmbeddingModel = %q, want embed-v2", captured.LLM.EmbeddingModel)
 	}
-	if captured.Hybrid.TopK != 6 {
-		t.Fatalf("TopK = %d, want 6", captured.Hybrid.TopK)
+	if mustPayload[hybrid.Options](t, captured).TopK != 6 {
+		t.Fatalf("TopK = %d, want 6", mustPayload[hybrid.Options](t, captured).TopK)
 	}
-	if captured.Hybrid.FinalK != 6 {
-		t.Fatalf("FinalK = %d, want normalized 6", captured.Hybrid.FinalK)
+	if mustPayload[hybrid.Options](t, captured).FinalK != 6 {
+		t.Fatalf("FinalK = %d, want normalized 6", mustPayload[hybrid.Options](t, captured).FinalK)
 	}
-	if captured.Hybrid.MapK != 6 {
-		t.Fatalf("MapK = %d, want normalized 6", captured.Hybrid.MapK)
+	if mustPayload[hybrid.Options](t, captured).MapK != 6 {
+		t.Fatalf("MapK = %d, want normalized 6", mustPayload[hybrid.Options](t, captured).MapK)
 	}
-	if captured.Hybrid.ReadWindow != 5 {
-		t.Fatalf("ReadWindow = %d, want 5", captured.Hybrid.ReadWindow)
+	if mustPayload[hybrid.Options](t, captured).ReadWindow != 5 {
+		t.Fatalf("ReadWindow = %d, want 5", mustPayload[hybrid.Options](t, captured).ReadWindow)
 	}
-	if captured.Hybrid.Fallback != "rag-only" {
-		t.Fatalf("Fallback = %q, want rag-only", captured.Hybrid.Fallback)
+	if mustPayload[hybrid.Options](t, captured).Fallback != "rag-only" {
+		t.Fatalf("Fallback = %q, want rag-only", mustPayload[hybrid.Options](t, captured).Fallback)
 	}
-	if captured.Hybrid.ChunkSize != 1200 {
-		t.Fatalf("ChunkSize = %d, want 1200", captured.Hybrid.ChunkSize)
+	if mustPayload[hybrid.Options](t, captured).ChunkSize != 1200 {
+		t.Fatalf("ChunkSize = %d, want 1200", mustPayload[hybrid.Options](t, captured).ChunkSize)
 	}
 }
 
@@ -507,40 +510,50 @@ func TestBindRAGCommandNormalizesValues(t *testing.T) {
 	if captured.LLM.EmbeddingModel != "text-embedding-3-small" {
 		t.Fatalf("EmbeddingModel = %q, want normalized default", captured.LLM.EmbeddingModel)
 	}
-	if captured.RAG.TopK != 2 {
-		t.Fatalf("TopK = %d, want 2", captured.RAG.TopK)
+	if mustPayload[rag.Options](t, captured).TopK != 2 {
+		t.Fatalf("TopK = %d, want 2", mustPayload[rag.Options](t, captured).TopK)
 	}
-	if captured.RAG.FinalK != 2 {
-		t.Fatalf("FinalK = %d, want 2", captured.RAG.FinalK)
+	if mustPayload[rag.Options](t, captured).FinalK != 2 {
+		t.Fatalf("FinalK = %d, want 2", mustPayload[rag.Options](t, captured).FinalK)
 	}
-	if captured.RAG.ChunkSize != 1000 {
-		t.Fatalf("ChunkSize = %d, want 1000", captured.RAG.ChunkSize)
+	if mustPayload[rag.Options](t, captured).ChunkSize != 1000 {
+		t.Fatalf("ChunkSize = %d, want 1000", mustPayload[rag.Options](t, captured).ChunkSize)
 	}
-	if captured.RAG.ChunkOverlap != 250 {
-		t.Fatalf("ChunkOverlap = %d, want 250", captured.RAG.ChunkOverlap)
+	if mustPayload[rag.Options](t, captured).ChunkOverlap != 250 {
+		t.Fatalf("ChunkOverlap = %d, want 250", mustPayload[rag.Options](t, captured).ChunkOverlap)
 	}
-	if captured.RAG.Rerank != "heuristic" {
-		t.Fatalf("Rerank = %q, want heuristic", captured.RAG.Rerank)
+	if mustPayload[rag.Options](t, captured).Rerank != "heuristic" {
+		t.Fatalf("Rerank = %q, want heuristic", mustPayload[rag.Options](t, captured).Rerank)
 	}
 }
 
-func runCLIForTest(args []string) (Command, string, error) {
-	var captured Command
+func runCLIForTest(args []string) (commandInvocation, string, error) {
+	var captured commandInvocation
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	if err := localize.SetCurrent(localize.EN); err != nil {
-		return Command{}, "", err
+		return commandInvocation{}, "", err
 	}
 
 	root := newCLI(cliConfig{
 		stdout:  &stdout,
 		stderr:  &stderr,
 		version: "test-version",
-		execute: func(_ context.Context, cmd Command) error {
+		execute: func(_ context.Context, cmd commandInvocation) error {
 			captured = cmd
 			return nil
 		},
 	})
 	err := root.Run(context.Background(), append([]string{root.Name}, applyPromptArgCompatibility(args)...))
 	return captured, stdout.String(), err
+}
+
+func mustPayload[T any](t *testing.T, inv commandInvocation) T {
+	t.Helper()
+
+	value, err := payloadAs[T](inv.payload)
+	if err != nil {
+		t.Fatalf("payloadAs() error = %v", err)
+	}
+	return value
 }

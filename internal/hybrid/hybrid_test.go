@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/retrieval"
+	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -37,6 +39,8 @@ type scriptedChat struct {
 	autoContextCalls  int
 }
 
+type Source = input.Source
+
 func (s *scriptedChat) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
 	s.requests = append(s.requests, req)
 	idx := len(s.requests) - 1
@@ -59,6 +63,10 @@ func (s *scriptedChat) ResolveAutoContextLength(_ context.Context) (int, error) 
 		return 0, errors.New("no auto context length configured")
 	}
 	return s.autoContextLength, nil
+}
+
+func runHybrid(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester, source input.Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+	return Run(ctx, chat, embedder, source, opts, question, plan)
 }
 
 func TestProfileDocument(t *testing.T) {
@@ -119,7 +127,7 @@ func TestRunHybridFallsBackToMapWhenEmbeddingsFail(t *testing.T) {
 		},
 	}
 
-	answer, err := Run(context.Background(), chat, &fakeEmbedder{err: errors.New("embed fail")}, Source{
+	answer, err := runHybrid(context.Background(), chat, &fakeEmbedder{err: errors.New("embed fail")}, Source{
 		Path:        "",
 		DisplayName: "stdin",
 		Reader:      strings.NewReader("retry policy is enabled\n"),
@@ -212,7 +220,7 @@ func TestRunHybridFallbackMapUsesAutoContextLength(t *testing.T) {
 		autoContextLength: 16384,
 	}
 
-	answer, err := Run(context.Background(), chat, &fakeEmbedder{err: errors.New("embed fail")}, Source{
+	answer, err := runHybrid(context.Background(), chat, &fakeEmbedder{err: errors.New("embed fail")}, Source{
 		Path:        "",
 		DisplayName: "stdin",
 		Reader:      strings.NewReader("retry policy is enabled\n"),
@@ -263,7 +271,7 @@ func TestRunHybridCoverageTriggersExtraRegion(t *testing.T) {
 		},
 	}
 
-	answer, err := Run(context.Background(), chat, &fakeEmbedder{}, Source{
+	answer, err := runHybrid(context.Background(), chat, &fakeEmbedder{}, Source{
 		Path:        writeTempFile(t, content),
 		DisplayName: "sample.txt",
 		Reader:      strings.NewReader(content),

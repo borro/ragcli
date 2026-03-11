@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/retrieval"
@@ -40,12 +41,6 @@ const (
 
 func ragAntiInjectionPolicy() string {
 	return localize.T("rag.prompt.shared_policy")
-}
-
-type Source struct {
-	Path        string
-	DisplayName string
-	Reader      io.Reader
 }
 
 type Manifest = retrieval.Manifest
@@ -82,17 +77,9 @@ type candidate struct {
 	Score      float64
 }
 
-func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source input.Source, opts Options, question string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
 	stats := pipelineStats{}
-	if plan == nil {
-		plan = verbose.NewPlan(nil, localize.T("progress.mode.rag"),
-			verbose.StageDef{Key: "prepare", Label: localize.T("progress.stage.prepare"), Slots: 2},
-			verbose.StageDef{Key: "index", Label: localize.T("progress.stage.index"), Slots: 8},
-			verbose.StageDef{Key: "retrieval", Label: localize.T("progress.stage.retrieval"), Slots: 7},
-			verbose.StageDef{Key: "final", Label: localize.T("progress.stage.final"), Slots: 7},
-		)
-	}
 	indexMeter := plan.Stage("index")
 	retrievalMeter := plan.Stage("retrieval")
 	finalMeter := plan.Stage("final")
@@ -161,7 +148,7 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 	return appendSources(answer, evidence), nil
 }
 
-func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, source Source, opts Options, stats *pipelineStats, indexMeter verbose.Meter) (*Index, error) {
+func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, source input.Source, opts Options, stats *pipelineStats, indexMeter verbose.Meter) (*Index, error) {
 	if err := os.MkdirAll(opts.IndexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create rag index dir: %w", err)
 	}
@@ -238,7 +225,7 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 	return index, nil
 }
 
-func normalizeSourcePath(source Source) string {
+func normalizeSourcePath(source input.Source) string {
 	if strings.TrimSpace(source.DisplayName) != "" {
 		return strings.TrimSpace(source.DisplayName)
 	}

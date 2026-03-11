@@ -16,13 +16,14 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/borro/ragcli/internal/app/tools/filetools"
+	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/retrieval"
+	"github.com/borro/ragcli/internal/tools/filetools"
 	"github.com/borro/ragcli/internal/verbose"
 
-	mapmode "github.com/borro/ragcli/internal/app/map"
+	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -37,12 +38,6 @@ type Options struct {
 	IndexTTL       time.Duration
 	IndexDir       string
 	EmbeddingModel string
-}
-
-type Source struct {
-	Path        string
-	DisplayName string
-	Reader      io.Reader
 }
 
 type DocumentProfile string
@@ -131,19 +126,8 @@ var (
 	errReasoningOnlyOutput = errors.New("chat response returned reasoning-only output")
 )
 
-func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester, source Source, opts Options, question string, plan *verbose.Plan) (string, error) {
-	if plan == nil {
-		plan = verbose.NewPlan(nil, localize.T("progress.mode.hybrid"),
-			verbose.StageDef{Key: "prepare", Label: localize.T("progress.stage.prepare"), Slots: 2},
-			verbose.StageDef{Key: "segments", Label: localize.T("progress.stage.segments"), Slots: 2},
-			verbose.StageDef{Key: "retrieval", Label: localize.T("progress.stage.retrieval"), Slots: 9},
-			verbose.StageDef{Key: "grounding", Label: localize.T("progress.stage.grounding"), Slots: 4},
-			verbose.StageDef{Key: "facts", Label: localize.T("progress.stage.facts"), Slots: 3},
-			verbose.StageDef{Key: "coverage", Label: localize.T("progress.stage.coverage"), Slots: 2},
-			verbose.StageDef{Key: "final", Label: localize.T("progress.stage.final"), Slots: 2},
-		)
-	}
-	prepareMeter := plan.Stage("prepare")
+func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester, source input.Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+	prepareMeter := plan.Stage("prepare").Slice(2, 2)
 	segmentsMeter := plan.Stage("segments")
 	retrievalMeter := plan.Stage("retrieval")
 	groundingMeter := plan.Stage("grounding")
@@ -1358,7 +1342,7 @@ func mergeFactBlocks(left, right string) string {
 	return normalizeFacts(combined)
 }
 
-func fallbackToMap(ctx context.Context, chat llm.ChatAutoContextRequester, source Source, opts Options, question string, sourcePath string, plan *verbose.Plan) (string, error) {
+func fallbackToMap(ctx context.Context, chat llm.ChatAutoContextRequester, source input.Source, opts Options, question string, sourcePath string, plan *verbose.Plan) (string, error) {
 	slog.Debug("hybrid map fallback started", "chunk_length_mode", "auto_or_default")
 	file, err := os.Open(sourcePath)
 	if err != nil {
@@ -1366,8 +1350,11 @@ func fallbackToMap(ctx context.Context, chat llm.ChatAutoContextRequester, sourc
 	}
 	defer func() { _ = file.Close() }()
 
-	return mapmode.Run(ctx, chat, file, mapmode.Options{
-		InputPath:      source.Path,
+	return mapmode.Run(ctx, chat, input.Source{
+		Reader:      file,
+		Path:        source.Path,
+		DisplayName: source.DisplayName,
+	}, mapmode.Options{
 		Concurrency:    1,
 		ChunkLength:    10000,
 		LengthExplicit: false,
@@ -1554,7 +1541,7 @@ func isInstructionLike(line string) bool {
 	return false
 }
 
-func normalizeSourceDisplayName(source Source) string {
+func normalizeSourceDisplayName(source input.Source) string {
 	if strings.TrimSpace(source.DisplayName) != "" {
 		displayName := strings.TrimSpace(source.DisplayName)
 		if strings.Contains(displayName, string(os.PathSeparator)) {
@@ -1568,7 +1555,7 @@ func normalizeSourceDisplayName(source Source) string {
 	return "stdin"
 }
 
-func normalizeSourceReadPath(source Source) string {
+func normalizeSourceReadPath(source input.Source) string {
 	if strings.TrimSpace(source.Path) != "" {
 		return strings.TrimSpace(source.Path)
 	}

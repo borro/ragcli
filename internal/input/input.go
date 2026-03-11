@@ -19,6 +19,12 @@ type tempFile interface {
 	Name() string
 }
 
+type Source struct {
+	Reader      io.Reader
+	Path        string
+	DisplayName string
+}
+
 var (
 	openFile     = func(path string) (readCloser, error) { return os.Open(path) }
 	createTemp   = func(dir, pattern string) (tempFile, error) { return os.CreateTemp(dir, pattern) }
@@ -31,6 +37,18 @@ type Handle struct {
 	DisplayName string
 
 	closeFn func() error
+}
+
+func (h *Handle) Source() Source {
+	if h == nil {
+		return Source{}
+	}
+
+	return Source{
+		Reader:      h.Reader,
+		Path:        h.Path,
+		DisplayName: h.DisplayName,
+	}
 }
 
 func Open(path string, stdin io.Reader) (*Handle, error) {

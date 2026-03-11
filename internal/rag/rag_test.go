@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/retrieval"
@@ -63,6 +64,8 @@ type fakeChat struct {
 	answer   string
 }
 
+type Source = input.Source
+
 func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
@@ -84,6 +87,10 @@ func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req openai.ChatComp
 			CompletionTokens: 5,
 			TotalTokens:      16,
 		}, nil
+}
+
+func runRAG(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source input.Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+	return Run(ctx, chat, embedder, source, opts, question, plan)
 }
 
 type gatedEmbedder struct {
@@ -226,7 +233,7 @@ func TestRunReturnsAnswerWithCitations(t *testing.T) {
 		"totally unrelated section about metrics",
 	}, "\n")
 
-	answer, err := Run(context.Background(), chat, embedder, Source{
+	answer, err := runRAG(context.Background(), chat, embedder, Source{
 		Path:        "/tmp/retries.txt",
 		DisplayName: "retries.txt",
 		Reader:      strings.NewReader(content),
@@ -261,7 +268,7 @@ func TestRunReturnsHonestInsufficientAnswer(t *testing.T) {
 		IndexDir:       t.TempDir(),
 		Rerank:         "heuristic",
 	}
-	answer, err := Run(context.Background(), &fakeChat{answer: "should not be used"}, &fakeEmbedder{}, Source{
+	answer, err := runRAG(context.Background(), &fakeChat{answer: "should not be used"}, &fakeEmbedder{}, Source{
 		DisplayName: "stdin",
 		Reader:      strings.NewReader("alpha beta gamma\ndelta epsilon\n"),
 	}, cfg, "payments and invoices", nil)
@@ -297,7 +304,7 @@ func TestRunVerboseProgressIsIsolatedPerRun(t *testing.T) {
 		)
 		errCh := make(chan error, 1)
 		go func() {
-			_, err := Run(context.Background(), &fakeChat{answer: "Retry policy is enabled [source 1]."}, &gatedEmbedder{
+			_, err := runRAG(context.Background(), &fakeChat{answer: "Retry policy is enabled [source 1]."}, &gatedEmbedder{
 				started: started,
 				release: release,
 			}, Source{
@@ -361,6 +368,52 @@ func TestRunVerboseProgressIsIsolatedPerRun(t *testing.T) {
 			if total != expectedTotal {
 				t.Fatalf("%s recorder total = %d, want %d", tc.name, total, expectedTotal)
 			}
+		}
+	}
+}
+
+func TestRunProgressFromPlanDoesNotRequirePrepareStage(t *testing.T) {
+	cfg := Options{
+		EmbeddingModel: "embed",
+		TopK:           3,
+		FinalK:         2,
+		ChunkSize:      55,
+		ChunkOverlap:   10,
+		IndexTTL:       time.Hour,
+		IndexDir:       t.TempDir(),
+		Rerank:         "heuristic",
+	}
+	content := strings.Join([]string{
+		"overview",
+		"retry policy is enabled for failed requests",
+		"backoff starts at 1s",
+	}, "\n")
+	plan := planWithoutPrepare(nil)
+	recorder := testutil.NewProgressRecorder(plan.Total())
+	plan = planWithoutPrepare(recorder)
+
+	answer, err := runRAG(context.Background(), &fakeChat{answer: "Retry policy is enabled [source 1]."}, &fakeEmbedder{}, Source{
+		Path:        "/tmp/retries.txt",
+		DisplayName: "retries.txt",
+		Reader:      strings.NewReader(content),
+	}, cfg, "What is the retry policy?", plan)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(answer, "Retry policy is enabled") {
+		t.Fatalf("answer = %q, want synthesized answer", answer)
+	}
+
+	_, currents, totals := recorder.Snapshot()
+	if len(currents) == 0 {
+		t.Fatal("progress recorder saw no updates")
+	}
+	if currents[len(currents)-1] != plan.Total() {
+		t.Fatalf("final progress = %d, want %d", currents[len(currents)-1], plan.Total())
+	}
+	for _, total := range totals {
+		if total != plan.Total() {
+			t.Fatalf("reported total = %d, want %d", total, plan.Total())
 		}
 	}
 }
@@ -638,4 +691,12 @@ func vectorFor(input string) []float32 {
 	default:
 		return []float32{0, 0, 0}
 	}
+}
+
+func planWithoutPrepare(reporter verbose.Reporter) *verbose.Plan {
+	return verbose.NewPlan(reporter, "rag",
+		verbose.StageDef{Key: "index", Label: "index", Slots: 8},
+		verbose.StageDef{Key: "retrieval", Label: "retrieval", Slots: 7},
+		verbose.StageDef{Key: "final", Label: "final", Slots: 7},
+	)
 }

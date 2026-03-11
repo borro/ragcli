@@ -2,4 +2,6 @@
 - [ ] подумать о конфигурирование таймаута для llm-клиента, надо ли?
 - [ ] сделай техническую документацию
 - [ ] сделать e2e тесты
-- [ ] что-то нечистое в `verbose.NewPlan(reporter, localize.T("progress.mode.hybrid")`
+- [ ] переделать tools чтобы они работали с дескриптором, а не с именем файла
+- [ ] в batchReduceInputs и TestBatchReduceInputs_UsesLargerReduceBudget есть дубликат логики
+- [ ] рефакторить app ещё раз

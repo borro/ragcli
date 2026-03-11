@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/borro/ragcli/internal/app/tools/filetools"
+	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
+	"github.com/borro/ragcli/internal/tools/filetools"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -25,8 +26,6 @@ const (
 	stalledToolRetryLimit         = 1
 	maxTurnFinalizationRetries    = 1
 )
-
-type Options struct{}
 
 type toolsConfig struct {
 	tools         []openai.Tool
@@ -191,17 +190,13 @@ func buildToolsUserPrompt(prompt string, filePath string) string {
 	return strings.Join(lines, "\n")
 }
 
-func Run(ctx context.Context, client llm.ChatRequester, filePath, prompt string, plan *verbose.Plan) (string, error) {
+func Run(ctx context.Context, client llm.ChatRequester, source input.Source, prompt string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
-	slog.Debug("tools processing started", "file_path", filePath, "has_file_path", filePath != "")
-	if plan == nil {
-		plan = verbose.NewPlan(nil, localize.T("progress.mode.tools"),
-			verbose.StageDef{Key: "prepare", Label: localize.T("progress.stage.prepare"), Slots: 2},
-			verbose.StageDef{Key: "init", Label: localize.T("progress.stage.init"), Slots: 2},
-			verbose.StageDef{Key: "loop", Label: localize.T("progress.stage.loop"), Slots: 18},
-			verbose.StageDef{Key: "final", Label: localize.T("progress.stage.final"), Slots: 2},
-		)
+	filePath := strings.TrimSpace(source.Path)
+	if filePath == "" {
+		return "", errors.New("tools source path is required")
 	}
+	slog.Debug("tools processing started", "file_path", filePath, "has_file_path", filePath != "")
 	initMeter := plan.Stage("init")
 	loopMeter := plan.Stage("loop")
 	finalMeter := plan.Stage("final")

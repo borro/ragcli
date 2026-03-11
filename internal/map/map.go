@@ -2,8 +2,8 @@ package mapmode
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"regexp"
 	"sort"
@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/verbose"
@@ -19,7 +20,6 @@ import (
 )
 
 type Options struct {
-	InputPath      string
 	Concurrency    int
 	ChunkLength    int
 	LengthExplicit bool
@@ -789,23 +789,16 @@ func selfRefine(ctx context.Context, client llm.ChatRequester, question, facts, 
 // PIPELINE
 //
 
-func Run(ctx context.Context, client llm.ChatAutoContextRequester, input io.Reader, opts Options, question string, plan *verbose.Plan) (string, error) {
+func Run(ctx context.Context, client llm.ChatAutoContextRequester, source input.Source, opts Options, question string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
 	inputMode := "stdin"
-	if opts.InputPath != "" {
+	if strings.TrimSpace(source.Path) != "" {
 		inputMode = "file"
 	}
-	stats := &pipelineStats{}
-	if plan == nil {
-		plan = verbose.NewPlan(nil, localize.T("progress.mode.map"),
-			verbose.StageDef{Key: "prepare", Label: localize.T("progress.stage.prepare"), Slots: 2},
-			verbose.StageDef{Key: "chunking", Label: localize.T("progress.stage.chunking"), Slots: 4},
-			verbose.StageDef{Key: "chunks", Label: localize.T("progress.stage.chunks"), Slots: 9},
-			verbose.StageDef{Key: "reduce", Label: localize.T("progress.stage.reduce"), Slots: 5},
-			verbose.StageDef{Key: "verify", Label: localize.T("progress.stage.verify"), Slots: 2},
-			verbose.StageDef{Key: "final", Label: localize.T("progress.stage.final"), Slots: 2},
-		)
+	if source.Reader == nil {
+		return "", errors.New("map source reader is required")
 	}
+	stats := &pipelineStats{}
 	chunkingMeter := plan.Stage("chunking")
 	chunkMeter := plan.Stage("chunks")
 	reduceMeter := plan.Stage("reduce")
@@ -823,7 +816,7 @@ func Run(ctx context.Context, client llm.ChatAutoContextRequester, input io.Read
 		"reduce_token_budget", effectiveReduceApproxTokenBudget(opts.ChunkLength),
 	)
 
-	chunks, err := SplitByApproxTokens(ctx, input, question, opts.ChunkLength)
+	chunks, err := SplitByApproxTokens(ctx, source.Reader, question, opts.ChunkLength)
 	if err != nil {
 		return "", err
 	}

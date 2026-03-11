@@ -1,12 +1,5 @@
 package app
 
-import (
-	"github.com/borro/ragcli/internal/app/hybrid"
-	mapmode "github.com/borro/ragcli/internal/app/map"
-	"github.com/borro/ragcli/internal/app/rag"
-	"github.com/borro/ragcli/internal/app/tools"
-)
-
 type CommonOptions struct {
 	InputPath string
 	Prompt    string
@@ -25,12 +18,17 @@ type LLMOptions struct {
 	NoProxy        bool
 }
 
-type Command struct {
-	Name   string
-	Common CommonOptions
-	LLM    LLMOptions
-	Map    mapmode.Options
-	RAG    rag.Options
-	Hybrid hybrid.Options
-	Tools  tools.Options
+type commandInvocation struct {
+	spec    *commandSpec
+	Common  CommonOptions
+	LLM     LLMOptions
+	payload any
+}
+
+func (inv commandInvocation) Name() string {
+	if inv.spec == nil {
+		return ""
+	}
+
+	return inv.spec.name
 }

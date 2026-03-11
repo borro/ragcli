@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/testutil"
@@ -172,8 +173,7 @@ func TestRun_EndToEndWithRefine(t *testing.T) {
 		"refined answer",
 	}, nil)
 
-	result, err := Run(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
-		InputPath:      "input.txt",
+	result, err := runMap(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
 		ChunkLength:    (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 		LengthExplicit: true,
 		Concurrency:    1,
@@ -211,8 +211,7 @@ func TestRun_ReportsFinalCompletionOnce(t *testing.T) {
 		verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
 	)
 
-	result, err := Run(context.Background(), client, strings.NewReader("aaa\n"), Options{
-		InputPath:      "input.txt",
+	result, err := runMap(context.Background(), client, strings.NewReader("aaa\n"), Options{
 		ChunkLength:    (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 		LengthExplicit: true,
 		Concurrency:    1,
@@ -237,12 +236,47 @@ func TestRun_ReportsFinalCompletionOnce(t *testing.T) {
 	}
 }
 
+func TestRun_ProgressFromPlanDoesNotRequirePrepareStage(t *testing.T) {
+	client := newSequencedLLMClient(t, []string{
+		"fact from chunk 1",
+		"initial answer",
+		"NONE",
+	}, nil)
+	plan := planWithoutPrepare(nil)
+	recorder := testutil.NewProgressRecorder(plan.Total())
+	plan = planWithoutPrepare(recorder)
+
+	result, err := runMap(context.Background(), client, strings.NewReader("aaa\n"), Options{
+		ChunkLength:    (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
+		LengthExplicit: true,
+		Concurrency:    1,
+	}, "Что в файле?", plan)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result != "initial answer" {
+		t.Fatalf("Run() result = %q, want %q", result, "initial answer")
+	}
+
+	_, currents, totals := recorder.Snapshot()
+	if len(currents) == 0 {
+		t.Fatal("progress recorder saw no updates")
+	}
+	if currents[len(currents)-1] != plan.Total() {
+		t.Fatalf("final progress = %d, want %d", currents[len(currents)-1], plan.Total())
+	}
+	for _, total := range totals {
+		if total != plan.Total() {
+			t.Fatalf("reported total = %d, want %d", total, plan.Total())
+		}
+	}
+}
+
 func TestRun_EmptyInput(t *testing.T) {
 	setRussianLocale(t)
 	client := newSequencedLLMClient(t, nil, nil)
 
-	result, err := Run(context.Background(), client, strings.NewReader(""), Options{
-		InputPath:      "input.txt",
+	result, err := runMap(context.Background(), client, strings.NewReader(""), Options{
 		ChunkLength:    10,
 		LengthExplicit: true,
 		Concurrency:    1,
@@ -260,8 +294,7 @@ func TestRun_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
 		setRussianLocale(t)
 		client := newSequencedLLMClient(t, []string{"SKIP", "SKIP"}, nil)
 
-		result, err := Run(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
-			InputPath:      "input.txt",
+		result, err := runMap(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
 			ChunkLength:    (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 			LengthExplicit: true,
 			Concurrency:    1,
@@ -278,8 +311,7 @@ func TestRun_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
 		setRussianLocale(t)
 		client := newSequencedLLMClient(t, nil, []int{http.StatusInternalServerError, http.StatusInternalServerError})
 
-		result, err := Run(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
-			InputPath:      "input.txt",
+		result, err := runMap(context.Background(), client, strings.NewReader("aaa\nbbb\n"), Options{
 			ChunkLength:    (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
 			LengthExplicit: true,
 			Concurrency:    1,
@@ -300,8 +332,7 @@ func TestRun_ExplicitLengthSkipsAutoDetection(t *testing.T) {
 		autoError: nil,
 	}
 
-	_, err := Run(context.Background(), client, strings.NewReader("a\n"), Options{
-		InputPath:      "input.txt",
+	_, err := runMap(context.Background(), client, strings.NewReader("a\n"), Options{
 		ChunkLength:    1,
 		LengthExplicit: true,
 		Concurrency:    1,
@@ -324,8 +355,7 @@ func TestRun_UsesAutoLengthWhenNotExplicit(t *testing.T) {
 		autoError: nil,
 	}
 
-	result, err := Run(context.Background(), client, strings.NewReader("a\n"), Options{
-		InputPath:      "input.txt",
+	result, err := runMap(context.Background(), client, strings.NewReader("a\n"), Options{
 		ChunkLength:    1,
 		LengthExplicit: false,
 		Concurrency:    1,
@@ -347,8 +377,7 @@ func TestRun_FallsBackToDefaultLengthWhenAutoFails(t *testing.T) {
 		autoError: errors.New("cannot detect"),
 	}
 
-	result, err := Run(context.Background(), client, strings.NewReader("a\n"), Options{
-		InputPath:      "input.txt",
+	result, err := runMap(context.Background(), client, strings.NewReader("a\n"), Options{
 		ChunkLength:    1,
 		LengthExplicit: false,
 		Concurrency:    1,
@@ -502,8 +531,7 @@ func TestRun_PassesAllMapFactsToReduce(t *testing.T) {
 		"SUPPORTED: yes\nISSUES:\nNONE",
 	}, nil)
 
-	result, err := Run(context.Background(), client, strings.NewReader(line+"\n"+line+"\n"+line+"\n"), Options{
-		InputPath:      "input.txt",
+	result, err := runMap(context.Background(), client, strings.NewReader(line+"\n"+line+"\n"+line+"\n"), Options{
 		ChunkLength:    (estimateMapRequestTokens("Что в файле?", line) * mapBudgetDenominator / mapBudgetNumerator) + 1,
 		LengthExplicit: true,
 		Concurrency:    1,
@@ -544,8 +572,7 @@ func TestRun_NormalizesMapOutputBeforeReduce(t *testing.T) {
 		"SUPPORTED: yes\nISSUES:\nNONE",
 	}, nil)
 
-	result, err := Run(context.Background(), client, strings.NewReader(line+"\n"), Options{
-		InputPath:      "input.txt",
+	result, err := runMap(context.Background(), client, strings.NewReader(line+"\n"), Options{
 		ChunkLength:    (estimateMapRequestTokens("Что в файле?", line) * mapBudgetDenominator / mapBudgetNumerator) + 1,
 		LengthExplicit: true,
 		Concurrency:    1,
@@ -708,6 +735,24 @@ func newCapturingLLMClient(t *testing.T, responses []string, statuses []int) (*l
 
 func itoa(v int) string {
 	return strconv.Itoa(v)
+}
+
+func runMap(ctx context.Context, client llm.ChatAutoContextRequester, reader io.Reader, opts Options, question string, plan *verbose.Plan) (string, error) {
+	return Run(ctx, client, input.Source{
+		Reader:      reader,
+		Path:        "input.txt",
+		DisplayName: "input.txt",
+	}, opts, question, plan)
+}
+
+func planWithoutPrepare(reporter verbose.Reporter) *verbose.Plan {
+	return verbose.NewPlan(reporter, "map",
+		verbose.StageDef{Key: "chunking", Label: "chunking", Slots: 4},
+		verbose.StageDef{Key: "chunks", Label: "chunks", Slots: 9},
+		verbose.StageDef{Key: "reduce", Label: "reduce", Slots: 5},
+		verbose.StageDef{Key: "verify", Label: "verify", Slots: 2},
+		verbose.StageDef{Key: "final", Label: "final", Slots: 2},
+	)
 }
 
 func assertPromptMentionsUntrusted(t *testing.T, prompt string) {

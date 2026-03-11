@@ -80,6 +80,17 @@ func TestOpenFile(t *testing.T) {
 	if handle.DisplayName != filePath {
 		t.Fatalf("DisplayName = %q, want %q", handle.DisplayName, filePath)
 	}
+
+	source := handle.Source()
+	if source.Reader == nil {
+		t.Fatal("Source().Reader = nil, want file reader")
+	}
+	if source.Path != filePath {
+		t.Fatalf("Source().Path = %q, want %q", source.Path, filePath)
+	}
+	if source.DisplayName != filePath {
+		t.Fatalf("Source().DisplayName = %q, want %q", source.DisplayName, filePath)
+	}
 }
 
 func TestOpenFileMissing(t *testing.T) {
@@ -114,6 +125,17 @@ func TestOpenStdinMaterializesTempFile(t *testing.T) {
 	}
 	if _, err := os.Stat(handle.Path); err != nil {
 		t.Fatalf("temp path stat error = %v", err)
+	}
+
+	source := handle.Source()
+	if source.Reader == nil {
+		t.Fatal("Source().Reader = nil, want stdin temp reader")
+	}
+	if source.Path != handle.Path {
+		t.Fatalf("Source().Path = %q, want %q", source.Path, handle.Path)
+	}
+	if source.DisplayName != "stdin" {
+		t.Fatalf("Source().DisplayName = %q, want stdin", source.DisplayName)
 	}
 
 	tempPath := handle.Path
