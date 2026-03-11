@@ -118,6 +118,7 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 	reporter := verbose.New(stderr, cmd.Common.Verbose, cmd.Common.Debug)
 	plan := progressPlanForCommand(cmd.Name, reporter)
 	prepareMeter := plan.Stage("prepare")
+	proxyMode, proxyTarget := llmProxyLogFields(cmd.LLM.ProxyURL, cmd.LLM.NoProxy)
 	prepareMeter.Start(localize.T("progress.detail.prepare.open_input"))
 
 	slog.Info("application run started",
@@ -145,8 +146,8 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 		"api_url_set", strings.TrimSpace(cmd.LLM.APIURL) != "",
 		"model", strings.TrimSpace(cmd.LLM.Model),
 		"embedding_model", strings.TrimSpace(cmd.LLM.EmbeddingModel),
-		"proxy_mode", llm.ProxyMode(cmd.LLM.ProxyURL, cmd.LLM.NoProxy),
-		"proxy_target", llm.ProxyLogValue(cmd.LLM.ProxyURL, cmd.LLM.NoProxy),
+		"proxy_mode", proxyMode,
+		"proxy_target", proxyTarget,
 	)
 
 	slog.Info("preparing input source", "command", cmd.Name, "input_path_set", strings.TrimSpace(cmd.Common.InputPath) != "")
@@ -171,8 +172,8 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 		"api_url_set", strings.TrimSpace(cmd.LLM.APIURL) != "",
 		"model", strings.TrimSpace(cmd.LLM.Model),
 		"retry_count", cmd.LLM.RetryCount,
-		"proxy_mode", llm.ProxyMode(cmd.LLM.ProxyURL, cmd.LLM.NoProxy),
-		"proxy_target", llm.ProxyLogValue(cmd.LLM.ProxyURL, cmd.LLM.NoProxy),
+		"proxy_mode", proxyMode,
+		"proxy_target", proxyTarget,
 	)
 
 	client, err := llm.NewClient(llm.Config{
@@ -199,8 +200,8 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 		slog.Debug("creating embedding client",
 			"embedding_model", strings.TrimSpace(cmd.LLM.EmbeddingModel),
 			"retry_count", cmd.LLM.RetryCount,
-			"proxy_mode", llm.ProxyMode(cmd.LLM.ProxyURL, cmd.LLM.NoProxy),
-			"proxy_target", llm.ProxyLogValue(cmd.LLM.ProxyURL, cmd.LLM.NoProxy),
+			"proxy_mode", proxyMode,
+			"proxy_target", proxyTarget,
 		)
 		embedder, embedErr := llm.NewEmbedder(llm.Config{
 			BaseURL:    cmd.LLM.APIURL,
@@ -223,8 +224,8 @@ func executeCommand(ctx context.Context, cmd Command, stdout io.Writer, stderr i
 		slog.Debug("creating embedding client",
 			"embedding_model", strings.TrimSpace(cmd.LLM.EmbeddingModel),
 			"retry_count", cmd.LLM.RetryCount,
-			"proxy_mode", llm.ProxyMode(cmd.LLM.ProxyURL, cmd.LLM.NoProxy),
-			"proxy_target", llm.ProxyLogValue(cmd.LLM.ProxyURL, cmd.LLM.NoProxy),
+			"proxy_mode", proxyMode,
+			"proxy_target", proxyTarget,
 		)
 		embedder, embedErr := llm.NewEmbedder(llm.Config{
 			BaseURL:    cmd.LLM.APIURL,
