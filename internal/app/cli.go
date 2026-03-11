@@ -325,6 +325,16 @@ func globalFlags() []cli.Flag {
 			Sources: cli.EnvVars("OPENAI_API_KEY"),
 		},
 		&cli.StringFlag{
+			Name:    "proxy-url",
+			Usage:   localize.T("cli.flag.proxy_url.usage"),
+			Sources: cli.EnvVars("LLM_PROXY_URL"),
+		},
+		&cli.BoolFlag{
+			Name:    "no-proxy",
+			Usage:   localize.T("cli.flag.no_proxy.usage"),
+			Sources: cli.EnvVars("LLM_NO_PROXY"),
+		},
+		&cli.StringFlag{
 			Name:    "model",
 			Usage:   localize.T("cli.flag.model.usage"),
 			Value:   defaultLLMOptions().Model,
@@ -374,14 +384,6 @@ func showUsageHelp(ctx context.Context, cmd *cli.Command, err error, _ bool) err
 
 func suppressExitError(context.Context, *cli.Command, error) {}
 
-func bindCommandBase(cmd *cli.Command, name string) Command {
-	return Command{
-		Name:   name,
-		Common: bindCommonOptions(cmd),
-		LLM:    bindLLMOptions(cmd),
-	}
-}
-
 func bindCommonOptions(cmd *cli.Command) CommonOptions {
 	return CommonOptions{
 		InputPath: cmd.String("file"),
@@ -392,13 +394,15 @@ func bindCommonOptions(cmd *cli.Command) CommonOptions {
 	}
 }
 
-func bindLLMOptions(cmd *cli.Command) LLMOptions {
+func bindLLMOptions(cmd *cli.Command) (LLMOptions, error) {
 	ops := defaultLLMOptions()
 	ops.APIURL = cmd.String("api-url")
 	ops.Model = cmd.String("model")
 	ops.APIKey = cmd.String("api-key")
+	ops.ProxyURL = cmd.String("proxy-url")
+	ops.NoProxy = cmd.Bool("no-proxy")
 	ops.RetryCount = cmd.Int("retry")
-	return ops
+	return ops, nil
 }
 
 func bindPrompt(cmd *cli.Command) string {
@@ -406,7 +410,10 @@ func bindPrompt(cmd *cli.Command) string {
 }
 
 func bindMapCommand(cmd *cli.Command) (Command, error) {
-	bound := bindCommandBase(cmd, "map")
+	bound, err := bindCommandBase(cmd, "map")
+	if err != nil {
+		return Command{}, err
+	}
 	bound.Map = normalizeMapOptions(mapmode.Options{
 		ChunkLength:    cmd.Int("length"),
 		LengthExplicit: cmd.IsSet("length"),
@@ -426,7 +433,10 @@ func normalizeMapOptions(options mapmode.Options) mapmode.Options {
 }
 
 func bindRAGCommand(cmd *cli.Command) (Command, error) {
-	bound := bindCommandBase(cmd, "rag")
+	bound, err := bindCommandBase(cmd, "rag")
+	if err != nil {
+		return Command{}, err
+	}
 	bound.LLM.EmbeddingModel = normalizeEmbeddingModel(cmd.String("embedding-model"))
 	bound.RAG = normalizeRAGOptions(rag.Options{
 		TopK:         cmd.Int("rag-top-k"),
@@ -445,7 +455,10 @@ func bindRAGCommand(cmd *cli.Command) (Command, error) {
 }
 
 func bindHybridCommand(cmd *cli.Command) (Command, error) {
-	bound := bindCommandBase(cmd, "hybrid")
+	bound, err := bindCommandBase(cmd, "hybrid")
+	if err != nil {
+		return Command{}, err
+	}
 	bound.LLM.EmbeddingModel = normalizeEmbeddingModel(cmd.String("embedding-model"))
 	bound.Hybrid = normalizeHybridOptions(hybrid.Options{
 		TopK:           cmd.Int("hybrid-top-k"),
@@ -516,13 +529,29 @@ func normalizeHybridOptions(options hybrid.Options) hybrid.Options {
 }
 
 func bindToolsCommand(cmd *cli.Command) (Command, error) {
-	bound := bindCommandBase(cmd, "tools")
+	bound, err := bindCommandBase(cmd, "tools")
+	if err != nil {
+		return Command{}, err
+	}
 	bound.Tools = tools.Options{}
 
 	if err := validatePrompt(bound.Common.Prompt); err != nil {
 		return Command{}, err
 	}
 	return bound, nil
+}
+
+func bindCommandBase(cmd *cli.Command, name string) (Command, error) {
+	llmOptions, err := bindLLMOptions(cmd)
+	if err != nil {
+		return Command{}, err
+	}
+
+	return Command{
+		Name:   name,
+		Common: bindCommonOptions(cmd),
+		LLM:    llmOptions,
+	}, nil
 }
 
 func validatePrompt(prompt string) error {

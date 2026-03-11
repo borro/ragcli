@@ -19,6 +19,7 @@ import (
 // Client представляет клиент для взаимодействия с OpenAI API через go-openai
 type Client struct {
 	client     *openai.Client
+	httpClient *http.Client
 	model      string
 	retryCount int
 	baseURL    string
@@ -44,6 +45,7 @@ type ChatAutoContextRequester interface {
 // Embedder представляет клиент для embeddings API.
 type Embedder struct {
 	client       *openai.Client
+	httpClient   *http.Client
 	model        string
 	retryCount   int
 	doEmbeddings func(ctx context.Context, req openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error)
@@ -81,6 +83,15 @@ type EmbeddingMetrics struct {
 	TotalTokens  int
 }
 
+type Config struct {
+	BaseURL    string
+	Model      string
+	APIKey     string
+	RetryCount int
+	ProxyURL   string
+	NoProxy    bool
+}
+
 const autoContextProbePromptTokens = 320000
 
 var (
@@ -92,42 +103,119 @@ var (
 )
 
 // NewClient создаёт новый LLM клиент, используя go-openai библиотеку
-func NewClient(baseURL, model, apiKey string, retryCount int) *Client {
-	config := openai.DefaultConfig(apiKey)
-	if baseURL != "" {
-		config.BaseURL = baseURL
+func NewClient(cfg Config) (*Client, error) {
+	config, err := newOpenAIConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	client := &Client{
 		client:     openai.NewClientWithConfig(config),
-		model:      model,
-		retryCount: retryCount,
+		httpClient: config.HTTPClient.(*http.Client),
+		model:      cfg.Model,
+		retryCount: cfg.RetryCount,
 		baseURL:    config.BaseURL,
-		apiKey:     apiKey,
+		apiKey:     cfg.APIKey,
 	}
 	client.doRequest = func(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 		return client.client.CreateChatCompletion(ctx, req)
 	}
 	client.doHTTP = config.HTTPClient.Do
-	return client
+	return client, nil
 }
 
 // NewEmbedder создаёт отдельный embeddings клиент.
-func NewEmbedder(baseURL, model, apiKey string, retryCount int) *Embedder {
-	config := openai.DefaultConfig(apiKey)
-	if baseURL != "" {
-		config.BaseURL = baseURL
+func NewEmbedder(cfg Config) (*Embedder, error) {
+	config, err := newOpenAIConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	embedder := &Embedder{
 		client:     openai.NewClientWithConfig(config),
-		model:      model,
-		retryCount: retryCount,
+		httpClient: config.HTTPClient.(*http.Client),
+		model:      cfg.Model,
+		retryCount: cfg.RetryCount,
 	}
 	embedder.doEmbeddings = func(ctx context.Context, req openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error) {
 		return embedder.client.CreateEmbeddings(ctx, req)
 	}
-	return embedder
+	return embedder, nil
+}
+
+func newOpenAIConfig(cfg Config) (openai.ClientConfig, error) {
+	config := openai.DefaultConfig(cfg.APIKey)
+	if cfg.BaseURL != "" {
+		config.BaseURL = cfg.BaseURL
+	}
+
+	httpClient, err := newHTTPClient(cfg.ProxyURL, cfg.NoProxy)
+	if err != nil {
+		return openai.ClientConfig{}, err
+	}
+	if httpClient != nil {
+		config.HTTPClient = httpClient
+	}
+
+	return config, nil
+}
+
+func newHTTPClient(proxyValue string, noProxy bool) (*http.Client, error) {
+	switch {
+	case noProxy:
+		return &http.Client{Transport: defaultTransport(nil)}, nil
+	case strings.TrimSpace(proxyValue) != "":
+		parsed, err := parseProxyURL(proxyValue)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Client{Transport: defaultTransport(http.ProxyURL(parsed))}, nil
+	default:
+		return &http.Client{Transport: defaultTransport(http.ProxyFromEnvironment)}, nil
+	}
+}
+
+func defaultTransport(proxy func(*http.Request) (*url.URL, error)) *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = proxy
+	return transport
+}
+
+func parseProxyURL(raw string) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid proxy URL: expected scheme://host[:port]")
+	}
+	return parsed, nil
+}
+
+func ProxyMode(proxyValue string, noProxy bool) string {
+	switch {
+	case noProxy:
+		return "disabled"
+	case strings.TrimSpace(proxyValue) != "":
+		return "fixed"
+	default:
+		return "environment"
+	}
+}
+
+func ProxyLogValue(proxyValue string, noProxy bool) string {
+	switch ProxyMode(proxyValue, noProxy) {
+	case "disabled":
+		return "off"
+	case "fixed":
+		parsed, err := parseProxyURL(proxyValue)
+		if err != nil {
+			return "invalid"
+		}
+		return parsed.Scheme + "://" + parsed.Host
+	default:
+		return "environment"
+	}
 }
 
 // SendRequest отправляет запрос к LLM API с механизмом retry и exponential backoff

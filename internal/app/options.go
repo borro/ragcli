@@ -21,6 +21,8 @@ type LLMOptions struct {
 	EmbeddingModel string
 	APIKey         string
 	RetryCount     int
+	ProxyURL       string
+	NoProxy        bool
 }
 
 type Command struct {

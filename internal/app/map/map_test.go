@@ -696,7 +696,14 @@ func newCapturingLLMClient(t *testing.T, responses []string, statuses []int) (*l
 	}))
 	t.Cleanup(server.Close)
 
-	return llm.NewClient(server.URL, "test-model", "", 0), &requests
+	client, err := llm.NewClient(llm.Config{
+		BaseURL: server.URL,
+		Model:   "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	return client, &requests
 }
 
 func itoa(v int) string {

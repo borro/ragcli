@@ -88,6 +88,12 @@ usage = "URL OpenAI-compatible API."
 [cli.flag.api_key]
 usage = "API key для OpenAI-compatible API."
 
+[cli.flag.proxy_url]
+usage = "Явный proxy URL для всех LLM HTTP-запросов."
+
+[cli.flag.no_proxy]
+usage = "Отключить любой proxy для запросов ragcli, включая proxy из окружения."
+
 [cli.flag.model]
 usage = "Chat-модель для map/tools/rag answer generation."
 

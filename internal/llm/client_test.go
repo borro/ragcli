@@ -17,6 +17,34 @@ import (
 const testLMStudioModel = "test-org/test-model"
 const testBaseURL = "http://example.invalid/v1"
 
+func mustNewClient(t *testing.T, baseURL, model, apiKey string, retryCount int) *Client {
+	t.Helper()
+	client, err := NewClient(Config{
+		BaseURL:    baseURL,
+		Model:      model,
+		APIKey:     apiKey,
+		RetryCount: retryCount,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	return client
+}
+
+func mustNewEmbedder(t *testing.T, baseURL, model, apiKey string, retryCount int) *Embedder {
+	t.Helper()
+	embedder, err := NewEmbedder(Config{
+		BaseURL:    baseURL,
+		Model:      model,
+		APIKey:     apiKey,
+		RetryCount: retryCount,
+	})
+	if err != nil {
+		t.Fatalf("NewEmbedder() error = %v", err)
+	}
+	return embedder
+}
+
 // TestNewClient проверяет корректное создание клиента LLM
 func TestNewClient(t *testing.T) {
 	tests := []struct {
@@ -59,7 +87,7 @@ func TestNewClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retryCount)
+			client := mustNewClient(t, tt.baseURL, tt.model, tt.apiKey, tt.retryCount)
 
 			if client.model != tt.expectedModel {
 				t.Errorf("NewClient() model = %q, want %q", client.model, tt.expectedModel)
@@ -73,7 +101,7 @@ func TestNewClient(t *testing.T) {
 
 // TestClient_Model проверяет Getter модели
 func TestClient_Model(t *testing.T) {
-	client := NewClient("http://test.com", "test-model", "api-key", 3)
+	client := mustNewClient(t, "http://test.com", "test-model", "api-key", 3)
 
 	model := client.Model()
 	if model != "test-model" {
@@ -119,7 +147,7 @@ func TestSendRequest_CreatesRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retry)
+			client := mustNewClient(t, tt.baseURL, tt.model, tt.apiKey, tt.retry)
 			client.doRequest = func(_ context.Context, _ openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 				return openai.ChatCompletionResponse{}, errors.New("mock transport failure")
 			}
@@ -188,7 +216,7 @@ func TestSendRequest_ContextCancelled(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retry)
+			client := mustNewClient(t, tt.baseURL, tt.model, tt.apiKey, tt.retry)
 			client.doRequest = func(ctx context.Context, _ openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 				<-ctx.Done()
 				return openai.ChatCompletionResponse{}, ctx.Err()
@@ -256,7 +284,7 @@ func TestSendRequest_ExhaustedRetries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient(tt.baseURL, tt.model, tt.apiKey, tt.retry)
+			client := mustNewClient(t, tt.baseURL, tt.model, tt.apiKey, tt.retry)
 			client.doRequest = func(_ context.Context, _ openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 				return openai.ChatCompletionResponse{}, errors.New("mock transport failure")
 			}
@@ -356,7 +384,7 @@ func TestChatCompletionRequest_Structure(t *testing.T) {
 }
 
 func TestSendRequestWithMetrics_UsageAndTPS(t *testing.T) {
-	client := NewClient("", "test-model", "", 0)
+	client := mustNewClient(t, "", "test-model", "", 0)
 	client.doRequest = func(_ context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 		if req.Model != "test-model" {
 			t.Fatalf("Model = %q, want %q", req.Model, "test-model")
@@ -397,7 +425,7 @@ func TestSendRequestWithMetrics_UsageAndTPS(t *testing.T) {
 }
 
 func TestSendRequestWithMetrics_ZeroTotalTokensNoTPS(t *testing.T) {
-	client := NewClient("", "test-model", "", 0)
+	client := mustNewClient(t, "", "test-model", "", 0)
 	client.doRequest = func(_ context.Context, _ openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 		return openai.ChatCompletionResponse{
 			Choices: []openai.ChatCompletionChoice{
@@ -423,7 +451,7 @@ func TestSendRequestWithMetrics_ZeroTotalTokensNoTPS(t *testing.T) {
 }
 
 func TestSendRequestWithMetrics_RetryUsesSuccessfulAttemptMetrics(t *testing.T) {
-	client := NewClient("", "test-model", "", 1)
+	client := mustNewClient(t, "", "test-model", "", 1)
 	attempts := 0
 	client.doRequest = func(_ context.Context, _ openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 		attempts++
@@ -461,7 +489,7 @@ func TestSendRequestWithMetrics_RetryUsesSuccessfulAttemptMetrics(t *testing.T) 
 }
 
 func TestSendRequestWithMetrics_ExplicitModelOverridesDefault(t *testing.T) {
-	client := NewClient("", "default-model", "", 0)
+	client := mustNewClient(t, "", "default-model", "", 0)
 	client.doRequest = func(_ context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 		if req.Model != "override-model" {
 			t.Fatalf("Model = %q, want override-model", req.Model)
@@ -484,7 +512,7 @@ func TestSendRequestWithMetrics_ExplicitModelOverridesDefault(t *testing.T) {
 }
 
 func TestNewEmbedder(t *testing.T) {
-	embedder := NewEmbedder(testBaseURL, "embed-model", "key", 2)
+	embedder := mustNewEmbedder(t, testBaseURL, "embed-model", "key", 2)
 	if embedder.Model() != "embed-model" {
 		t.Fatalf("Model() = %q, want embed-model", embedder.Model())
 	}
@@ -493,8 +521,89 @@ func TestNewEmbedder(t *testing.T) {
 	}
 }
 
+func TestNewClientInvalidProxyURL(t *testing.T) {
+	_, err := NewClient(Config{
+		BaseURL:  testBaseURL,
+		Model:    "test-model",
+		ProxyURL: "://bad",
+	})
+	if err == nil {
+		t.Fatal("NewClient() error = nil, want invalid proxy URL error")
+	}
+	if !strings.Contains(err.Error(), "invalid proxy URL") {
+		t.Fatalf("error = %v, want invalid proxy URL", err)
+	}
+}
+
+func TestNewClientNoProxyDisablesTransportProxy(t *testing.T) {
+	client := mustNewClient(t, testBaseURL, "test-model", "", 0)
+	withNoProxy, err := NewClient(Config{
+		BaseURL: testBaseURL,
+		Model:   "test-model",
+		NoProxy: true,
+		APIKey:  "",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	defaultTransport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("default transport type = %T", client.httpClient.Transport)
+	}
+	noProxyTransport, ok := withNoProxy.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("no-proxy transport type = %T", withNoProxy.httpClient.Transport)
+	}
+	if defaultTransport.Proxy == nil {
+		t.Fatal("default transport Proxy = nil, want environment-based proxy function")
+	}
+	if noProxyTransport.Proxy != nil {
+		t.Fatal("no-proxy transport Proxy != nil, want direct connections")
+	}
+}
+
+func TestNewClientProxyURLOverridesEnvironment(t *testing.T) {
+	client, err := NewClient(Config{
+		BaseURL:  testBaseURL,
+		Model:    "test-model",
+		ProxyURL: "http://127.0.0.1:8080",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://api.example.com/v1/chat", nil)
+	proxyURL, err := transport.Proxy(req)
+	if err != nil {
+		t.Fatalf("transport.Proxy() error = %v", err)
+	}
+	if proxyURL == nil || proxyURL.String() != "http://127.0.0.1:8080" {
+		t.Fatalf("proxyURL = %v, want explicit proxy", proxyURL)
+	}
+}
+
+func TestProxyHelpers(t *testing.T) {
+	if got := ProxyMode("", false); got != "environment" {
+		t.Fatalf("ProxyMode() = %q, want environment", got)
+	}
+	if got := ProxyMode("http://127.0.0.1:8080", false); got != "fixed" {
+		t.Fatalf("ProxyMode() = %q, want fixed", got)
+	}
+	if got := ProxyMode("http://127.0.0.1:8080", true); got != "disabled" {
+		t.Fatalf("ProxyMode() = %q, want disabled", got)
+	}
+	if got := ProxyLogValue("http://user:secret@127.0.0.1:8080", false); got != "http://127.0.0.1:8080" {
+		t.Fatalf("ProxyLogValue() = %q, want sanitized host", got)
+	}
+}
+
 func TestCreateEmbeddingsWithMetrics(t *testing.T) {
-	embedder := NewEmbedder("", "embed-model", "", 0)
+	embedder := mustNewEmbedder(t, "", "embed-model", "", 0)
 	embedder.doEmbeddings = func(_ context.Context, req openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error) {
 		converted := req.Convert()
 		inputs, ok := converted.Input.([]string)
@@ -565,7 +674,7 @@ func TestResponseHasToolCallsAndToolChoiceLabel(t *testing.T) {
 }
 
 func TestCreateEmbeddingsWithMetrics_ContextCancelled(t *testing.T) {
-	embedder := NewEmbedder("", "embed-model", "", 2)
+	embedder := mustNewEmbedder(t, "", "embed-model", "", 2)
 	embedder.doEmbeddings = func(ctx context.Context, _ openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error) {
 		<-ctx.Done()
 		return openai.EmbeddingResponse{}, ctx.Err()
@@ -581,7 +690,7 @@ func TestCreateEmbeddingsWithMetrics_ContextCancelled(t *testing.T) {
 }
 
 func TestCreateEmbeddingsWithMetrics_IncludesLastError(t *testing.T) {
-	embedder := NewEmbedder("", "embed-model", "", 2)
+	embedder := mustNewEmbedder(t, "", "embed-model", "", 2)
 	wantErr := errors.New("remote 503")
 	calls := 0
 	embedder.doEmbeddings = func(_ context.Context, _ openai.EmbeddingRequestConverter) (openai.EmbeddingResponse, error) {
@@ -635,7 +744,7 @@ func TestResolveAutoContextLength_UsesPathAPIModels(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL+"/lm/v1", testLMStudioModel, "", 0)
+	client := mustNewClient(t, server.URL+"/lm/v1", testLMStudioModel, "", 0)
 	value, err := client.ResolveAutoContextLength(context.Background())
 	if err != nil {
 		t.Fatalf("ResolveAutoContextLength() error = %v", err)
@@ -682,7 +791,7 @@ func TestResolveAutoContextLength_FallsBackToRootAPIModels(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL+"/nested/v1", testLMStudioModel, "", 0)
+	client := mustNewClient(t, server.URL+"/nested/v1", testLMStudioModel, "", 0)
 	value, err := client.ResolveAutoContextLength(context.Background())
 	if err != nil {
 		t.Fatalf("ResolveAutoContextLength() error = %v", err)
@@ -700,7 +809,7 @@ func TestResolveAutoContextLength_FallsBackToRootAPIModels(t *testing.T) {
 
 func TestResolveAutoContextLength_WarmupWhenModelNotLoaded(t *testing.T) {
 	var modelsCalls int
-	client := NewClient(testBaseURL, testLMStudioModel, "", 0)
+	client := mustNewClient(t, testBaseURL, testLMStudioModel, "", 0)
 
 	client.doHTTP = func(_ *http.Request) (*http.Response, error) {
 		modelsCalls++
@@ -772,7 +881,7 @@ func TestResolveAutoContextLength_ParsesModelsFieldAndKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL+"/v1", testLMStudioModel, "", 0)
+	client := mustNewClient(t, server.URL+"/v1", testLMStudioModel, "", 0)
 	value, err := client.ResolveAutoContextLength(context.Background())
 	if err != nil {
 		t.Fatalf("ResolveAutoContextLength() error = %v", err)
@@ -783,7 +892,7 @@ func TestResolveAutoContextLength_ParsesModelsFieldAndKey(t *testing.T) {
 }
 
 func TestResolveAutoContextLength_UsesProbeFromError(t *testing.T) {
-	client := NewClient(testBaseURL, "test-model", "", 0)
+	client := mustNewClient(t, testBaseURL, "test-model", "", 0)
 	client.doHTTP = func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusNotFound,
@@ -804,7 +913,7 @@ func TestResolveAutoContextLength_UsesProbeFromError(t *testing.T) {
 }
 
 func TestResolveAutoContextLength_ReturnsErrorWhenUndetected(t *testing.T) {
-	client := NewClient(testBaseURL, "test-model", "", 0)
+	client := mustNewClient(t, testBaseURL, "test-model", "", 0)
 	client.doHTTP = func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
