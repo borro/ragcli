@@ -36,9 +36,9 @@ Repo-level инструкции для кодинг-агентов лежат в
 - [`../internal/input/README.md`](../internal/input/README.md)
 - [`../internal/retrieval/README.md`](../internal/retrieval/README.md)
 - [`../internal/verbose/README.md`](../internal/verbose/README.md)
+- [`../internal/verbose/testutil/README.md`](../internal/verbose/testutil/README.md)
 - [`../internal/localize/README.md`](../internal/localize/README.md)
 - [`../internal/logging/README.md`](../internal/logging/README.md)
-- [`../internal/testutil/README.md`](../internal/testutil/README.md)
 
 ## Как поддерживать документацию
 

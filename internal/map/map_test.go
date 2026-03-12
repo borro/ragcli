@@ -16,8 +16,8 @@ import (
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
-	"github.com/borro/ragcli/internal/testutil"
 	"github.com/borro/ragcli/internal/verbose"
+	"github.com/borro/ragcli/internal/verbose/testutil"
 	openai "github.com/sashabaranov/go-openai"
 )
 

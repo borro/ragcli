@@ -1,12 +1,12 @@
-# `internal/testutil`
+# `internal/verbose/testutil`
 
 ## TL;DR
 
-Test-only пакет с небольшими вспомогательными типами для unit-тестов. В production runtime он не участвует.
+Test-only helper-пакет для проверки stage-based progress из [`internal/verbose`](../README.md). В production runtime он не участвует.
 
 ## Зона ответственности
 
-- лёгкие вспомогательные объекты для проверки прогресса и test assertions;
+- лёгкие вспомогательные объекты для unit-тестов progress reporting;
 - отсутствие зависимости production-кода от test helpers.
 
 ## Ключевые entrypoints/types
@@ -18,7 +18,7 @@ Test-only пакет с небольшими вспомогательными т
 
 Входящие:
 
-- тесты `internal/app`, `internal/rag`, `internal/tools` и других пакетов
+- тесты `internal/map`, `internal/rag`, `internal/tools`, `internal/verbose`
 
 Исходящие:
 
@@ -41,5 +41,4 @@ Test-only пакет с небольшими вспомогательными т
 
 ## Куда вносить изменения
 
-- Добавляйте сюда только test-only helpers общего назначения.
-- Если helper начинает влиять на production behavior, это признак неправильного размещения.
+- Helpers, привязанные к контракту `internal/verbose`, держите здесь, а не в общем testutil-каталоге.

@@ -3,7 +3,7 @@ package verbose
 import (
 	"testing"
 
-	"github.com/borro/ragcli/internal/testutil"
+	"github.com/borro/ragcli/internal/verbose/testutil"
 )
 
 func TestScaleProgressClampsBoundaries(t *testing.T) {

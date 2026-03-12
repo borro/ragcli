@@ -28,7 +28,7 @@
 
 - `internal/app`
 - все mode-пакеты
-- `internal/testutil`
+- пакетные тесты и `internal/verbose/testutil`
 
 Исходящие:
 
