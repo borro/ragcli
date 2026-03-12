@@ -78,6 +78,18 @@ func TestRunRootHelp(t *testing.T) {
 	}
 }
 
+func TestRunInvalidLangFlagReturnsLocalizedError(t *testing.T) {
+	var stderr bytes.Buffer
+
+	exitCode := Run([]string{"--lang", "de", "map", "question"}, &bytes.Buffer{}, &stderr, bytes.NewBuffer(nil), "v1.2.3")
+	if exitCode != 1 {
+		t.Fatalf("Run(--lang de map question) exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "unsupported locale de; use en or ru") {
+		t.Fatalf("stderr = %q, want unsupported locale error", stderr.String())
+	}
+}
+
 func TestRunMapHelp(t *testing.T) {
 	var stdout bytes.Buffer
 

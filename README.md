@@ -7,6 +7,12 @@
 
 Подходит для логов, документации, отчётов и других файлов, которые неудобно скармливать модели целиком. Если входной файл не указан, команда читает `stdin`, поэтому `ragcli` удобно встраивать в shell-скрипты и пайплайны.
 
+## Документация
+
+- Канонический комплект требований и архитектуры лежит в [`doc/README.md`](doc/README.md).
+- Общие документы находятся в папке [`doc`](doc/), а package-level обзоры лежат рядом с кодом в `README.md` внутри `cmd/` и `internal/`.
+- Если README и код расходятся, источником истины считаются текущий код и проходящие тесты.
+
 ## Почему `ragcli`
 
 - Не нужно вручную копировать большие файлы в чат.
@@ -54,7 +60,7 @@ export LLM_PROXY_URL=http://127.0.0.1:1080   # optional explicit proxy
 
 Если `LLM_MODEL` не задана, `ragcli` использует значение по умолчанию `local-model`. Во многих локальных OpenAI-compatible backend'ах это означает "возьми последнюю загруженную модель", но это поведение определяется самим backend'ом, а не CLI.
 
-Для режимов `rag` и `hybrid`, если `--embedding-model` и `EMBEDDING_MODEL` не заданы, по умолчанию используется embedding-модель `text-embedding-3-small`. При необходимости её можно переопределить флагом или переменной окружения.
+Для режимов `rag` и `hybrid`, если `--embedding-model` и `EMBEDDING_MODEL` не заданы, CLI по умолчанию использует embedding-модель `text-embedding-nomic-embed-text-v1.5`. Если backend ожидает другую модель, переопределите её флагом или переменной окружения.
 
 После этого можно запускать команды без постоянной передачи `--api-url`, `--api-key` и `--model`.
 
@@ -165,7 +171,7 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 | `--api-key` | `OPENAI_API_KEY` | API key |
 | `--proxy-url` | `LLM_PROXY_URL` | Явный proxy URL для всех LLM HTTP-запросов |
 | `--no-proxy` | `LLM_NO_PROXY` | Отключить любой proxy для запросов `ragcli` |
-| `--model` | `LLM_MODEL` | Chat-модель для `map`, `rag`, `tools` |
+| `--model` | `LLM_MODEL` | Chat-модель для `map`, `rag`, `hybrid`, `tools` |
 | `--retry`, `-r` | `RETRY` | Количество retry для LLM HTTP-клиента |
 | `--raw` | `RAW` | Отключить markdown-рендер финального ответа и печатать сырой текст |
 | `--debug`, `-d` | `DEBUG` | Подробные runtime-логи в `stderr`; без флага ошибки печатаются одной строкой |
@@ -212,3 +218,5 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 ## Для разработки
 
 Точка входа находится в [`cmd/ragcli/main.go`](/home/borro/projects/llm-code/ragcli/cmd/ragcli/main.go), а CLI-описание и help-тексты определены в [`internal/app/cli.go`](/home/borro/projects/llm-code/ragcli/internal/app/cli.go). Если нужен полный обзор доступных опций и их значений по умолчанию, удобнее начинать именно с help или этих файлов.
+
+Архитектурный обзор и пакетная навигация описаны в [`doc/architecture.md`](doc/architecture.md) и package-level `README.md` рядом с соответствующими пакетами.
