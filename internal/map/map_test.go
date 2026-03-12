@@ -289,6 +289,29 @@ func TestRun_EmptyInput(t *testing.T) {
 	}
 }
 
+func TestRun_EmptyInputSkipsAutoContextResolution(t *testing.T) {
+	setRussianLocale(t)
+	client := &resolverScriptedChat{autoValue: 64000}
+
+	result, err := runMap(context.Background(), client, strings.NewReader(""), Options{
+		ChunkLength:    1,
+		LengthExplicit: false,
+		Concurrency:    1,
+	}, "Что в файле?", nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result != "Файл пустой" {
+		t.Fatalf("Run() result = %q, want %q", result, "Файл пустой")
+	}
+	if client.resolveCalls != 0 {
+		t.Fatalf("ResolveAutoContextLength() calls = %d, want 0", client.resolveCalls)
+	}
+	if client.requestIndex != 0 {
+		t.Fatalf("SendRequestWithMetrics() calls = %d, want 0", client.requestIndex)
+	}
+}
+
 func TestRun_NoInfoWhenMapSkipsOrErrors(t *testing.T) {
 	t.Run("all map requests skip", func(t *testing.T) {
 		setRussianLocale(t)

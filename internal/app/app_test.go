@@ -3,7 +3,10 @@ package app
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/borro/ragcli/internal/hybrid"
@@ -492,6 +495,13 @@ func TestRunMapWithEmptyStdin(t *testing.T) {
 	setLangEnv(t, "en")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	t.Setenv("LLM_API_URL", server.URL+"/v1")
 
 	exitCode := Run([]string{"map", "question"}, &stdout, &stderr, bytes.NewBuffer(nil), "v1.2.3")
 	if exitCode != 0 {
@@ -502,6 +512,9 @@ func TestRunMapWithEmptyStdin(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want no stderr output on success", stderr.String())
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("LLM server calls = %d, want 0", got)
 	}
 }
 

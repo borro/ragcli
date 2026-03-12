@@ -1,9 +1,11 @@
 package mapmode
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"regexp"
 	"sort"
@@ -805,6 +807,17 @@ func Run(ctx context.Context, client llm.ChatAutoContextRequester, source input.
 	verifyMeter := plan.Stage("verify")
 	finalMeter := plan.Stage("final")
 	chunkingMeter.Start(localize.T("progress.map.chunking_start"))
+
+	reader := bufio.NewReader(source.Reader)
+	if _, err := reader.Peek(1); err != nil {
+		if errors.Is(err, io.EOF) {
+			chunkingMeter.Done(localize.T("progress.map.chunking_done", localize.Data{"Count": 0}))
+			slog.Debug("map-reduce pipeline finished", "reason", "empty_input", "duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second))
+			return localize.T("map.answer.empty_file"), nil
+		}
+		return "", err
+	}
+
 	opts.ChunkLength = resolveChunkLength(ctx, client, opts)
 
 	slog.Debug("map-reduce pipeline started",
@@ -816,7 +829,7 @@ func Run(ctx context.Context, client llm.ChatAutoContextRequester, source input.
 		"reduce_token_budget", effectiveReduceApproxTokenBudget(opts.ChunkLength),
 	)
 
-	chunks, err := SplitByApproxTokens(ctx, source.Reader, question, opts.ChunkLength)
+	chunks, err := SplitByApproxTokens(ctx, reader, question, opts.ChunkLength)
 	if err != nil {
 		return "", err
 	}

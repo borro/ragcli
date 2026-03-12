@@ -46,6 +46,7 @@ func TestRunHybridVerboseProgressIsMonotonic(t *testing.T) {
 	exitCode := Run([]string{
 		"--verbose",
 		"--api-url", server.URL + "/v1",
+		"--retry", "0",
 		"hybrid",
 		"--embedding-model", "embed",
 		"--hybrid-fallback", "fail",
