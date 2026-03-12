@@ -569,11 +569,15 @@ func batchReduceInputs(ctx context.Context, items []string, question string, max
 		normalizedItems = append(normalizedItems, pieces...)
 	}
 
+	return batchReduceItemsWithinBudget(normalizedItems, question, safeMaxTokens), nil
+}
+
+func batchReduceItemsWithinBudget(items []string, question string, safeMaxTokens int) [][]string {
 	var batches [][]string
 	var current []string
 	currentText := ""
 
-	for _, item := range normalizedItems {
+	for _, item := range items {
 		if currentText == "" {
 			current = []string{item}
 			currentText = item
@@ -596,7 +600,7 @@ func batchReduceInputs(ctx context.Context, items []string, question string, max
 		batches = append(batches, current)
 	}
 
-	return batches, nil
+	return batches
 }
 
 func splitReduceItemByApproxTokens(ctx context.Context, item string, question string, safeMaxTokens int) ([]string, error) {

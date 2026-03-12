@@ -2,7 +2,6 @@
 - [ ] подумать о конфигурирование таймаута для llm-клиента, надо ли?
 - [ ] сделать e2e тесты
 - [ ] переделать tools чтобы они работали с дескриптором, а не с именем файла
-- [ ] в batchReduceInputs и TestBatchReduceInputs_UsesLargerReduceBudget есть дубликат логики
 - [ ] рефакторить app ещё раз
 - [ ] локализация рядом с модулем?
 - [ ] перенести internal/testutil/verbose.go в internal/verbose

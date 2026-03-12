@@ -514,29 +514,7 @@ func TestBatchReduceInputs_UsesLargerReduceBudget(t *testing.T) {
 		t.Fatalf("batchReduceInputs() error = %v", err)
 	}
 
-	mapSafeBudget := effectiveMapApproxTokenBudget(maxTokens)
-	var mapStyleBatches [][]string
-	var current []string
-	currentText := ""
-	for _, item := range items {
-		if currentText == "" {
-			current = []string{item}
-			currentText = item
-			continue
-		}
-		candidate := currentText + separator + item
-		if estimateReduceRequestTokens(question, candidate) <= mapSafeBudget {
-			current = append(current, item)
-			currentText = candidate
-			continue
-		}
-		mapStyleBatches = append(mapStyleBatches, current)
-		current = []string{item}
-		currentText = item
-	}
-	if len(current) > 0 {
-		mapStyleBatches = append(mapStyleBatches, current)
-	}
+	mapStyleBatches := batchReduceItemsWithinBudget(items, question, effectiveMapApproxTokenBudget(maxTokens))
 
 	if len(reduceBatches) > len(mapStyleBatches) {
 		t.Fatalf("reduce batches = %d, want <= map-style batches = %d", len(reduceBatches), len(mapStyleBatches))
