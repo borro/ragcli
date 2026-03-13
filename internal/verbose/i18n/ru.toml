@@ -1,0 +1,20 @@
+[verbose.fallback]
+mode = "режим"
+stage = "выполняю"
+detail = "обновляю статус"
+
+[progress.stage]
+prepare = "подготовка"
+chunking = "чанкинг"
+chunks = "обработка чанков"
+reduce = "reduce"
+verify = "проверка ответа"
+final = "финальный ответ"
+init = "инициализация"
+loop = "LLM turn"
+segments = "сегментация"
+retrieval = "retrieval"
+index = "индекс"
+grounding = "grounding"
+facts = "извлечение фактов"
+coverage = "coverage"

@@ -1,0 +1,8 @@
+[error.input]
+open_file = "failed to open file: {{.Error}}"
+read_dir = "failed to read input directory: {{.Error}}"
+no_files = "no readable text files found in the directory"
+create_temp = "failed to create temp file: {{.Error}}"
+read_stdin = "failed to read stdin: {{.Error}}"
+close_temp = "failed to close temp file: {{.Error}}"
+reopen_temp = "failed to reopen temp file: {{.Error}}"

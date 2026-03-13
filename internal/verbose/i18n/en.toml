@@ -1,0 +1,20 @@
+[verbose.fallback]
+mode = "mode"
+stage = "running"
+detail = "updating status"
+
+[progress.stage]
+prepare = "prepare"
+chunking = "chunking"
+chunks = "chunk processing"
+reduce = "reduce"
+verify = "answer verification"
+final = "final answer"
+init = "initialization"
+loop = "LLM turn"
+segments = "segmentation"
+retrieval = "retrieval"
+index = "index"
+grounding = "grounding"
+facts = "fact extraction"
+coverage = "coverage"

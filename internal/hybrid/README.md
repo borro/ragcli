@@ -76,3 +76,4 @@
 - Profiling/segmentation/fusion: `hybrid.go`.
 - Общие retrieval инварианты: `internal/retrieval`.
 - Если меняется fallback semantics, обязательно обновляйте `doc/requirements.md`.
+- Локализованные prompts, progress и user-facing ответы режима: `i18n/{en,ru}.toml`.

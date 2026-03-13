@@ -1,0 +1,172 @@
+[cli.version.flag]
+usage = "print the version"
+
+[cli.root]
+usage = "Work with local text through map, RAG, and tool-based retrieval"
+
+[cli.command.map]
+usage = "Process large text in chunks with map-reduce"
+
+[cli.command.rag]
+usage = "Build a local retrieval index and answer from evidence chunks"
+
+[cli.command.hybrid]
+usage = "Combine retrieval, local reading, and map aggregation"
+
+[cli.command.tools]
+usage = "Give the model tools for targeted file investigation"
+
+[cli.command.version]
+usage = "Print ragcli version"
+
+[cli.flag.map.concurrency]
+usage = "Number of parallel requests to the chat model."
+
+[cli.flag.map.length]
+usage = "Strict chunk token limit override for map; without it ragcli auto-detects the limit."
+
+[cli.flag.rag.embedding_model]
+usage = "Embedding model for the retrieval index."
+
+[cli.flag.rag.top_k]
+usage = "How many chunks to keep after vector search."
+
+[cli.flag.rag.final_k]
+usage = "How many evidence chunks to keep before the final answer."
+
+[cli.flag.rag.chunk_size]
+usage = "Chunk size for the local index."
+
+[cli.flag.rag.chunk_overlap]
+usage = "Overlap between neighboring chunks."
+
+[cli.flag.rag.index_ttl]
+usage = "Time to live for the local index."
+
+[cli.flag.rag.index_dir]
+usage = "Directory for the local index."
+
+[cli.flag.rag.rerank]
+usage = "Rerank strategy: heuristic, off, model."
+
+[cli.flag.hybrid.embedding_model]
+usage = "Embedding model for semantic retrieval."
+
+[cli.flag.hybrid.chunk_size]
+usage = "Target meso-segment size for semantic retrieval."
+
+[cli.flag.hybrid.chunk_overlap]
+usage = "Overlap between neighboring meso-segments."
+
+[cli.flag.hybrid.index_ttl]
+usage = "Time to live for the local semantic index."
+
+[cli.flag.hybrid.index_dir]
+usage = "Directory for the local semantic index."
+
+[cli.flag.hybrid.top_k]
+usage = "How many fusion candidates to keep after retrieval."
+
+[cli.flag.hybrid.final_k]
+usage = "How many regions to keep for final synthesis."
+
+[cli.flag.hybrid.map_k]
+usage = "How many regions to send through map-style fact extraction."
+
+[cli.flag.hybrid.read_window]
+usage = "How many lines to read around a strong match."
+
+[cli.flag.hybrid.fallback]
+usage = "Fallback when retrieval is weak or embeddings are unavailable: map, rag-only, fail."
+
+[cli.flag.path]
+usage = "Path to the input file or directory. If omitted, the command reads stdin."
+
+[cli.flag.api_url]
+usage = "OpenAI-compatible API URL."
+
+[cli.flag.api_key]
+usage = "API key for the OpenAI-compatible API."
+
+[cli.flag.proxy_url]
+usage = "Explicit proxy URL for all LLM HTTP requests."
+
+[cli.flag.no_proxy]
+usage = "Disable all proxies for ragcli requests, including environment-based proxies."
+
+[cli.flag.model]
+usage = "Chat model for map/tools/rag answer generation."
+
+[cli.flag.retry]
+usage = "Retry count for the LLM HTTP client."
+
+[cli.flag.raw]
+usage = "Print the final answer as-is, without terminal markdown rendering."
+
+[cli.flag.debug]
+usage = "Enable debug runtime logs in stderr; without this flag errors are printed as one line."
+
+[cli.flag.verbose]
+usage = "Show execution progress in stderr as separate status lines."
+
+[cli.flag.lang]
+usage = "CLI interface language: en or ru."
+
+[cli.description]
+map = """
+Splits the input text into chunks, sends them to the chat model, and aggregates intermediate answers.
+
+Examples:
+  ragcli map --path document.txt -c 4 "What are the main conclusions?"
+  ragcli map --path document.txt --length 8000 --api-url http://localhost:1234/v1 --model my-model "What are the main conclusions? (strict override)"
+  cat document.txt | ragcli map "What are the main conclusions from this document?"
+
+"""
+rag = """
+Builds a local retrieval index from the input file or stdin, picks relevant evidence chunks, and answers using only them.
+
+Examples:
+  ragcli rag --path file.txt --model qwen2.5 --embedding-model text-embedding-3-small "What does it say about the retry policy?"
+  cat spec.txt | ragcli rag --rag-top-k 10 "What limitations are described in the document?"
+
+"""
+tools = """
+Gives the model list_files, search_file, read_lines, and read_around tools so it can investigate the file or directory on its own.
+
+Examples:
+  ragcli tools --path file.txt "What are the key points in the architecture section?"
+  ragcli tools --path app.log --debug "Where do the logs show the causes of 5xx?"
+
+"""
+hybrid = """
+Combines lexical and semantic retrieval, reads exact lines locally, and aggregates facts only from the selected regions.
+
+Examples:
+  ragcli hybrid --path file.txt "What does the document say about retry policy and limitations?"
+  ragcli hybrid --path app.log --hybrid-fallback rag-only "Where is the 5xx root cause and what happens nearby?"
+  cat handbook.md | ragcli hybrid --hybrid-top-k 10 --hybrid-map-k 5 "What are the release process and rollback steps?"
+
+"""
+
+[error.prompt]
+required = "missing required argument: prompt"
+
+[error.locale]
+unsupported = "unsupported locale {{.Value}}; use en or ru"
+
+[error.app]
+unknown_subcommand = "unknown subcommand: {{.Name}}"
+
+[error.output]
+create_renderer = "create renderer: {{.Error}}"
+render_markdown = "render markdown: {{.Error}}"
+
+[progress.mode]
+map = "map"
+tools = "tools"
+hybrid = "hybrid"
+rag = "rag"
+
+[progress.detail.prepare]
+open_input = "opening input data"
+input_ready = "input data ready"

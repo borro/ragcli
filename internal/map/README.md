@@ -62,3 +62,4 @@
 - Изменение chunking-эвристики: `chunking.go`.
 - Изменение prompts или фаз пайплайна: `map.go`.
 - Изменение пользовательских инвариантов режима: синхронизировать с `doc/requirements.md`.
+- Локализованные prompts, progress и user-facing ответы режима: `i18n/{en,ru}.toml`.

@@ -1,9 +1,10 @@
 package localize
 
 import (
-	"embed"
 	"fmt"
 	"io/fs"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,15 +22,17 @@ const (
 
 type Data map[string]any
 
-//go:embed catalogs/*.toml
-var catalogFS embed.FS
-
 var (
 	bundleOnce sync.Once
 	bundleInst *i18n.Bundle
 	bundleErr  error
 
 	currentLocal atomic.Pointer[i18n.Localizer]
+
+	registryMu       sync.Mutex
+	registryFrozen   bool
+	registeredOwners map[string]struct{}
+	registeredFiles  []catalogFile
 
 	detectSystemLocale = func() (string, error) {
 		tag, err := locale.Detect()
@@ -40,18 +43,70 @@ var (
 	}
 )
 
+type catalogFile struct {
+	owner string
+	fsys  fs.FS
+	path  string
+}
+
+type messageKey struct {
+	tag language.Tag
+	id  string
+}
+
+var tomlUnmarshalFuncs = map[string]i18n.UnmarshalFunc{
+	"toml": toml.Unmarshal,
+}
+
+func MustRegister(owner string, fsys fs.FS, paths ...string) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		panic("localize: owner must not be empty")
+	}
+	if fsys == nil {
+		panic(fmt.Sprintf("localize: owner %q provided nil fs", owner))
+	}
+	if len(paths) == 0 {
+		panic(fmt.Sprintf("localize: owner %q must register at least one catalog path", owner))
+	}
+
+	sortedPaths := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			panic(fmt.Sprintf("localize: owner %q provided empty catalog path", owner))
+		}
+		sortedPaths = append(sortedPaths, path)
+	}
+	sort.Strings(sortedPaths)
+
+	registryMu.Lock()
+	defer registryMu.Unlock()
+
+	if registryFrozen {
+		panic(fmt.Sprintf("localize: catalogs already initialized; cannot register %q", owner))
+	}
+	if registeredOwners == nil {
+		registeredOwners = make(map[string]struct{})
+	}
+	if _, exists := registeredOwners[owner]; exists {
+		panic(fmt.Sprintf("localize: duplicate catalog owner %q", owner))
+	}
+	registeredOwners[owner] = struct{}{}
+	for _, path := range sortedPaths {
+		registeredFiles = append(registeredFiles, catalogFile{owner: owner, fsys: fsys, path: path})
+	}
+}
+
 func bundle() (*i18n.Bundle, error) {
 	bundleOnce.Do(func() {
 		b := i18n.NewBundle(language.English)
-		for _, spec := range []struct {
-			path string
-			tag  language.Tag
-		}{
-			{path: "catalogs/active.en.toml", tag: language.English},
-			{path: "catalogs/active.ru.toml", tag: language.Russian},
-		} {
-			if err := loadCatalog(b, spec.tag, spec.path); err != nil {
-				bundleErr = fmt.Errorf("load locale catalog %s: %w", spec.path, err)
+		b.RegisterUnmarshalFunc("toml", toml.Unmarshal)
+
+		seenMessages := make(map[messageKey]string)
+		for _, catalog := range freezeCatalogFiles() {
+			if err := loadCatalogFile(b, catalog, seenMessages); err != nil {
+				bundleErr = err
 				return
 			}
 		}
@@ -60,36 +115,45 @@ func bundle() (*i18n.Bundle, error) {
 	return bundleInst, bundleErr
 }
 
-func loadCatalog(bundle *i18n.Bundle, tag language.Tag, path string) error {
-	raw, err := fs.ReadFile(catalogFS, path)
-	if err != nil {
-		return err
-	}
+func freezeCatalogFiles() []catalogFile {
+	registryMu.Lock()
+	defer registryMu.Unlock()
 
-	var data map[string]any
-	if err := toml.Unmarshal(raw, &data); err != nil {
-		return err
-	}
-
-	messages := make([]*i18n.Message, 0, 128)
-	flattenMessages("", data, &messages)
-	return bundle.AddMessages(tag, messages...)
+	registryFrozen = true
+	files := append([]catalogFile(nil), registeredFiles...)
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].owner == files[j].owner {
+			return files[i].path < files[j].path
+		}
+		return files[i].owner < files[j].owner
+	})
+	return files
 }
 
-func flattenMessages(prefix string, node map[string]any, messages *[]*i18n.Message) {
-	for key, value := range node {
-		id := key
-		if prefix != "" {
-			id = prefix + "." + key
-		}
-
-		switch typed := value.(type) {
-		case string:
-			*messages = append(*messages, &i18n.Message{ID: id, Other: typed})
-		case map[string]any:
-			flattenMessages(id, typed, messages)
-		}
+func loadCatalogFile(bundle *i18n.Bundle, catalog catalogFile, seen map[messageKey]string) error {
+	raw, err := fs.ReadFile(catalog.fsys, catalog.path)
+	if err != nil {
+		return fmt.Errorf("read locale catalog %s (%s): %w", catalog.owner, catalog.path, err)
 	}
+
+	messageFile, err := i18n.ParseMessageFileBytes(raw, catalog.path, tomlUnmarshalFuncs)
+	if err != nil {
+		return fmt.Errorf("parse locale catalog %s (%s): %w", catalog.owner, catalog.path, err)
+	}
+
+	for _, message := range messageFile.Messages {
+		key := messageKey{tag: messageFile.Tag, id: message.ID}
+		source := catalog.owner + ":" + catalog.path
+		if first, exists := seen[key]; exists {
+			return fmt.Errorf("duplicate locale message %s/%s in %s; already defined in %s", key.tag, key.id, source, first)
+		}
+		seen[key] = source
+	}
+
+	if err := bundle.AddMessages(messageFile.Tag, messageFile.Messages...); err != nil {
+		return fmt.Errorf("add locale catalog %s (%s): %w", catalog.owner, catalog.path, err)
+	}
+	return nil
 }
 
 func SetCurrent(code string) error {
@@ -104,19 +168,11 @@ func SetCurrent(code string) error {
 
 func Detect(args []string) (string, bool) {
 	if value, ok := langFlagValue(args); ok {
-		normalized, valid := Normalize(value)
-		if !valid {
-			return EN, false
-		}
-		return normalized, true
+		return Normalize(value)
 	}
 
-	if value, ok := envLangValue(); ok {
-		normalized, valid := Normalize(value)
-		if !valid {
-			return EN, false
-		}
-		return normalized, true
+	if value, ok := lookupEnv("RAGCLI_LANG"); ok {
+		return Normalize(value)
 	}
 
 	raw, err := detectSystemLocale()
@@ -138,8 +194,8 @@ func Normalize(raw string) (string, bool) {
 	if dot := strings.Index(value, "."); dot >= 0 {
 		value = value[:dot]
 	}
-	value = strings.ReplaceAll(value, "_", "-")
-	tag, err := language.Parse(value)
+
+	tag, err := language.Parse(strings.ReplaceAll(value, "_", "-"))
 	if err != nil {
 		return EN, false
 	}
@@ -155,19 +211,15 @@ func Normalize(raw string) (string, bool) {
 }
 
 func T(id string, data ...Data) string {
-	if len(data) > 0 {
-		return localize(id, data[0])
-	}
-	return localize(id, nil)
-}
-
-func localize(id string, data Data) string {
 	localizer := currentLocal.Load()
 	if localizer == nil {
 		return id
 	}
 
-	cfg := &i18n.LocalizeConfig{MessageID: id, TemplateData: data}
+	cfg := &i18n.LocalizeConfig{MessageID: id}
+	if len(data) > 0 {
+		cfg.TemplateData = data[0]
+	}
 	value, err := localizer.Localize(cfg)
 	if err == nil {
 		return value
@@ -194,14 +246,4 @@ func langFlagValue(args []string) (string, bool) {
 	return "", false
 }
 
-func envLangValue() (string, bool) {
-	raw, ok := lookupEnv("RAGCLI_LANG")
-	if !ok {
-		return "", false
-	}
-	return raw, true
-}
-
-var lookupEnv = func(key string) (string, bool) {
-	return syscallLookupEnv(key)
-}
+var lookupEnv = os.LookupEnv

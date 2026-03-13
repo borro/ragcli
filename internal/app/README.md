@@ -72,3 +72,4 @@
 - Изменение runtime lifecycle: `runtime.go`.
 - Изменение output/rendering: `output.go`.
 - Изменение CLI UX или help: `cli.go`.
+- CLI-строки, help и progress-mode labels: `i18n/{en,ru}.toml`.

@@ -67,3 +67,4 @@
 - Retrieval pipeline: `rag.go`.
 - Общие файловые операции индекса: `internal/retrieval`.
 - Если меняется формат `Sources:` или cache semantics, обновляйте общую документацию.
+- Локализованные prompts, progress и insufficient-data ответы режима: `i18n/{en,ru}.toml`.

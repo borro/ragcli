@@ -68,3 +68,4 @@
 - Orchestration loop и лимиты: `run.go`.
 - Добавление нового file tool почти всегда требует и изменения `internal/tools/filetools`.
 - При изменении JSON-контрактов обновляйте документацию пакета и общую архитектуру.
+- Локализованные tool descriptions, prompts и progress: `i18n/{en,ru}.toml`.

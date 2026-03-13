@@ -1,0 +1,172 @@
+[cli.version.flag]
+usage = "показать версию"
+
+[cli.root]
+usage = "Работать с локальным текстом через map, RAG, and tool-based retrieval"
+
+[cli.command.map]
+usage = "Обработать большой текст чанками через map-reduce"
+
+[cli.command.rag]
+usage = "Построить локальный retrieval index и ответить по evidence chunks"
+
+[cli.command.hybrid]
+usage = "Комбинировать retrieval, локальное дочитывание и map-агрегацию"
+
+[cli.command.tools]
+usage = "Дать модели инструменты для точечного исследования файла"
+
+[cli.command.version]
+usage = "Показать версию ragcli"
+
+[cli.flag.map.concurrency]
+usage = "Количество параллельных запросов к chat-модели."
+
+[cli.flag.map.length]
+usage = "Строгий override лимита токенов на chunk для map; без него включается автоопределение."
+
+[cli.flag.rag.embedding_model]
+usage = "Embedding-модель для retrieval index."
+
+[cli.flag.rag.top_k]
+usage = "Сколько чанков взять после vector search."
+
+[cli.flag.rag.final_k]
+usage = "Сколько evidence chunks оставить перед финальным ответом."
+
+[cli.flag.rag.chunk_size]
+usage = "Размер чанка для индекса."
+
+[cli.flag.rag.chunk_overlap]
+usage = "Перекрытие между соседними чанками."
+
+[cli.flag.rag.index_ttl]
+usage = "Время жизни локального индекса."
+
+[cli.flag.rag.index_dir]
+usage = "Каталог локального индекса."
+
+[cli.flag.rag.rerank]
+usage = "Стратегия rerank: heuristic, off, model."
+
+[cli.flag.hybrid.embedding_model]
+usage = "Embedding-модель для semantic retrieval."
+
+[cli.flag.hybrid.chunk_size]
+usage = "Целевой размер meso-сегмента для semantic retrieval."
+
+[cli.flag.hybrid.chunk_overlap]
+usage = "Перекрытие соседних meso-сегментов."
+
+[cli.flag.hybrid.index_ttl]
+usage = "Время жизни локального semantic индекса."
+
+[cli.flag.hybrid.index_dir]
+usage = "Каталог локального semantic индекса."
+
+[cli.flag.hybrid.top_k]
+usage = "Сколько fusion-кандидатов брать после retrieval."
+
+[cli.flag.hybrid.final_k]
+usage = "Сколько регионов оставить для финального синтеза."
+
+[cli.flag.hybrid.map_k]
+usage = "По скольким регионам запускать map-извлечение фактов."
+
+[cli.flag.hybrid.read_window]
+usage = "Сколько строк дочитывать вокруг сильного совпадения."
+
+[cli.flag.hybrid.fallback]
+usage = "Fallback при слабом retrieval или недоступных embeddings: map, rag-only, fail."
+
+[cli.flag.path]
+usage = "Путь к входному файлу или директории. Если не задан, команда читает stdin."
+
+[cli.flag.api_url]
+usage = "URL OpenAI-compatible API."
+
+[cli.flag.api_key]
+usage = "API key для OpenAI-compatible API."
+
+[cli.flag.proxy_url]
+usage = "Явный proxy URL для всех LLM HTTP-запросов."
+
+[cli.flag.no_proxy]
+usage = "Отключить любой proxy для запросов ragcli, включая proxy из окружения."
+
+[cli.flag.model]
+usage = "Chat-модель для map/tools/rag answer generation."
+
+[cli.flag.retry]
+usage = "Количество retry для LLM HTTP-клиента."
+
+[cli.flag.raw]
+usage = "Печатать финальный ответ как есть, без markdown-рендера в терминале."
+
+[cli.flag.debug]
+usage = "Включить debug runtime-логи в stderr; без флага ошибки печатаются одной строкой."
+
+[cli.flag.verbose]
+usage = "Показывать ход выполнения в stderr отдельными строками статуса."
+
+[cli.flag.lang]
+usage = "Язык интерфейса CLI: en или ru."
+
+[cli.description]
+map = """
+Разбивает входной текст на чанки, отправляет их в chat-модель и затем агрегирует промежуточные ответы.
+
+Examples:
+  ragcli map --path document.txt -c 4 "Какие основные выводы?"
+  ragcli map --path document.txt --length 8000 --api-url http://localhost:1234/v1 --model my-model "Какие основные выводы? (strict override)"
+  cat document.txt | ragcli map "Какие основные выводы из этого документа?"
+
+"""
+rag = """
+Строит локальный retrieval index по входному файлу или stdin, подбирает релевантные evidence chunks и формирует ответ только по ним.
+
+Examples:
+  ragcli rag --path file.txt --model qwen2.5 --embedding-model text-embedding-3-small "Что сказано про retry policy?"
+  cat spec.txt | ragcli rag --rag-top-k 10 "Какие ограничения описаны в документе?"
+
+"""
+tools = """
+Дает модели инструменты list_files, search_file, read_lines и read_around, чтобы она сама исследовала файл или директорию и нашла нужные строки.
+
+Examples:
+  ragcli tools --path file.txt "Какие ключевые моменты обсуждаются в разделе про архитектуру?"
+  ragcli tools --path app.log --debug "Где в логах причины 5xx?"
+
+"""
+hybrid = """
+Комбинирует lexical и semantic retrieval, дочитывает точные строки локально и агрегирует факты только по найденным регионам.
+
+Examples:
+  ragcli hybrid --path file.txt "Что в документе сказано про retry policy и ограничения?"
+  ragcli hybrid --path app.log --hybrid-fallback rag-only "Где причина 5xx и что происходит рядом?"
+  cat handbook.md | ragcli hybrid --hybrid-top-k 10 --hybrid-map-k 5 "Какие шаги release process и rollback?"
+
+"""
+
+[error.prompt]
+required = "не указан обязательный аргумент: prompt"
+
+[error.locale]
+unsupported = "неподдерживаемая locale {{.Value}}; используйте en или ru"
+
+[error.app]
+unknown_subcommand = "неизвестная подкоманда: {{.Name}}"
+
+[error.output]
+create_renderer = "не удалось создать renderer: {{.Error}}"
+render_markdown = "не удалось отрендерить markdown: {{.Error}}"
+
+[progress.mode]
+map = "map"
+tools = "tools"
+hybrid = "hybrid"
+rag = "rag"
+
+[progress.detail.prepare]
+open_input = "открываю входные данные"
+input_ready = "входные данные готовы"
