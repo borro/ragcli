@@ -39,7 +39,7 @@ flowchart LR
 - `internal/app` знает про все режимы и shared packages; режимы не знают про CLI.
 - `internal/map` не зависит от retrieval и tool calling.
 - `internal/rag` и `internal/hybrid` используют `internal/retrieval` как общее ядро файлового retrieval.
-- `internal/tools` оркестрирует tool calling, а чтение строк делегирует `internal/tools/filetools`.
+- `internal/tools` оркестрирует tool calling, а перечисление файлов и чтение строк делегирует `internal/tools/filetools`.
 - Исключение к чистой изоляции режимов: `internal/hybrid` использует `internal/map` как fallback path.
 
 ## 3. Жизненный цикл запуска
@@ -82,11 +82,13 @@ sequenceDiagram
 
 `input.Source` — общий wire-object между orchestration-слоем и режимами:
 
-- `Reader` — поток чтения исходного контента;
-- `Path` — фактический путь, включая временный файл от `stdin`;
-- `DisplayName` — человекочитаемое имя источника.
+- `Descriptor` — metadata входа: kind (`stdin` / `file` / `directory`), исходный path и список файлов корпуса.
+- `SnapshotPath()` — фактический path до materialized snapshot, который можно переоткрывать в downstream-пайплайнах.
+- `Open()` — повторно открывает snapshot как `io.ReadCloser` без хранения живого reader внутри `Source`.
+- Методы `InputPath()`, `DisplayName()`, `BackingFiles()` и `IsMultiFile()` скрывают различия между file, directory и `stdin`.
+- Поверх concrete type пакет даёт capability-интерфейсы `SourceMeta`, `SnapshotSource` и `FileBackedSource` для mode-пакетов.
 
-Эта абстракция позволяет всем режимам одинаково работать с `--file` и `stdin`.
+Эта абстракция позволяет всем режимам одинаково работать с `--path`, compatibility alias `--file` и `stdin`.
 
 ### 4.2 LLM adapters
 
@@ -214,7 +216,7 @@ Fallback semantics:
 
 ### 5.4 `tools`
 
-`tools` не строит retrieval index и не загружает файл в prompt целиком. Вместо этого режим оркестрирует диалог модели с локальными file-tools.
+`tools` не строит retrieval index и не загружает файл в prompt целиком. Вместо этого режим оркестрирует диалог модели с локальными file-tools: `list_files`, `search_file`, `read_lines`, `read_around`.
 
 Реальный pipeline:
 
@@ -222,7 +224,7 @@ Fallback semantics:
 2. В каждом turn отправляется chat request с tool definitions.
 3. Если модель запросила tool calls, `toolLoopState` выполняет их локально.
 4. Результаты возвращаются как `role=tool` сообщения в JSON.
-5. Loop отслеживает duplicate calls, already-seen lines и no-progress runs.
+5. Loop отслеживает duplicate calls, already-seen строки и уже перечисленные пути, а также no-progress runs.
 6. При зацикливании включаются защитные ветки: retry without tools, stop-calls prompt, forced finalization.
 7. Режим завершает работу, когда получает содержательный финальный text answer.
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,41 @@ func TestRuntimeExecuteMapDoesNotCreateEmbedder(t *testing.T) {
 	}
 	if embedderCalls != 0 {
 		t.Fatalf("embedderCalls = %d, want 0", embedderCalls)
+	}
+	if got := stdout.String(); got != "answer\n" {
+		t.Fatalf("stdout = %q, want map answer", got)
+	}
+}
+
+func TestRuntimeExecuteMapWithDirectoryInput(t *testing.T) {
+	runtime, stdout, _ := newTestRuntime("")
+	chat := &runtimeChatClient{responses: []string{"fact", "answer", "NONE"}}
+	runtime.newChatClient = func(llm.Config) (llm.ChatAutoContextRequester, error) { return chat, nil }
+	runtime.newEmbedder = func(llm.Config) (llm.EmbeddingRequester, error) {
+		return nil, errors.New("embedder must not be created")
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/a.txt", []byte("alpha\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(a.txt) error = %v", err)
+	}
+	if err := os.Mkdir(dir+"/nested", 0o700); err != nil {
+		t.Fatalf("Mkdir(nested) error = %v", err)
+	}
+	if err := os.WriteFile(dir+"/nested/b.txt", []byte("beta\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(b.txt) error = %v", err)
+	}
+
+	err := runtime.execute(context.Background(), testInvocation("map", CommonOptions{
+		InputPath: dir,
+		Prompt:    "Что в директории?",
+	}, defaultLLMOptions(), mapmode.Options{
+		ChunkLength:    1000,
+		LengthExplicit: true,
+		Concurrency:    1,
+	}))
+	if err != nil {
+		t.Fatalf("runtime.execute(map dir) error = %v", err)
 	}
 	if got := stdout.String(); got != "answer\n" {
 		t.Fatalf("stdout = %q, want map answer", got)

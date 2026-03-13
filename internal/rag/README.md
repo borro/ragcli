@@ -8,9 +8,9 @@
 
 ## Зона ответственности
 
-- spool input и стабильная hash-идентичность документа;
+- spool input или hash по корпусу файлов для directory input;
 - build/load index с TTL;
-- chunking документа для retrieval;
+- chunking документа или нескольких файлов для retrieval;
 - query embedding, retrieval и rerank;
 - финальная генерация ответа и дописывание citation block.
 
@@ -38,9 +38,9 @@
 
 ## Основной поток
 
-1. Вход спулится во временный файл и получает hash.
+1. Single-file input спулится во временный файл; directory input получает hash по `(relative path, content)`.
 2. Пакет пытается загрузить индекс из кэша.
-3. При cache miss документ чанкуется и embed-ится.
+3. При cache miss документ или файлы чанкуются и embed-ятся.
 4. Индекс публикуется в файловой системе.
 5. Query embed-ится отдельно и сравнивается с embeddings чанков.
 6. Лучшие чанки попадают в финальный prompt.
@@ -49,6 +49,7 @@
 ## Инварианты и ошибки
 
 - `rag` отвечает только по найденным evidence chunks.
+- Для directory input line numbers и `Sources:` остаются file-local и используют relative paths.
 - При слабом retrieval возвращается honest insufficient answer, а не произвольная галлюцинация.
 - Индексные файлы должны быть приватными и атомарно опубликованными.
 - Источники в `Sources:` дедуплицируются.

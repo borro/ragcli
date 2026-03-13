@@ -463,6 +463,45 @@ func TestCachedLineReader_LoadsOnceAcrossTools(t *testing.T) {
 	}
 }
 
+func TestListFiles_DefaultsAndPagination(t *testing.T) {
+	reader := NewCorpusReader([]CorpusFile{
+		{Path: writeTempFile(t, "alpha\n"), DisplayPath: "a.txt"},
+		{Path: writeTempFile(t, "beta\n"), DisplayPath: "nested/b.txt"},
+		{Path: writeTempFile(t, "gamma\n"), DisplayPath: "z.log"},
+	})
+
+	raw, err := ExecuteTool(toolCall("1", "list_files", `{"limit":2}`), reader)
+	if err != nil {
+		t.Fatalf("ExecuteTool(list_files) error = %v", err)
+	}
+
+	var result ListFilesResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("json.Unmarshal(list_files) error = %v", err)
+	}
+	if result.FileCount != 2 || result.TotalFiles != 3 || !result.HasMore || result.NextOffset != 2 {
+		t.Fatalf("result = %+v, want first paged file listing", result)
+	}
+	if got := strings.Join(result.Files, ","); got != "a.txt,nested/b.txt" {
+		t.Fatalf("files = %q, want first page", got)
+	}
+
+	secondRaw, err := ExecuteTool(toolCall("2", "list_files", `{"limit":2,"offset":2}`), reader)
+	if err != nil {
+		t.Fatalf("ExecuteTool(list_files page 2) error = %v", err)
+	}
+	secondResult := ListFilesResult{}
+	if err := json.Unmarshal([]byte(secondRaw), &secondResult); err != nil {
+		t.Fatalf("json.Unmarshal(list_files page 2) error = %v", err)
+	}
+	if secondResult.FileCount != 1 || secondResult.TotalFiles != 3 || secondResult.HasMore || secondResult.NextOffset != 0 {
+		t.Fatalf("result = %+v, want second paged file listing", secondResult)
+	}
+	if got := strings.Join(secondResult.Files, ","); got != "z.log" {
+		t.Fatalf("files = %q, want second page", got)
+	}
+}
+
 func TestSummarizeToolArguments_NormalizesSearchParams(t *testing.T) {
 	summary := SummarizeToolArguments(toolCall("1", "search_file", `{"query":"alpha","limit":50,"offset":-1}`))
 
@@ -478,6 +517,14 @@ func TestSummarizeToolArguments_NormalizesSearchParams(t *testing.T) {
 }
 
 func TestSummarizeToolArguments_OtherToolsAndErrors(t *testing.T) {
+	listSummary := SummarizeToolArguments(toolCall("0", "list_files", `{"limit":500,"offset":-1}`))
+	if listSummary["limit"] != maxListFilesLimit {
+		t.Fatalf("limit = %#v, want %d", listSummary["limit"], maxListFilesLimit)
+	}
+	if listSummary["offset"] != 0 {
+		t.Fatalf("offset = %#v, want 0", listSummary["offset"])
+	}
+
 	readLinesSummary := SummarizeToolArguments(toolCall("1", "read_lines", `{"start_line":3,"end_line":7}`))
 	if readLinesSummary["start_line"] != float64(3) && readLinesSummary["start_line"] != 3 {
 		t.Fatalf("start_line = %#v, want 3", readLinesSummary["start_line"])
@@ -521,6 +568,29 @@ func TestSummarizeToolResult_SearchPagination(t *testing.T) {
 	}
 	if summary["match_count"] != float64(2) && summary["match_count"] != 2 {
 		t.Fatalf("match_count = %#v, want 2", summary["match_count"])
+	}
+	if summary["next_offset"] != float64(2) && summary["next_offset"] != 2 {
+		t.Fatalf("next_offset = %#v, want 2", summary["next_offset"])
+	}
+}
+
+func TestSummarizeToolResult_ListFilesPagination(t *testing.T) {
+	raw, err := MarshalJSON(ListFilesResult{
+		FileCount:  2,
+		TotalFiles: 5,
+		HasMore:    true,
+		NextOffset: 2,
+	})
+	if err != nil {
+		t.Fatalf("marshalJSON(ListFilesResult) error = %v", err)
+	}
+
+	summary := SummarizeToolResult("list_files", raw)
+	if summary["file_count"] != float64(2) && summary["file_count"] != 2 {
+		t.Fatalf("file_count = %#v, want 2", summary["file_count"])
+	}
+	if summary["total_files"] != float64(5) && summary["total_files"] != 5 {
+		t.Fatalf("total_files = %#v, want 5", summary["total_files"])
 	}
 	if summary["next_offset"] != float64(2) && summary["next_offset"] != 2 {
 		t.Fatalf("next_offset = %#v, want 2", summary["next_offset"])
@@ -581,6 +651,11 @@ func TestExecuteTool_ErrorPaths(t *testing.T) {
 		wantCode string
 	}{
 		{
+			name:     "invalid list_files args",
+			call:     toolCall("0", "list_files", `{"limit":`),
+			wantCode: "invalid_arguments",
+		},
+		{
 			name:     "invalid search args",
 			call:     toolCall("1", "search_file", `{"query":`),
 			wantCode: "invalid_arguments",
@@ -640,6 +715,65 @@ func TestExecuteToolCalls_ContextDoneAndToolErrorJSON(t *testing.T) {
 	}
 	if toolErr.Code != "invalid_arguments" {
 		t.Fatalf("Code = %q, want invalid_arguments", toolErr.Code)
+	}
+}
+
+func TestMultiFileReader_SearchAcrossCorpusAndReadByPath(t *testing.T) {
+	firstPath := writeTempFile(t, "alpha\nbeta\n")
+	secondPath := writeTempFile(t, "gamma\nalpha in nested\n")
+	reader := NewCorpusReader([]CorpusFile{
+		{Path: firstPath, DisplayPath: "a.txt"},
+		{Path: secondPath, DisplayPath: "nested/b.txt"},
+	})
+
+	raw, err := ExecuteTool(toolCall("1", "search_file", `{"query":"alpha"}`), reader)
+	if err != nil {
+		t.Fatalf("ExecuteTool(search_file) error = %v", err)
+	}
+
+	var result SearchResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("json.Unmarshal(search) error = %v", err)
+	}
+	if len(result.Matches) != 2 {
+		t.Fatalf("len(Matches) = %d, want 2", len(result.Matches))
+	}
+	if result.Matches[0].Path != "a.txt" {
+		t.Fatalf("Matches[0].Path = %q, want a.txt", result.Matches[0].Path)
+	}
+	if result.Matches[1].Path != "nested/b.txt" {
+		t.Fatalf("Matches[1].Path = %q, want nested/b.txt", result.Matches[1].Path)
+	}
+
+	linesRaw, err := ExecuteTool(toolCall("2", "read_lines", `{"path":"nested/b.txt","start_line":2,"end_line":2}`), reader)
+	if err != nil {
+		t.Fatalf("ExecuteTool(read_lines) error = %v", err)
+	}
+	var lines ReadLinesResult
+	if err := json.Unmarshal([]byte(linesRaw), &lines); err != nil {
+		t.Fatalf("json.Unmarshal(read_lines) error = %v", err)
+	}
+	if lines.Path != "nested/b.txt" {
+		t.Fatalf("ReadLinesResult.Path = %q, want nested/b.txt", lines.Path)
+	}
+	if len(lines.Lines) != 1 || lines.Lines[0].Path != "nested/b.txt" || lines.Lines[0].LineNumber != 2 {
+		t.Fatalf("read_lines result = %+v, want path-aware line 2", lines)
+	}
+}
+
+func TestMultiFileReader_RequiresPathForReadTools(t *testing.T) {
+	path := writeTempFile(t, "alpha\n")
+	reader := NewCorpusReader([]CorpusFile{
+		{Path: path, DisplayPath: "a.txt"},
+		{Path: writeTempFile(t, "beta\n"), DisplayPath: "b.txt"},
+	})
+
+	_, err := ExecuteTool(toolCall("1", "read_lines", `{"start_line":1,"end_line":1}`), reader)
+	if err == nil {
+		t.Fatal("ExecuteTool(read_lines) error = nil, want error")
+	}
+	if got := AsToolError(err).Code; got != "invalid_arguments" {
+		t.Fatalf("Code = %q, want invalid_arguments", got)
 	}
 }
 

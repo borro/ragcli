@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,7 +65,114 @@ type fakeChat struct {
 	answer   string
 }
 
-type Source = input.Source
+type testSource struct {
+	kind         input.Kind
+	inputPath    string
+	snapshotPath string
+	files        []input.File
+}
+
+func (s testSource) Kind() input.Kind {
+	return s.kind
+}
+
+func (s testSource) InputPath() string {
+	return s.inputPath
+}
+
+func (s testSource) DisplayName() string {
+	if path := strings.TrimSpace(s.inputPath); path != "" {
+		return path
+	}
+	if s.kind == input.KindStdin {
+		return "stdin"
+	}
+	if len(s.files) > 0 && strings.TrimSpace(s.files[0].DisplayPath) != "" {
+		return s.files[0].DisplayPath
+	}
+	return strings.TrimSpace(s.snapshotPath)
+}
+
+func (s testSource) SnapshotPath() string {
+	return s.snapshotPath
+}
+
+func (s testSource) Open() (io.ReadCloser, error) {
+	if strings.TrimSpace(s.snapshotPath) == "" {
+		return nil, os.ErrNotExist
+	}
+	return os.Open(s.snapshotPath)
+}
+
+func (s testSource) BackingFiles() []input.File {
+	return append([]input.File(nil), s.files...)
+}
+
+func (s testSource) FileCount() int {
+	return len(s.files)
+}
+
+func (s testSource) IsMultiFile() bool {
+	return s.kind == input.KindDirectory || len(s.files) > 1
+}
+
+func fileSource(reader io.Reader, path string, label string) testSource {
+	snapshotPath := ""
+	files := []input.File(nil)
+	if reader != nil {
+		snapshotPath = writeSourceTempFile(reader, filepath.Base(path))
+		files = []input.File{{
+			Path:        snapshotPath,
+			DisplayPath: filepath.Base(path),
+		}}
+	}
+	return testSource{
+		kind:         input.KindFile,
+		inputPath:    path,
+		snapshotPath: snapshotPath,
+		files:        files,
+	}
+}
+
+func stdinSource(reader io.Reader) testSource {
+	snapshotPath := ""
+	files := []input.File(nil)
+	if reader != nil {
+		snapshotPath = writeSourceTempFile(reader, "stdin.txt")
+		files = []input.File{{
+			Path:        snapshotPath,
+			DisplayPath: "stdin",
+		}}
+	}
+	return testSource{
+		kind:         input.KindStdin,
+		snapshotPath: snapshotPath,
+		files:        files,
+	}
+}
+
+func directorySource(label string, path string, files []input.File) testSource {
+	return testSource{
+		kind:      input.KindDirectory,
+		inputPath: path,
+		files:     append([]input.File(nil), files...),
+	}
+}
+
+func writeSourceTempFile(reader io.Reader, name string) string {
+	tmpFile, err := os.CreateTemp("", "rag-test-*"+filepath.Ext(name))
+	if err != nil {
+		panic(err)
+	}
+	if _, err := io.Copy(tmpFile, reader); err != nil {
+		_ = tmpFile.Close()
+		panic(err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		panic(err)
+	}
+	return tmpFile.Name()
+}
 
 func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
 	f.mu.Lock()
@@ -89,7 +197,7 @@ func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req openai.ChatComp
 		}, nil
 }
 
-func runRAG(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source input.Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+func runRAG(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source input.FileBackedSource, opts Options, question string, plan *verbose.Plan) (string, error) {
 	return Run(ctx, chat, embedder, source, opts, question, plan)
 }
 
@@ -165,11 +273,7 @@ func TestBuildOrLoadIndexUsesCacheAndInvalidatesByModel(t *testing.T) {
 		IndexDir:       tempDir,
 	}
 	embedder := &fakeEmbedder{}
-	source := Source{
-		Path:        "/tmp/source.txt",
-		DisplayName: "source.txt",
-		Reader:      strings.NewReader("alpha\nretry policy is enabled\nbeta\n"),
-	}
+	source := fileSource(strings.NewReader("alpha\nretry policy is enabled\nbeta\n"), "/tmp/source.txt", "source.txt")
 
 	stats := &pipelineStats{}
 	_, err := buildOrLoadIndex(context.Background(), embedder, source, cfg, stats, verbose.Meter{})
@@ -184,11 +288,7 @@ func TestBuildOrLoadIndexUsesCacheAndInvalidatesByModel(t *testing.T) {
 	}
 
 	stats = &pipelineStats{}
-	_, err = buildOrLoadIndex(context.Background(), embedder, Source{
-		Path:        "/tmp/source.txt",
-		DisplayName: "source.txt",
-		Reader:      strings.NewReader("alpha\nretry policy is enabled\nbeta\n"),
-	}, cfg, stats, verbose.Meter{})
+	_, err = buildOrLoadIndex(context.Background(), embedder, fileSource(strings.NewReader("alpha\nretry policy is enabled\nbeta\n"), "/tmp/source.txt", "source.txt"), cfg, stats, verbose.Meter{})
 	if err != nil {
 		t.Fatalf("buildOrLoadIndex(cache) error = %v", err)
 	}
@@ -199,11 +299,7 @@ func TestBuildOrLoadIndexUsesCacheAndInvalidatesByModel(t *testing.T) {
 
 	cfg.EmbeddingModel = "embed-v2"
 	stats = &pipelineStats{}
-	_, err = buildOrLoadIndex(context.Background(), embedder, Source{
-		Path:        "/tmp/source.txt",
-		DisplayName: "source.txt",
-		Reader:      strings.NewReader("alpha\nretry policy is enabled\nbeta\n"),
-	}, cfg, stats, verbose.Meter{})
+	_, err = buildOrLoadIndex(context.Background(), embedder, fileSource(strings.NewReader("alpha\nretry policy is enabled\nbeta\n"), "/tmp/source.txt", "source.txt"), cfg, stats, verbose.Meter{})
 	if err != nil {
 		t.Fatalf("buildOrLoadIndex(model change) error = %v", err)
 	}
@@ -233,15 +329,11 @@ func TestRunReturnsAnswerWithCitations(t *testing.T) {
 		"totally unrelated section about metrics",
 	}, "\n")
 
-	answer, err := runRAG(context.Background(), chat, embedder, Source{
-		Path:        "/tmp/retries.txt",
-		DisplayName: "retries.txt",
-		Reader:      strings.NewReader(content),
-	}, cfg, "What is the retry policy?", nil)
+	answer, err := runRAG(context.Background(), chat, embedder, fileSource(strings.NewReader(content), "/tmp/retries.txt", "retries.txt"), cfg, "What is the retry policy?", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if !strings.Contains(answer, "Sources:\n- retries.txt:") {
+	if !strings.Contains(answer, "Sources:\n- /tmp/retries.txt:") {
 		t.Fatalf("answer = %q, want appended sources block", answer)
 	}
 	if len(chat.requests) != 1 {
@@ -268,10 +360,7 @@ func TestRunReturnsHonestInsufficientAnswer(t *testing.T) {
 		IndexDir:       t.TempDir(),
 		Rerank:         "heuristic",
 	}
-	answer, err := runRAG(context.Background(), &fakeChat{answer: "should not be used"}, &fakeEmbedder{}, Source{
-		DisplayName: "stdin",
-		Reader:      strings.NewReader("alpha beta gamma\ndelta epsilon\n"),
-	}, cfg, "payments and invoices", nil)
+	answer, err := runRAG(context.Background(), &fakeChat{answer: "should not be used"}, &fakeEmbedder{}, stdinSource(strings.NewReader("alpha beta gamma\ndelta epsilon\n")), cfg, "payments and invoices", nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -307,11 +396,7 @@ func TestRunVerboseProgressIsIsolatedPerRun(t *testing.T) {
 			_, err := runRAG(context.Background(), &fakeChat{answer: "Retry policy is enabled [source 1]."}, &gatedEmbedder{
 				started: started,
 				release: release,
-			}, Source{
-				Path:        "/tmp/retries.txt",
-				DisplayName: "retries.txt",
-				Reader:      strings.NewReader(content),
-			}, Options{
+			}, fileSource(strings.NewReader(content), "/tmp/retries.txt", "retries.txt"), Options{
 				EmbeddingModel: "embed",
 				TopK:           3,
 				FinalK:         2,
@@ -392,11 +477,7 @@ func TestRunProgressFromPlanDoesNotRequirePrepareStage(t *testing.T) {
 	recorder := testutil.NewProgressRecorder(plan.Total())
 	plan = planWithoutPrepare(recorder)
 
-	answer, err := runRAG(context.Background(), &fakeChat{answer: "Retry policy is enabled [source 1]."}, &fakeEmbedder{}, Source{
-		Path:        "/tmp/retries.txt",
-		DisplayName: "retries.txt",
-		Reader:      strings.NewReader(content),
-	}, cfg, "What is the retry policy?", plan)
+	answer, err := runRAG(context.Background(), &fakeChat{answer: "Retry policy is enabled [source 1]."}, &fakeEmbedder{}, fileSource(strings.NewReader(content), "/tmp/retries.txt", "retries.txt"), cfg, "What is the retry policy?", plan)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -430,11 +511,7 @@ func TestPersistedIndexFilesExist(t *testing.T) {
 		IndexDir:       tempDir,
 		Rerank:         "off",
 	}
-	source := Source{
-		Path:        "/tmp/source.txt",
-		DisplayName: "source.txt",
-		Reader:      strings.NewReader("one\ntwo\nthree\nfour\n"),
-	}
+	source := fileSource(strings.NewReader("one\ntwo\nthree\nfour\n"), "/tmp/source.txt", "source.txt")
 
 	index, err := buildOrLoadIndex(context.Background(), &fakeEmbedder{}, source, cfg, &pipelineStats{}, verbose.Meter{})
 	if err != nil {
@@ -549,11 +626,7 @@ func TestBuildOrLoadIndexConcurrentWritersSharePublishedIndex(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := buildOrLoadIndex(context.Background(), embedder, Source{
-				Path:        "/tmp/source.txt",
-				DisplayName: "source.txt",
-				Reader:      strings.NewReader(content),
-			}, cfg, &pipelineStats{}, verbose.Meter{})
+			_, err := buildOrLoadIndex(context.Background(), embedder, fileSource(strings.NewReader(content), "/tmp/source.txt", "source.txt"), cfg, &pipelineStats{}, verbose.Meter{})
 			errs <- err
 		}()
 	}
@@ -567,11 +640,7 @@ func TestBuildOrLoadIndexConcurrentWritersSharePublishedIndex(t *testing.T) {
 		}
 	}
 
-	index, err := buildOrLoadIndex(context.Background(), embedder, Source{
-		Path:        "/tmp/source.txt",
-		DisplayName: "source.txt",
-		Reader:      strings.NewReader(content),
-	}, cfg, &pipelineStats{}, verbose.Meter{})
+	index, err := buildOrLoadIndex(context.Background(), embedder, fileSource(strings.NewReader(content), "/tmp/source.txt", "source.txt"), cfg, &pipelineStats{}, verbose.Meter{})
 	if err != nil {
 		t.Fatalf("buildOrLoadIndex() verification error = %v", err)
 	}
@@ -585,11 +654,53 @@ func TestBuildOrLoadIndexConcurrentWritersSharePublishedIndex(t *testing.T) {
 }
 
 func TestNormalizeSourcePath(t *testing.T) {
-	if got := normalizeSourcePath(Source{DisplayName: "stdin"}); got != "stdin" {
+	if got := normalizeSourcePath(stdinSource(nil)); got != "stdin" {
 		t.Fatalf("normalizeSourcePath(stdin) = %q, want stdin", got)
 	}
-	if got := normalizeSourcePath(Source{Path: "/tmp/a.txt", DisplayName: "a.txt"}); got != "a.txt" {
-		t.Fatalf("normalizeSourcePath(file) = %q, want a.txt", got)
+	if got := normalizeSourcePath(fileSource(nil, "/tmp/a.txt", "a.txt")); got != "/tmp/a.txt" {
+		t.Fatalf("normalizeSourcePath(file) = %q, want /tmp/a.txt", got)
+	}
+}
+
+func TestBuildOrLoadIndexFromMultipleFilesKeepsRelativePaths(t *testing.T) {
+	cfg := Options{
+		EmbeddingModel: "embed",
+		TopK:           3,
+		FinalK:         2,
+		ChunkSize:      64,
+		ChunkOverlap:   8,
+		IndexTTL:       time.Hour,
+		IndexDir:       t.TempDir(),
+		Rerank:         "off",
+	}
+	firstPath := filepath.Join(t.TempDir(), "a.txt")
+	if err := os.WriteFile(firstPath, []byte("retry policy\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(a.txt) error = %v", err)
+	}
+	secondDir := t.TempDir()
+	secondPath := filepath.Join(secondDir, "nested-b.txt")
+	if err := os.WriteFile(secondPath, []byte("metrics line\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(nested-b.txt) error = %v", err)
+	}
+
+	index, err := buildOrLoadIndex(context.Background(), &fakeEmbedder{}, directorySource("corpus", "/tmp/corpus", []input.File{
+		{Path: firstPath, DisplayPath: "a.txt"},
+		{Path: secondPath, DisplayPath: "nested/b.txt"},
+	}), cfg, &pipelineStats{}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("buildOrLoadIndex() error = %v", err)
+	}
+	if len(index.Chunks) < 2 {
+		t.Fatalf("len(Chunks) = %d, want >= 2", len(index.Chunks))
+	}
+	seen := make(map[string]struct{})
+	for _, chunk := range index.Chunks {
+		seen[chunk.SourcePath] = struct{}{}
+	}
+	for _, want := range []string{"a.txt", "nested/b.txt"} {
+		if _, ok := seen[want]; !ok {
+			t.Fatalf("chunks missing source path %q: %+v", want, index.Chunks)
+		}
 	}
 }
 

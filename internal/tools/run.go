@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -34,6 +33,7 @@ type toolsConfig struct {
 }
 
 type orchestratorStats struct {
+	uniqueLists      int
 	uniqueSearches   int
 	uniqueReads      int
 	cacheHits        int
@@ -56,14 +56,14 @@ func (e orchestrationError) Error() string {
 }
 
 type toolExecutionRecord struct {
-	raw         string
-	lineNumbers map[int]struct{}
+	raw      string
+	lineKeys map[string]struct{}
 }
 
 type toolLoopState struct {
 	reader                filetools.LineReader
 	callCache             map[string]toolExecutionRecord
-	seenLines             map[int]struct{}
+	seenLines             map[string]struct{}
 	consecutiveNoProgress int
 	consecutiveDuplicates int
 	stats                 orchestratorStats
@@ -78,9 +78,33 @@ type toolExecutionMeta struct {
 	SuggestedNextOffset int    `json:"suggested_next_offset,omitempty"`
 }
 
-func NewToolsConfig(prompt string, filePath string) toolsConfig {
-	tools := []openai.Tool{
-		{
+func NewToolsConfig(prompt string, source input.FileBackedSource) toolsConfig {
+	multiFile := source.IsMultiFile()
+	tools := make([]openai.Tool, 0, 4)
+	if multiFile {
+		tools = append(tools, openai.Tool{
+			Type: "function",
+			Function: &openai.FunctionDefinition{
+				Name:        "list_files",
+				Description: localize.T("tools.description.list_files"),
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"limit": map[string]any{
+							"type":        "integer",
+							"description": localize.T("tools.param.limit"),
+						},
+						"offset": map[string]any{
+							"type":        "integer",
+							"description": localize.T("tools.param.offset"),
+						},
+					},
+				},
+			},
+		})
+	}
+	tools = append(tools,
+		openai.Tool{
 			Type: "function",
 			Function: &openai.FunctionDefinition{
 				Name:        "search_file",
@@ -88,6 +112,10 @@ func NewToolsConfig(prompt string, filePath string) toolsConfig {
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": localize.T("tools.param.path"),
+						},
 						"query": map[string]any{
 							"type":        "string",
 							"description": localize.T("tools.param.query"),
@@ -114,7 +142,7 @@ func NewToolsConfig(prompt string, filePath string) toolsConfig {
 				},
 			},
 		},
-		{
+		openai.Tool{
 			Type: "function",
 			Function: &openai.FunctionDefinition{
 				Name:        "read_lines",
@@ -122,6 +150,10 @@ func NewToolsConfig(prompt string, filePath string) toolsConfig {
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": localize.T("tools.param.path"),
+						},
 						"start_line": map[string]any{
 							"type":        "integer",
 							"description": localize.T("tools.param.start_line"),
@@ -131,11 +163,16 @@ func NewToolsConfig(prompt string, filePath string) toolsConfig {
 							"description": localize.T("tools.param.end_line"),
 						},
 					},
-					"required": []string{"start_line", "end_line"},
+					"required": func() []string {
+						if multiFile {
+							return []string{"path", "start_line", "end_line"}
+						}
+						return []string{"start_line", "end_line"}
+					}(),
 				},
 			},
 		},
-		{
+		openai.Tool{
 			Type: "function",
 			Function: &openai.FunctionDefinition{
 				Name:        "read_around",
@@ -143,6 +180,10 @@ func NewToolsConfig(prompt string, filePath string) toolsConfig {
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": localize.T("tools.param.path"),
+						},
 						"line": map[string]any{
 							"type":        "integer",
 							"description": localize.T("tools.param.line"),
@@ -156,11 +197,16 @@ func NewToolsConfig(prompt string, filePath string) toolsConfig {
 							"description": localize.T("tools.param.after"),
 						},
 					},
-					"required": []string{"line"},
+					"required": func() []string {
+						if multiFile {
+							return []string{"path", "line"}
+						}
+						return []string{"line"}
+					}(),
 				},
 			},
 		},
-	}
+	)
 
 	systemMessage := openai.ChatCompletionMessage{
 		Role:    "system",
@@ -169,7 +215,7 @@ func NewToolsConfig(prompt string, filePath string) toolsConfig {
 
 	userQuestion := openai.ChatCompletionMessage{
 		Role:    "user",
-		Content: buildToolsUserPrompt(prompt, filePath),
+		Content: buildToolsUserPrompt(prompt, source),
 	}
 
 	return toolsConfig{
@@ -179,34 +225,38 @@ func NewToolsConfig(prompt string, filePath string) toolsConfig {
 	}
 }
 
-func buildToolsUserPrompt(prompt string, filePath string) string {
+func buildToolsUserPrompt(prompt string, source input.FileBackedSource) string {
 	lines := []string{
-		localize.T("tools.prompt.user.file_attached"),
+		localize.T("tools.prompt.user.path_attached"),
 	}
-	if fileName := strings.TrimSpace(filepath.Base(strings.TrimSpace(filePath))); fileName != "" && fileName != "." {
-		lines = append(lines, localize.T("tools.prompt.user.filename", localize.Data{"Name": fileName}))
+	if pathName := strings.TrimSpace(source.DisplayName()); pathName != "" {
+		lines = append(lines, localize.T("tools.prompt.user.pathname", localize.Data{"Name": pathName}))
+	}
+	if source.IsMultiFile() {
+		lines = append(lines, localize.T("tools.prompt.user.file_count", localize.Data{"Count": source.FileCount()}))
+		lines = append(lines, localize.T("tools.prompt.user.list_hint"))
 	}
 	lines = append(lines, localize.T("tools.prompt.user.question", localize.Data{"Prompt": prompt}))
 	return strings.Join(lines, "\n")
 }
 
-func Run(ctx context.Context, client llm.ChatRequester, source input.Source, prompt string, plan *verbose.Plan) (string, error) {
+func Run(ctx context.Context, client llm.ChatRequester, source input.FileBackedSource, prompt string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
-	filePath := strings.TrimSpace(source.Path)
-	if filePath == "" {
+	readerPath := source.SnapshotPath()
+	if readerPath == "" {
 		return "", errors.New("tools source path is required")
 	}
-	slog.Debug("tools processing started", "file_path", filePath, "has_file_path", filePath != "")
+	slog.Debug("tools processing started", "input_path", source.InputPath(), "reader_path", readerPath, "file_count", source.FileCount())
 	initMeter := plan.Stage("init")
 	loopMeter := plan.Stage("loop")
 	finalMeter := plan.Stage("final")
 	initMeter.Start(localize.T("progress.tools.session_start"))
 
-	toolsConfig := NewToolsConfig(prompt, filePath)
+	toolsConfig := NewToolsConfig(prompt, source)
 	messages := make([]openai.ChatCompletionMessage, 0, 2)
 	messages = append(messages, toolsConfig.systemMessage, toolsConfig.userQuestion)
 	initMeter.Done(localize.T("progress.tools.session_done"))
-	loopState := newToolLoopState(filePath)
+	loopState := newToolLoopState(source)
 	var toolChoiceToSend interface{} = "auto"
 	emptyFinalAnswerRetries := 0
 	stalledToolRetries := 0
@@ -217,6 +267,7 @@ func Run(ctx context.Context, client llm.ChatRequester, source input.Source, pro
 			"stop_reason", reason,
 			"turns", turns,
 			"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
+			"unique_lists", loopState.stats.uniqueLists,
 			"unique_searches", loopState.stats.uniqueSearches,
 			"unique_reads", loopState.stats.uniqueReads,
 			"cache_hits", loopState.stats.cacheHits,
@@ -282,10 +333,11 @@ func Run(ctx context.Context, client llm.ChatRequester, source input.Source, pro
 			finalMeter.Start(localize.T("progress.tools.text_answer", localize.Data{"Turn": turn}))
 		}
 
-		if turn == 1 && strings.TrimSpace(filePath) != "" && len(choice.Message.ToolCalls) == 0 && strings.TrimSpace(choice.Message.Content) != "" {
+		if turn == 1 && readerPath != "" && len(choice.Message.ToolCalls) == 0 && strings.TrimSpace(choice.Message.Content) != "" {
 			slog.Warn("tools backend returned a direct answer without using file tools",
 				"turn", turn,
-				"file_path", filePath,
+				"file_path", source.InputPath(),
+				"reader_path", readerPath,
 				"message_role", choice.Message.Role,
 			)
 		}
@@ -375,11 +427,24 @@ func Run(ctx context.Context, client llm.ChatRequester, source input.Source, pro
 	}
 }
 
-func newToolLoopState(filePath string) *toolLoopState {
+func newToolLoopState(source input.FileBackedSource) *toolLoopState {
+	var reader filetools.LineReader
+	if source.IsMultiFile() {
+		files := make([]filetools.CorpusFile, 0, source.FileCount())
+		for _, file := range source.BackingFiles() {
+			files = append(files, filetools.CorpusFile{
+				Path:        file.Path,
+				DisplayPath: file.DisplayPath,
+			})
+		}
+		reader = filetools.NewCorpusReader(files)
+	} else {
+		reader = filetools.NewFileReader(source.SnapshotPath())
+	}
 	return &toolLoopState{
-		reader:    filetools.NewFileReader(filePath),
+		reader:    reader,
 		callCache: make(map[string]toolExecutionRecord),
-		seenLines: make(map[int]struct{}),
+		seenLines: make(map[string]struct{}),
 	}
 }
 
@@ -513,17 +578,17 @@ func (s *toolLoopState) executeToolCall(call openai.ToolCall) (string, toolExecu
 		return "", toolExecutionMeta{}, err
 	}
 
-	lineNumbers, err := extractLineNumbers(call.Function.Name, raw)
+	lineKeys, err := extractLineNumbers(call.Function.Name, raw)
 	if err != nil {
 		return "", toolExecutionMeta{}, err
 	}
 
 	novelLines := 0
-	for lineNumber := range lineNumbers {
-		if _, seen := s.seenLines[lineNumber]; seen {
+	for key := range lineKeys {
+		if _, seen := s.seenLines[key]; seen {
 			continue
 		}
-		s.seenLines[lineNumber] = struct{}{}
+		s.seenLines[key] = struct{}{}
 		novelLines++
 	}
 
@@ -547,11 +612,13 @@ func (s *toolLoopState) executeToolCall(call openai.ToolCall) (string, toolExecu
 	}
 
 	s.callCache[signature] = toolExecutionRecord{
-		raw:         raw,
-		lineNumbers: lineNumbers,
+		raw:      raw,
+		lineKeys: lineKeys,
 	}
 
 	switch call.Function.Name {
+	case "list_files":
+		s.stats.uniqueLists++
 	case "search_file":
 		s.stats.uniqueSearches++
 	case "read_lines", "read_around":
@@ -571,8 +638,31 @@ func (s *toolLoopState) executeToolCall(call openai.ToolCall) (string, toolExecu
 
 func canonicalToolSignature(call openai.ToolCall) (string, error) {
 	switch call.Function.Name {
+	case "list_files":
+		var params struct {
+			Limit  int `json:"limit"`
+			Offset int `json:"offset"`
+		}
+		if strings.TrimSpace(call.Function.Arguments) != "" {
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
+				return "", filetools.NewToolError("invalid_arguments", "invalid arguments for list_files", false, map[string]any{
+					"tool":  "list_files",
+					"error": err.Error(),
+				})
+			}
+		}
+		normalized := filetools.NormalizeListFilesParams(filetools.ListFilesParams{
+			Limit:  params.Limit,
+			Offset: params.Offset,
+		})
+		body, err := filetools.MarshalJSON(normalized)
+		if err != nil {
+			return "", err
+		}
+		return call.Function.Name + ":" + body, nil
 	case "search_file":
 		var params struct {
+			Path         string `json:"path"`
 			Query        string `json:"query"`
 			Mode         string `json:"mode"`
 			Limit        int    `json:"limit"`
@@ -587,6 +677,7 @@ func canonicalToolSignature(call openai.ToolCall) (string, error) {
 		}
 
 		normalized := filetools.NormalizeSearchParams(filetools.SearchParams{
+			Path:         params.Path,
 			Query:        params.Query,
 			Mode:         params.Mode,
 			Limit:        params.Limit,
@@ -601,8 +692,9 @@ func canonicalToolSignature(call openai.ToolCall) (string, error) {
 
 	case "read_lines":
 		var params struct {
-			StartLine int `json:"start_line"`
-			EndLine   int `json:"end_line"`
+			Path      string `json:"path"`
+			StartLine int    `json:"start_line"`
+			EndLine   int    `json:"end_line"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
 			return "", filetools.NewToolError("invalid_arguments", "invalid arguments for read_lines", false, map[string]any{
@@ -613,6 +705,7 @@ func canonicalToolSignature(call openai.ToolCall) (string, error) {
 		if params.StartLine < 1 {
 			params.StartLine = 1
 		}
+		params.Path = strings.TrimSpace(params.Path)
 		body, err := filetools.MarshalJSON(params)
 		if err != nil {
 			return "", err
@@ -621,9 +714,10 @@ func canonicalToolSignature(call openai.ToolCall) (string, error) {
 
 	case "read_around":
 		var params struct {
-			Line   int `json:"line"`
-			Before int `json:"before"`
-			After  int `json:"after"`
+			Path   string `json:"path"`
+			Line   int    `json:"line"`
+			Before int    `json:"before"`
+			After  int    `json:"after"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
 			return "", filetools.NewToolError("invalid_arguments", "invalid arguments for read_around", false, map[string]any{
@@ -637,6 +731,7 @@ func canonicalToolSignature(call openai.ToolCall) (string, error) {
 		if params.After < 0 {
 			params.After = filetools.DefaultReadAroundAfter
 		}
+		params.Path = strings.TrimSpace(params.Path)
 		body, err := filetools.MarshalJSON(params)
 		if err != nil {
 			return "", err
@@ -677,22 +772,30 @@ func annotateToolPayload(raw string, meta toolExecutionMeta) (string, error) {
 	return filetools.MarshalJSON(payload)
 }
 
-func extractLineNumbers(toolName, raw string) (map[int]struct{}, error) {
-	lines := make(map[int]struct{})
+func extractLineNumbers(toolName, raw string) (map[string]struct{}, error) {
+	lines := make(map[string]struct{})
 
 	switch toolName {
+	case "list_files":
+		var result filetools.ListFilesResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil, fmt.Errorf("failed to decode list_files result: %w", err)
+		}
+		for _, path := range result.Files {
+			lines["file:"+strings.TrimSpace(path)] = struct{}{}
+		}
 	case "search_file":
 		var result filetools.SearchResult
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return nil, fmt.Errorf("failed to decode search result: %w", err)
 		}
 		for _, match := range result.Matches {
-			lines[match.LineNumber] = struct{}{}
+			lines[lineKey(match.Path, result.Path, match.LineNumber)] = struct{}{}
 			for _, line := range match.ContextBefore {
-				lines[line.LineNumber] = struct{}{}
+				lines[lineKey(line.Path, result.Path, line.LineNumber)] = struct{}{}
 			}
 			for _, line := range match.ContextAfter {
-				lines[line.LineNumber] = struct{}{}
+				lines[lineKey(line.Path, result.Path, line.LineNumber)] = struct{}{}
 			}
 		}
 	case "read_lines":
@@ -701,7 +804,7 @@ func extractLineNumbers(toolName, raw string) (map[int]struct{}, error) {
 			return nil, fmt.Errorf("failed to decode read_lines result: %w", err)
 		}
 		for _, line := range result.Lines {
-			lines[line.LineNumber] = struct{}{}
+			lines[lineKey(line.Path, result.Path, line.LineNumber)] = struct{}{}
 		}
 	case "read_around":
 		var result filetools.ReadAroundResult
@@ -709,7 +812,7 @@ func extractLineNumbers(toolName, raw string) (map[int]struct{}, error) {
 			return nil, fmt.Errorf("failed to decode read_around result: %w", err)
 		}
 		for _, line := range result.Lines {
-			lines[line.LineNumber] = struct{}{}
+			lines[lineKey(line.Path, result.Path, line.LineNumber)] = struct{}{}
 		}
 	default:
 		return nil, fmt.Errorf("unsupported tool for line extraction: %s", toolName)
@@ -718,17 +821,32 @@ func extractLineNumbers(toolName, raw string) (map[int]struct{}, error) {
 	return lines, nil
 }
 
-func suggestedNextOffset(toolName, raw string) int {
-	if toolName != "search_file" {
-		return 0
+func lineKey(linePath string, fallbackPath string, lineNumber int) string {
+	path := strings.TrimSpace(linePath)
+	if path == "" {
+		path = strings.TrimSpace(fallbackPath)
 	}
+	return fmt.Sprintf("%s:%d", path, lineNumber)
+}
 
-	var result filetools.SearchResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return 0
-	}
-	if result.HasMore {
-		return result.NextOffset
+func suggestedNextOffset(toolName, raw string) int {
+	switch toolName {
+	case "list_files":
+		var result filetools.ListFilesResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return 0
+		}
+		if result.HasMore {
+			return result.NextOffset
+		}
+	case "search_file":
+		var result filetools.SearchResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return 0
+		}
+		if result.HasMore {
+			return result.NextOffset
+		}
 	}
 	return 0
 }

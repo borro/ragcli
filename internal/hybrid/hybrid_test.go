@@ -3,6 +3,7 @@ package hybrid
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +40,106 @@ type scriptedChat struct {
 	autoContextCalls  int
 }
 
-type Source = input.Source
+type testSource struct {
+	kind         input.Kind
+	inputPath    string
+	snapshotPath string
+	files        []input.File
+}
+
+func (s testSource) Kind() input.Kind {
+	return s.kind
+}
+
+func (s testSource) InputPath() string {
+	return s.inputPath
+}
+
+func (s testSource) DisplayName() string {
+	if path := strings.TrimSpace(s.inputPath); path != "" {
+		return path
+	}
+	if s.kind == input.KindStdin {
+		return "stdin"
+	}
+	if len(s.files) > 0 && strings.TrimSpace(s.files[0].DisplayPath) != "" {
+		return s.files[0].DisplayPath
+	}
+	return strings.TrimSpace(s.snapshotPath)
+}
+
+func (s testSource) SnapshotPath() string {
+	return s.snapshotPath
+}
+
+func (s testSource) Open() (io.ReadCloser, error) {
+	if strings.TrimSpace(s.snapshotPath) == "" {
+		return nil, os.ErrNotExist
+	}
+	return os.Open(s.snapshotPath)
+}
+
+func (s testSource) BackingFiles() []input.File {
+	return append([]input.File(nil), s.files...)
+}
+
+func (s testSource) FileCount() int {
+	return len(s.files)
+}
+
+func (s testSource) IsMultiFile() bool {
+	return s.kind == input.KindDirectory || len(s.files) > 1
+}
+
+func fileSource(reader io.Reader, path string, label string) testSource {
+	snapshotPath := ""
+	files := []input.File(nil)
+	if reader != nil {
+		snapshotPath = writeSourceTempFile(reader, filepath.Base(path))
+		files = []input.File{{
+			Path:        snapshotPath,
+			DisplayPath: filepath.Base(path),
+		}}
+	}
+	return testSource{
+		kind:         input.KindFile,
+		inputPath:    path,
+		snapshotPath: snapshotPath,
+		files:        files,
+	}
+}
+
+func stdinSource(reader io.Reader) testSource {
+	snapshotPath := ""
+	files := []input.File(nil)
+	if reader != nil {
+		snapshotPath = writeSourceTempFile(reader, "stdin.txt")
+		files = []input.File{{
+			Path:        snapshotPath,
+			DisplayPath: "stdin",
+		}}
+	}
+	return testSource{
+		kind:         input.KindStdin,
+		snapshotPath: snapshotPath,
+		files:        files,
+	}
+}
+
+func writeSourceTempFile(reader io.Reader, name string) string {
+	tmpFile, err := os.CreateTemp("", "hybrid-test-*"+filepath.Ext(name))
+	if err != nil {
+		panic(err)
+	}
+	if _, err := io.Copy(tmpFile, reader); err != nil {
+		_ = tmpFile.Close()
+		panic(err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		panic(err)
+	}
+	return tmpFile.Name()
+}
 
 func (s *scriptedChat) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
 	s.requests = append(s.requests, req)
@@ -65,7 +165,7 @@ func (s *scriptedChat) ResolveAutoContextLength(_ context.Context) (int, error) 
 	return s.autoContextLength, nil
 }
 
-func runHybrid(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester, source input.Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+func runHybrid(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester, source input.FileBackedSource, opts Options, question string, plan *verbose.Plan) (string, error) {
 	return Run(ctx, chat, embedder, source, opts, question, plan)
 }
 
@@ -118,6 +218,27 @@ func TestSegmentDocumentPlainMergesParagraphsIntoLargerSections(t *testing.T) {
 	}
 }
 
+func TestFuseAndExpandRegionsKeepsFileBoundaries(t *testing.T) {
+	segments := []Segment{
+		{ID: 0, SourcePath: "/tmp/a.txt", DisplayPath: "a.txt", StartLine: 1, EndLine: 2, Text: "retry policy"},
+		{ID: 1, SourcePath: "/tmp/b.txt", DisplayPath: "nested/b.txt", StartLine: 1, EndLine: 2, Text: "metrics"},
+	}
+
+	regions := fuseAndExpandRegions([]RetrievedHit{
+		{SegmentID: 0, Source: "lexical", Score: 1.0, MatchedLine: 1},
+	}, nil, segments, "", "", Options{TopK: 1})
+
+	if len(regions) != 1 {
+		t.Fatalf("len(regions) = %d, want 1", len(regions))
+	}
+	if regions[0].SourcePath != "/tmp/a.txt" {
+		t.Fatalf("SourcePath = %q, want /tmp/a.txt", regions[0].SourcePath)
+	}
+	if regions[0].DisplayName != "a.txt" {
+		t.Fatalf("DisplayName = %q, want a.txt", regions[0].DisplayName)
+	}
+}
+
 func TestRunHybridFallsBackToMapWhenEmbeddingsFail(t *testing.T) {
 	chat := &scriptedChat{
 		responses: []string{
@@ -127,11 +248,7 @@ func TestRunHybridFallsBackToMapWhenEmbeddingsFail(t *testing.T) {
 		},
 	}
 
-	answer, err := runHybrid(context.Background(), chat, &fakeEmbedder{err: errors.New("embed fail")}, Source{
-		Path:        "",
-		DisplayName: "stdin",
-		Reader:      strings.NewReader("retry policy is enabled\n"),
-	}, Options{
+	answer, err := runHybrid(context.Background(), chat, &fakeEmbedder{err: errors.New("embed fail")}, stdinSource(strings.NewReader("retry policy is enabled\n")), Options{
 		TopK:           4,
 		FinalK:         2,
 		MapK:           2,
@@ -220,11 +337,7 @@ func TestRunHybridFallbackMapUsesAutoContextLength(t *testing.T) {
 		autoContextLength: 16384,
 	}
 
-	answer, err := runHybrid(context.Background(), chat, &fakeEmbedder{err: errors.New("embed fail")}, Source{
-		Path:        "",
-		DisplayName: "stdin",
-		Reader:      strings.NewReader("retry policy is enabled\n"),
-	}, Options{
+	answer, err := runHybrid(context.Background(), chat, &fakeEmbedder{err: errors.New("embed fail")}, stdinSource(strings.NewReader("retry policy is enabled\n")), Options{
 		TopK:           4,
 		FinalK:         2,
 		MapK:           2,
@@ -271,11 +384,7 @@ func TestRunHybridCoverageTriggersExtraRegion(t *testing.T) {
 		},
 	}
 
-	answer, err := runHybrid(context.Background(), chat, &fakeEmbedder{}, Source{
-		Path:        writeTempFile(t, content),
-		DisplayName: "sample.txt",
-		Reader:      strings.NewReader(content),
-	}, Options{
+	answer, err := runHybrid(context.Background(), chat, &fakeEmbedder{}, fileSource(strings.NewReader(content), writeTempFile(t, content), "sample.txt"), Options{
 		TopK:           1,
 		FinalK:         1,
 		MapK:           1,

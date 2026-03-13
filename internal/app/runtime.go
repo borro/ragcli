@@ -161,18 +161,18 @@ func (s *commandSession) withInput(meter verbose.Meter, fn func(input.Source) (s
 	if err != nil {
 		return "", err
 	}
+	source := handle.Source()
 	defer func() {
 		if closeErr := handle.Close(); closeErr != nil {
-			slog.Warn("failed to cleanup input", "stage", "close_input", "input_source", handle.DisplayName, "error", closeErr)
+			slog.Warn("failed to cleanup input", "stage", "close_input", "input_source", source.DisplayName(), "error", closeErr)
 			return
 		}
 		slog.Debug("input cleanup finished", "stage", "close_input")
 	}()
 
-	source := handle.Source()
 	slog.Info("input source ready",
-		"input_source", source.DisplayName,
-		"has_path", strings.TrimSpace(source.Path) != "",
+		"input_source", source.DisplayName(),
+		"has_path", source.InputPath() != "",
 	)
 	meter.Done(localize.T("progress.detail.prepare.input_ready"))
 	return fn(source)

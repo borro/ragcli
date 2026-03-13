@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -23,6 +24,21 @@ type fakeTempFile struct {
 	bytes.Buffer
 	name     string
 	closeErr error
+	writeErr error
+}
+
+func (f *fakeTempFile) Write(p []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	return f.Buffer.Write(p)
+}
+
+func (f *fakeTempFile) WriteString(s string) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	return f.Buffer.WriteString(s)
 }
 
 func (f *fakeTempFile) Close() error {
@@ -30,7 +46,19 @@ func (f *fakeTempFile) Close() error {
 }
 
 func (f *fakeTempFile) Name() string {
-	return f.name
+	if f.name != "" {
+		return f.name
+	}
+	return "fake-temp.txt"
+}
+
+type fakeReadCloser struct {
+	io.Reader
+	closeErr error
+}
+
+func (r fakeReadCloser) Close() error {
+	return r.closeErr
 }
 
 func stubInputDeps(t *testing.T) {
@@ -53,13 +81,213 @@ func initLocale(t *testing.T) {
 	}
 }
 
-func TestOpenFile(t *testing.T) {
-	filePath := t.TempDir() + "/sample.txt"
-	if err := os.WriteFile(filePath, []byte("hello"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+func writeFile(t *testing.T, path string, content []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+}
+
+func assertErrorContains(t *testing.T, err error, wantParts ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("error = nil, want error")
+	}
+	for _, want := range wantParts {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+}
+
+func newTextDirectory(t *testing.T) string {
+	t.Helper()
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), []byte("alpha"))
+	if err := os.Mkdir(filepath.Join(root, "nested"), 0o700); err != nil {
+		t.Fatalf("Mkdir(nested) error = %v", err)
+	}
+	writeFile(t, filepath.Join(root, "nested", "b.md"), []byte("# beta\n"))
+	if err := os.Mkdir(filepath.Join(root, ".hidden"), 0o700); err != nil {
+		t.Fatalf("Mkdir(.hidden) error = %v", err)
+	}
+	writeFile(t, filepath.Join(root, ".hidden", "skip.txt"), []byte("skip\n"))
+	writeFile(t, filepath.Join(root, "blob.bin"), []byte("%PDF-1.7\nbinary"))
+	if err := os.Symlink(filepath.Join(root, "a.txt"), filepath.Join(root, "linked.txt")); err != nil {
+		t.Logf("Symlink() skipped: %v", err)
 	}
 
-	handle, err := Open(filePath, nil)
+	return root
+}
+
+func readSource(t *testing.T, source Source) string {
+	t.Helper()
+	reader, err := source.Open()
+	if err != nil {
+		t.Fatalf("Source.Open() error = %v", err)
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	return string(content)
+}
+
+func TestSourceDerivedProperties(t *testing.T) {
+	tests := []struct {
+		name         string
+		source       Source
+		wantSnapshot string
+		wantDisplay  string
+		wantMulti    bool
+	}{
+		{
+			name:        "empty source",
+			source:      Source{},
+			wantDisplay: "",
+		},
+		{
+			name: "stdin source",
+			source: newSource(Descriptor{
+				Kind: KindStdin,
+			}, ""),
+			wantDisplay: "stdin",
+		},
+		{
+			name: "input path becomes snapshot",
+			source: newSource(Descriptor{
+				Kind: KindFile,
+				Path: " /tmp/example.txt ",
+			}, ""),
+			wantSnapshot: "/tmp/example.txt",
+			wantDisplay:  "/tmp/example.txt",
+		},
+		{
+			name: "backing file display name fallback",
+			source: newSource(Descriptor{
+				Files: []File{{DisplayPath: "nested/example.md"}},
+			}, ""),
+			wantDisplay: "nested/example.md",
+		},
+		{
+			name: "snapshot display name fallback",
+			source: newSource(Descriptor{
+				Files: []File{{DisplayPath: " "}},
+			}, "/tmp/snapshot.txt"),
+			wantSnapshot: "/tmp/snapshot.txt",
+			wantDisplay:  "/tmp/snapshot.txt",
+		},
+		{
+			name: "multiple files are multi file",
+			source: newSource(Descriptor{
+				Files: []File{
+					{DisplayPath: "a.txt"},
+					{DisplayPath: "b.txt"},
+				},
+			}, ""),
+			wantDisplay: "a.txt",
+			wantMulti:   true,
+		},
+		{
+			name: "directory kind is multi file",
+			source: newSource(Descriptor{
+				Kind: KindDirectory,
+			}, "/tmp/corpus.txt"),
+			wantSnapshot: "/tmp/corpus.txt",
+			wantDisplay:  "/tmp/corpus.txt",
+			wantMulti:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.source.SnapshotPath(); got != tt.wantSnapshot {
+				t.Fatalf("SnapshotPath() = %q, want %q", got, tt.wantSnapshot)
+			}
+			if got := tt.source.DisplayName(); got != tt.wantDisplay {
+				t.Fatalf("DisplayName() = %q, want %q", got, tt.wantDisplay)
+			}
+			if got := tt.source.IsMultiFile(); got != tt.wantMulti {
+				t.Fatalf("IsMultiFile() = %t, want %t", got, tt.wantMulti)
+			}
+		})
+	}
+
+	initLocale(t)
+	_, err := (Source{}).Open()
+	assertErrorContains(t, err, "snapshot path is empty")
+
+	t.Run("open wraps openFile failure", func(t *testing.T) {
+		stubInputDeps(t)
+		wantErr := errors.New("open failed")
+		openFile = func(string) (io.ReadCloser, error) {
+			return nil, wantErr
+		}
+
+		_, err := newSource(Descriptor{Path: "/tmp/example.txt"}, "").Open()
+		assertErrorContains(t, err, "failed to open file", wantErr.Error())
+	})
+}
+
+func TestHandleSourceAndClose(t *testing.T) {
+	t.Run("nil handle is safe", func(t *testing.T) {
+		var handle *Handle
+		got := handle.Source()
+		if got.snapshotPath != "" || got.descriptor.Kind != "" || got.descriptor.Path != "" || len(got.descriptor.Files) != 0 {
+			t.Fatalf("Source() = %#v, want zero Source", got)
+		}
+		if err := handle.Close(); err != nil {
+			t.Fatalf("Close() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("source returns clone", func(t *testing.T) {
+		handle := &Handle{
+			source: newSource(Descriptor{
+				Kind:  KindFile,
+				Files: []File{{DisplayPath: "original.txt"}},
+			}, "/tmp/original.txt"),
+		}
+
+		source := handle.Source()
+		source.descriptor.Files[0].DisplayPath = "mutated.txt"
+
+		if got := handle.Source().descriptor.Files[0].DisplayPath; got != "original.txt" {
+			t.Fatalf("Source() did not clone files, got %q", got)
+		}
+	})
+
+	t.Run("close without closer is noop", func(t *testing.T) {
+		handle := &Handle{}
+		if err := handle.Close(); err != nil {
+			t.Fatalf("Close() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("close returns error", func(t *testing.T) {
+		wantErr := errors.New("close failed")
+		handle := &Handle{
+			closeFn: func() error {
+				return wantErr
+			},
+		}
+
+		if err := handle.Close(); !errors.Is(err, wantErr) {
+			t.Fatalf("Close() error = %v, want %v", err, wantErr)
+		}
+	})
+}
+
+func TestOpenFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sample.txt")
+	writeFile(t, path, []byte("hello"))
+
+	handle, err := Open(path, nil)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -67,78 +295,221 @@ func TestOpenFile(t *testing.T) {
 		_ = handle.Close()
 	})
 
-	content, err := io.ReadAll(handle.Reader)
-	if err != nil {
-		t.Fatalf("ReadAll() error = %v", err)
-	}
-	if string(content) != "hello" {
-		t.Fatalf("content = %q, want hello", string(content))
-	}
-	if handle.Path != filePath {
-		t.Fatalf("Path = %q, want %q", handle.Path, filePath)
-	}
-	if handle.DisplayName != filePath {
-		t.Fatalf("DisplayName = %q, want %q", handle.DisplayName, filePath)
-	}
-
 	source := handle.Source()
-	if source.Reader == nil {
-		t.Fatal("Source().Reader = nil, want file reader")
+	if got := readSource(t, source); got != "hello" {
+		t.Fatalf("content = %q, want hello", got)
 	}
-	if source.Path != filePath {
-		t.Fatalf("Source().Path = %q, want %q", source.Path, filePath)
+	if got := source.Kind(); got != KindFile {
+		t.Fatalf("Kind() = %q, want %q", got, KindFile)
 	}
-	if source.DisplayName != filePath {
-		t.Fatalf("Source().DisplayName = %q, want %q", source.DisplayName, filePath)
+	if got := source.InputPath(); got != path {
+		t.Fatalf("InputPath() = %q, want %q", got, path)
+	}
+	if got := source.SnapshotPath(); got != path {
+		t.Fatalf("SnapshotPath() = %q, want %q", got, path)
+	}
+	if got := source.DisplayName(); got != path {
+		t.Fatalf("DisplayName() = %q, want %q", got, path)
+	}
+	if source.IsMultiFile() {
+		t.Fatal("IsMultiFile() = true, want false")
+	}
+	files := source.BackingFiles()
+	if len(files) != 1 {
+		t.Fatalf("BackingFiles() len = %d, want 1", len(files))
+	}
+	if files[0].Path != path || files[0].DisplayPath != "sample.txt" {
+		t.Fatalf("BackingFiles()[0] = %#v, want path=%q display=sample.txt", files[0], path)
 	}
 }
 
-func TestOpenFileMissing(t *testing.T) {
+func TestOpenStdin(t *testing.T) {
+	t.Run("materializes stdin and cleans snapshot", func(t *testing.T) {
+		handle, err := Open("", bytes.NewBufferString("alpha\nbeta\n"))
+		if err != nil {
+			t.Fatalf("Open() error = %v", err)
+		}
+
+		source := handle.Source()
+		if got := readSource(t, source); got != "alpha\nbeta\n" {
+			t.Fatalf("content = %q, want exact stdin content", got)
+		}
+		if got := source.Kind(); got != KindStdin {
+			t.Fatalf("Kind() = %q, want %q", got, KindStdin)
+		}
+		if got := source.DisplayName(); got != "stdin" {
+			t.Fatalf("DisplayName() = %q, want stdin", got)
+		}
+		if got := source.InputPath(); got != "" {
+			t.Fatalf("InputPath() = %q, want empty", got)
+		}
+		if source.SnapshotPath() == "" {
+			t.Fatal("SnapshotPath() = empty, want temp file path")
+		}
+		if source.IsMultiFile() {
+			t.Fatal("IsMultiFile() = true, want false")
+		}
+
+		tempPath := source.SnapshotPath()
+		if _, err := os.Stat(tempPath); err != nil {
+			t.Fatalf("Stat(%q) error = %v", tempPath, err)
+		}
+		if err := handle.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+		if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
+			t.Fatalf("temp file still exists after Close(), err = %v", err)
+		}
+	})
+
+	t.Run("uses default stdin when reader is nil", func(t *testing.T) {
+		stubInputDeps(t)
+		defaultStdin = func() io.Reader {
+			return bytes.NewBufferString("from default stdin")
+		}
+
+		handle, err := Open("", nil)
+		if err != nil {
+			t.Fatalf("Open() error = %v", err)
+		}
+		t.Cleanup(func() {
+			_ = handle.Close()
+		})
+
+		if got := readSource(t, handle.Source()); got != "from default stdin" {
+			t.Fatalf("content = %q, want default stdin content", got)
+		}
+	})
+}
+
+func TestOpenErrors(t *testing.T) {
 	initLocale(t)
-	_, err := Open(t.TempDir()+"/missing.txt", nil)
-	if err == nil {
-		t.Fatal("Open() error = nil, want error")
+
+	tests := []struct {
+		name      string
+		call      func(t *testing.T) (*Handle, error)
+		wantError string
+		wantCause error
+	}{
+		{
+			name: "missing file",
+			call: func(t *testing.T) (*Handle, error) {
+				return Open(filepath.Join(t.TempDir(), "missing.txt"), nil)
+			},
+			wantError: "failed to open file",
+		},
+		{
+			name: "create temp",
+			call: func(t *testing.T) (*Handle, error) {
+				stubInputDeps(t)
+				wantErr := errors.New("create temp failed")
+				createTemp = func(_, _ string) (tempFile, error) {
+					return nil, wantErr
+				}
+				return Open("", bytes.NewBufferString("data"))
+			},
+			wantError: "failed to create temp file",
+			wantCause: errors.New("create temp failed"),
+		},
+		{
+			name: "read stdin",
+			call: func(t *testing.T) (*Handle, error) {
+				return Open("", failingReader{err: errors.New("stdin read failed")})
+			},
+			wantError: "failed to read stdin",
+			wantCause: errors.New("stdin read failed"),
+		},
+		{
+			name: "close temp",
+			call: func(t *testing.T) (*Handle, error) {
+				stubInputDeps(t)
+				wantErr := errors.New("close temp failed")
+				createTemp = func(_, _ string) (tempFile, error) {
+					return &fakeTempFile{
+						name:     filepath.Join(t.TempDir(), "stdin.txt"),
+						closeErr: wantErr,
+					}, nil
+				}
+				return Open("", bytes.NewBufferString("data"))
+			},
+			wantError: "failed to close temp file",
+			wantCause: errors.New("close temp failed"),
+		},
+		{
+			name: "reopen temp",
+			call: func(t *testing.T) (*Handle, error) {
+				stubInputDeps(t)
+				wantErr := errors.New("reopen failed")
+				originalOpenFile := openFile
+				openFile = func(path string) (io.ReadCloser, error) {
+					if strings.Contains(path, "ragcli-stdin-") {
+						return nil, wantErr
+					}
+					return originalOpenFile(path)
+				}
+				return Open("", bytes.NewBufferString("data"))
+			},
+			wantError: "failed to reopen temp file",
+			wantCause: errors.New("reopen failed"),
+		},
 	}
-	if !strings.Contains(err.Error(), "failed to open file") {
-		t.Fatalf("error = %q, want open file context", err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handle, err := tt.call(t)
+			if handle != nil {
+				t.Cleanup(func() {
+					_ = handle.Close()
+				})
+			}
+			if tt.wantCause != nil {
+				assertErrorContains(t, err, tt.wantError, tt.wantCause.Error())
+				return
+			}
+			assertErrorContains(t, err, tt.wantError)
+		})
 	}
 }
 
-func TestOpenStdinMaterializesTempFile(t *testing.T) {
-	handle, err := Open("", bytes.NewBufferString("alpha\nbeta\n"))
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
+func TestOpenDirectory(t *testing.T) {
+	root := newTextDirectory(t)
 
-	content, err := io.ReadAll(handle.Reader)
+	handle, err := Open(root, nil)
 	if err != nil {
-		t.Fatalf("ReadAll() error = %v", err)
-	}
-	if string(content) != "alpha\nbeta\n" {
-		t.Fatalf("content = %q, want exact stdin content", string(content))
-	}
-	if handle.DisplayName != "stdin" {
-		t.Fatalf("DisplayName = %q, want stdin", handle.DisplayName)
-	}
-	if handle.Path == "" {
-		t.Fatal("Path = empty, want temp file path")
-	}
-	if _, err := os.Stat(handle.Path); err != nil {
-		t.Fatalf("temp path stat error = %v", err)
+		t.Fatalf("Open(directory) error = %v", err)
 	}
 
 	source := handle.Source()
-	if source.Reader == nil {
-		t.Fatal("Source().Reader = nil, want stdin temp reader")
+	if got := source.Kind(); got != KindDirectory {
+		t.Fatalf("Kind() = %q, want %q", got, KindDirectory)
 	}
-	if source.Path != handle.Path {
-		t.Fatalf("Source().Path = %q, want %q", source.Path, handle.Path)
+	if got := source.InputPath(); got != root {
+		t.Fatalf("InputPath() = %q, want %q", got, root)
 	}
-	if source.DisplayName != "stdin" {
-		t.Fatalf("Source().DisplayName = %q, want stdin", source.DisplayName)
+	if got := source.DisplayName(); got != root {
+		t.Fatalf("DisplayName() = %q, want %q", got, root)
+	}
+	if !source.IsMultiFile() {
+		t.Fatal("IsMultiFile() = false, want true")
+	}
+	if source.SnapshotPath() == "" || source.SnapshotPath() == root {
+		t.Fatalf("SnapshotPath() = %q, want temp corpus path", source.SnapshotPath())
 	}
 
-	tempPath := handle.Path
+	files := source.BackingFiles()
+	if len(files) != 2 {
+		t.Fatalf("BackingFiles() len = %d, want 2", len(files))
+	}
+	if files[0].DisplayPath != "a.txt" || files[1].DisplayPath != "nested/b.md" {
+		t.Fatalf("BackingFiles() = %#v, want sorted text files", files)
+	}
+
+	wantCorpus := "=== file: a.txt ===\nalpha\n\n=== file: nested/b.md ===\n# beta\n"
+	if got := readSource(t, source); got != wantCorpus {
+		t.Fatalf("materialized corpus = %q, want %q", got, wantCorpus)
+	}
+
+	tempPath := source.SnapshotPath()
 	if err := handle.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
@@ -147,137 +518,197 @@ func TestOpenStdinMaterializesTempFile(t *testing.T) {
 	}
 }
 
-func TestOpenUsesDefaultStdinWhenNil(t *testing.T) {
-	stubInputDeps(t)
-	defaultStdin = func() io.Reader {
-		return bytes.NewBufferString("from default stdin")
-	}
+func TestOpenDirectoryErrors(t *testing.T) {
+	initLocale(t)
 
-	handle, err := Open("", nil)
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	t.Cleanup(func() {
-		_ = handle.Close()
+	t.Run("no readable text files", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "blob.bin"), []byte("%PDF-1.7\nbinary"))
+		if err := os.Mkdir(filepath.Join(root, ".hidden"), 0o700); err != nil {
+			t.Fatalf("Mkdir(.hidden) error = %v", err)
+		}
+		writeFile(t, filepath.Join(root, ".hidden", "skip.txt"), []byte("skip\n"))
+
+		_, err := Open(root, nil)
+		if err == nil {
+			t.Fatal("Open(directory) error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "no readable text files found in the directory") {
+			t.Fatalf("error = %q, want no-files error", err)
+		}
 	})
 
-	content, err := io.ReadAll(handle.Reader)
-	if err != nil {
-		t.Fatalf("ReadAll() error = %v", err)
-	}
-	if string(content) != "from default stdin" {
-		t.Fatalf("content = %q, want default stdin content", string(content))
-	}
-}
-
-func TestOpenCreateTempError(t *testing.T) {
-	initLocale(t)
-	stubInputDeps(t)
-	wantErr := errors.New("create temp failed")
-	createTemp = func(_, _ string) (tempFile, error) {
-		return nil, wantErr
-	}
-
-	_, err := Open("", bytes.NewBufferString("data"))
-	if err == nil {
-		t.Fatal("Open() error = nil, want error")
-	}
-	if !strings.Contains(err.Error(), "failed to create temp file") {
-		t.Fatalf("error = %q, want create temp context", err)
-	}
-	if !strings.Contains(err.Error(), wantErr.Error()) {
-		t.Fatalf("error = %q, want wrapped cause %q", err, wantErr)
-	}
-}
-
-func TestOpenReadStdinError(t *testing.T) {
-	initLocale(t)
-	stubInputDeps(t)
-	wantErr := errors.New("stdin read failed")
-
-	_, err := Open("", failingReader{err: wantErr})
-	if err == nil {
-		t.Fatal("Open() error = nil, want error")
-	}
-	if !strings.Contains(err.Error(), "failed to read stdin") {
-		t.Fatalf("error = %q, want read stdin context", err)
-	}
-	if !strings.Contains(err.Error(), wantErr.Error()) {
-		t.Fatalf("error = %q, want wrapped cause %q", err, wantErr)
-	}
-}
-
-func TestOpenCloseTempFileError(t *testing.T) {
-	initLocale(t)
-	stubInputDeps(t)
-	wantErr := errors.New("close temp failed")
-	createTemp = func(_, _ string) (tempFile, error) {
-		return &fakeTempFile{name: t.TempDir() + "/stdin.txt", closeErr: wantErr}, nil
-	}
-
-	_, err := Open("", bytes.NewBufferString("data"))
-	if err == nil {
-		t.Fatal("Open() error = nil, want error")
-	}
-	if !strings.Contains(err.Error(), "failed to close temp file") {
-		t.Fatalf("error = %q, want close temp context", err)
-	}
-	if !strings.Contains(err.Error(), wantErr.Error()) {
-		t.Fatalf("error = %q, want wrapped cause %q", err, wantErr)
-	}
-}
-
-func TestOpenReopenTempFileError(t *testing.T) {
-	initLocale(t)
-	stubInputDeps(t)
-	wantErr := errors.New("reopen failed")
-	originalOpenFile := openFile
-	openFile = func(path string) (readCloser, error) {
-		if strings.Contains(path, "ragcli-stdin-") {
+	t.Run("create temp", func(t *testing.T) {
+		stubInputDeps(t)
+		root := newTextDirectory(t)
+		wantErr := errors.New("create temp failed")
+		createTemp = func(_, _ string) (tempFile, error) {
 			return nil, wantErr
 		}
-		return originalOpenFile(path)
-	}
 
-	handle, err := Open("", bytes.NewBufferString("data"))
-	if err == nil {
-		if handle != nil {
-			_ = handle.Close()
+		_, err := Open(root, nil)
+		assertErrorContains(t, err, "failed to create temp file", wantErr.Error())
+	})
+
+	t.Run("close temp", func(t *testing.T) {
+		stubInputDeps(t)
+		root := newTextDirectory(t)
+		wantErr := errors.New("close temp failed")
+		createTemp = func(_, _ string) (tempFile, error) {
+			return &fakeTempFile{
+				name:     filepath.Join(t.TempDir(), "dir.txt"),
+				closeErr: wantErr,
+			}, nil
 		}
-		t.Fatal("Open() error = nil, want error")
-	}
-	if !strings.Contains(err.Error(), "failed to reopen temp file") {
-		t.Fatalf("error = %q, want reopen context", err)
-	}
-	if !strings.Contains(err.Error(), wantErr.Error()) {
-		t.Fatalf("error = %q, want wrapped cause %q", err, wantErr)
-	}
+
+		_, err := Open(root, nil)
+		assertErrorContains(t, err, "failed to close temp file", wantErr.Error())
+	})
+
+	t.Run("reopen temp", func(t *testing.T) {
+		stubInputDeps(t)
+		root := newTextDirectory(t)
+		wantErr := errors.New("reopen failed")
+		originalOpenFile := openFile
+		openFile = func(path string) (io.ReadCloser, error) {
+			if strings.Contains(path, "ragcli-path-") {
+				return nil, wantErr
+			}
+			return originalOpenFile(path)
+		}
+
+		_, err := Open(root, nil)
+		assertErrorContains(t, err, "failed to reopen temp file", wantErr.Error())
+	})
+
+	t.Run("read dir", func(t *testing.T) {
+		_, err := openDirectory(filepath.Join(t.TempDir(), "missing"))
+		assertErrorContains(t, err, "failed to read input directory")
+	})
 }
 
-func TestHandleCloseNilIsNoop(t *testing.T) {
-	var handle *Handle
-	if err := handle.Close(); err != nil {
-		t.Fatalf("Close() error = %v, want nil", err)
-	}
+func TestIsBinaryFile(t *testing.T) {
+	t.Run("text mime", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "sample.txt")
+		writeFile(t, path, []byte("plain text\nsecond line\n"))
+
+		binary, err := isBinaryFile(path)
+		if err != nil {
+			t.Fatalf("isBinaryFile() error = %v", err)
+		}
+		if binary {
+			t.Fatal("isBinaryFile() = true, want false")
+		}
+	})
+
+	t.Run("binary mime", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "sample.bin")
+		writeFile(t, path, []byte("%PDF-1.7\nbinary"))
+
+		binary, err := isBinaryFile(path)
+		if err != nil {
+			t.Fatalf("isBinaryFile() error = %v", err)
+		}
+		if !binary {
+			t.Fatal("isBinaryFile() = false, want true")
+		}
+	})
+
+	t.Run("empty file is text", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "empty.txt")
+		writeFile(t, path, nil)
+
+		binary, err := isBinaryFile(path)
+		if err != nil {
+			t.Fatalf("isBinaryFile() error = %v", err)
+		}
+		if binary {
+			t.Fatal("isBinaryFile() = true, want false")
+		}
+	})
+
+	t.Run("read error", func(t *testing.T) {
+		stubInputDeps(t)
+		wantErr := errors.New("read failed")
+		openFile = func(string) (io.ReadCloser, error) {
+			return fakeReadCloser{Reader: failingReader{err: wantErr}}, nil
+		}
+
+		_, err := isBinaryFile("broken.txt")
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("isBinaryFile() error = %v, want %v", err, wantErr)
+		}
+	})
+
+	t.Run("open error", func(t *testing.T) {
+		stubInputDeps(t)
+		wantErr := errors.New("open failed")
+		openFile = func(string) (io.ReadCloser, error) {
+			return nil, wantErr
+		}
+
+		_, err := isBinaryFile("broken.txt")
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("isBinaryFile() error = %v, want %v", err, wantErr)
+		}
+	})
 }
 
-func TestHandleCloseWithoutCloserIsNoop(t *testing.T) {
-	handle := &Handle{}
-	if err := handle.Close(); err != nil {
-		t.Fatalf("Close() error = %v, want nil", err)
-	}
-}
-
-func TestHandleCloseReturnsCloseError(t *testing.T) {
-	wantErr := errors.New("close failed")
-	handle := &Handle{
-		closeFn: func() error {
-			return wantErr
+func TestWriteDirectoryCorpusErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		dst     tempFile
+		open    func(string) (io.ReadCloser, error)
+		wantErr error
+	}{
+		{
+			name:    "destination write",
+			dst:     &fakeTempFile{writeErr: errors.New("write failed")},
+			open:    func(string) (io.ReadCloser, error) { return nil, errors.New("unexpected open") },
+			wantErr: errors.New("write failed"),
+		},
+		{
+			name:    "source open",
+			dst:     &fakeTempFile{},
+			open:    func(string) (io.ReadCloser, error) { return nil, errors.New("open failed") },
+			wantErr: errors.New("open failed"),
+		},
+		{
+			name: "source read",
+			dst:  &fakeTempFile{},
+			open: func(string) (io.ReadCloser, error) {
+				return fakeReadCloser{Reader: failingReader{err: errors.New("read failed")}}, nil
+			},
+			wantErr: errors.New("read failed"),
+		},
+		{
+			name: "source close",
+			dst:  &fakeTempFile{},
+			open: func(string) (io.ReadCloser, error) {
+				return fakeReadCloser{
+					Reader:   bytes.NewBufferString("ok"),
+					closeErr: errors.New("close failed"),
+				}, nil
+			},
+			wantErr: errors.New("close failed"),
 		},
 	}
 
-	err := handle.Close()
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("Close() error = %v, want %v", err, wantErr)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubInputDeps(t)
+			openFile = tt.open
+
+			err := writeDirectoryCorpus(tt.dst, []File{{
+				Path:        "sample.txt",
+				DisplayPath: "sample.txt",
+			}})
+			if err == nil {
+				t.Fatal("writeDirectoryCorpus() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr.Error()) {
+				t.Fatalf("writeDirectoryCorpus() error = %v, want %v", err, tt.wantErr)
+			}
+		})
 	}
 }

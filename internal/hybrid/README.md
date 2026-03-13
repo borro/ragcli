@@ -8,8 +8,8 @@
 
 ## Зона ответственности
 
-- profiling документа как `markdown` / `logs` / `plain` / `unknown`;
-- сегментация документа в регионы;
+- profiling документа или каждого файла корпуса как `markdown` / `logs` / `plain` / `unknown`;
+- сегментация документа или нескольких файлов в регионы;
 - lexical и semantic retrieval;
 - fusion hits в regions;
 - line-grounding и дочитывание вокруг лучших мест;
@@ -45,8 +45,8 @@
 
 ## Основной поток
 
-1. Вход сохраняется во временный snapshot и одновременно профилируется.
-2. Документ сегментируется в meso-segments.
+1. Single-file input открывается через `input.SnapshotSource.Open()` и спулится во временный snapshot; directory input читается по списку файлов из `input.FileBackedSource.BackingFiles()`.
+2. Документ или corpus сегментируется в meso-segments с file-aware metadata.
 3. Выполняются lexical и semantic retrieval.
 4. Хиты сливаются в regions и расширяются.
 5. По лучшим regions дочитывается локальный контекст.
@@ -58,6 +58,7 @@
 ## Инварианты и ошибки
 
 - Это единственный режим, который одновременно использует retrieval, line-based reread и map-style extraction.
+- Для directory input регионы, evidence и citations не переходят через границы файлов.
 - Fallback управляется только нормализованным `Options.Fallback`.
 - Пустой input и отсутствие сегментов обрабатываются как корректные user-facing ответы.
 - `hybrid` зависит от `map` только как от fallback pipeline, а не как от обязательной фазы.

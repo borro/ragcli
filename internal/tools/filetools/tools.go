@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -22,6 +23,8 @@ import (
 const (
 	defaultSearchLimit      = 5
 	maxSearchLimit          = 20
+	defaultListFilesLimit   = 50
+	maxListFilesLimit       = 200
 	DefaultReadAroundBefore = 3
 	DefaultReadAroundAfter  = 3
 )
@@ -29,11 +32,13 @@ const (
 type LineSlice struct {
 	LineNumber int    `json:"line_number"`
 	Content    string `json:"content"`
+	Path       string `json:"path,omitempty"`
 }
 
 type SearchMatch struct {
 	LineNumber    int         `json:"line_number"`
 	Content       string      `json:"content"`
+	Path          string      `json:"path,omitempty"`
 	Score         float64     `json:"score,omitempty"`
 	Reason        string      `json:"reason,omitempty"`
 	ContextBefore []LineSlice `json:"context_before,omitempty"`
@@ -42,6 +47,7 @@ type SearchMatch struct {
 
 type SearchResult struct {
 	Query         string        `json:"query"`
+	Path          string        `json:"path,omitempty"`
 	RequestedMode string        `json:"requested_mode"`
 	Mode          string        `json:"mode"`
 	Limit         int           `json:"limit"`
@@ -55,6 +61,7 @@ type SearchResult struct {
 }
 
 type ReadLinesResult struct {
+	Path      string      `json:"path,omitempty"`
 	StartLine int         `json:"start_line"`
 	EndLine   int         `json:"end_line"`
 	LineCount int         `json:"line_count"`
@@ -63,6 +70,7 @@ type ReadLinesResult struct {
 }
 
 type ReadAroundResult struct {
+	Path      string      `json:"path,omitempty"`
 	Line      int         `json:"line"`
 	Before    int         `json:"before"`
 	After     int         `json:"after"`
@@ -73,6 +81,17 @@ type ReadAroundResult struct {
 	Error     string      `json:"error,omitempty"`
 }
 
+type ListFilesResult struct {
+	Limit      int      `json:"limit"`
+	Offset     int      `json:"offset"`
+	FileCount  int      `json:"file_count"`
+	TotalFiles int      `json:"total_files"`
+	HasMore    bool     `json:"has_more"`
+	NextOffset int      `json:"next_offset,omitempty"`
+	Files      []string `json:"files"`
+	Error      string   `json:"error,omitempty"`
+}
+
 type ToolError struct {
 	Code      string         `json:"code"`
 	Message   string         `json:"message"`
@@ -80,7 +99,13 @@ type ToolError struct {
 	Details   map[string]any `json:"details,omitempty"`
 }
 
+type ListFilesParams struct {
+	Limit  int
+	Offset int
+}
+
 type SearchParams struct {
+	Path         string
 	Query        string
 	Mode         string
 	Limit        int
@@ -89,25 +114,40 @@ type SearchParams struct {
 }
 
 type LineReader interface {
+	ListFiles(params ListFilesParams) (string, error)
 	Search(params SearchParams) (string, error)
-	ReadLines(start, end int) (string, error)
-	ReadAround(line, before, after int) (string, error)
+	ReadLines(path string, start, end int) (string, error)
+	ReadAround(path string, line, before, after int) (string, error)
 }
 
 type cachedLineReader struct {
-	sourceName string
-	sourceKind string
-	open       func() (io.ReadCloser, error)
+	sourceName  string
+	displayPath string
+	sourceKind  string
+	open        func() (io.ReadCloser, error)
 
 	lines     []string
 	loadErr   error
 	loadCount int
 }
 
+type CorpusFile struct {
+	Path        string
+	DisplayPath string
+}
+
+type multiFileReader struct {
+	files     []CorpusFile
+	byPath    map[string]*cachedLineReader
+	ordered   []*cachedLineReader
+	loadCount int
+}
+
 func NewFileReader(path string) *cachedLineReader {
 	return &cachedLineReader{
-		sourceName: path,
-		sourceKind: "file",
+		sourceName:  path,
+		displayPath: filepath.Base(path),
+		sourceKind:  "file",
 		open: func() (io.ReadCloser, error) {
 			return os.Open(path)
 		},
@@ -116,12 +156,50 @@ func NewFileReader(path string) *cachedLineReader {
 
 func NewStdinReader() *cachedLineReader {
 	return &cachedLineReader{
-		sourceName: "stdin",
-		sourceKind: "stdin",
+		sourceName:  "stdin",
+		displayPath: "stdin",
+		sourceKind:  "stdin",
 		open: func() (io.ReadCloser, error) {
 			return io.NopCloser(os.Stdin), nil
 		},
 	}
+}
+
+func NewCorpusReader(files []CorpusFile) LineReader {
+	normalized := make([]CorpusFile, 0, len(files))
+	byPath := make(map[string]*cachedLineReader, len(files))
+	ordered := make([]*cachedLineReader, 0, len(files))
+	for _, file := range files {
+		displayPath := strings.TrimSpace(file.DisplayPath)
+		if displayPath == "" {
+			displayPath = filepath.Base(strings.TrimSpace(file.Path))
+		}
+		normalized = append(normalized, CorpusFile{
+			Path:        file.Path,
+			DisplayPath: displayPath,
+		})
+		reader := &cachedLineReader{
+			sourceName:  file.Path,
+			displayPath: displayPath,
+			sourceKind:  "file",
+			open: func(path string) func() (io.ReadCloser, error) {
+				return func() (io.ReadCloser, error) {
+					return os.Open(path)
+				}
+			}(file.Path),
+		}
+		byPath[displayPath] = reader
+		ordered = append(ordered, reader)
+	}
+	return &multiFileReader{
+		files:   normalized,
+		byPath:  byPath,
+		ordered: ordered,
+	}
+}
+
+func (r *cachedLineReader) ListFiles(params ListFilesParams) (string, error) {
+	return listFilesResult([]string{r.displayPath}, params)
 }
 
 func (r *cachedLineReader) ensureLoaded() error {
@@ -151,28 +229,174 @@ func (r *cachedLineReader) ensureLoaded() error {
 	return nil
 }
 
+func (r *cachedLineReader) matchesPath(path string) bool {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return true
+	}
+	return trimmed == r.displayPath || trimmed == r.sourceName || trimmed == filepath.Base(r.sourceName)
+}
+
+func (r *multiFileReader) ListFiles(params ListFilesParams) (string, error) {
+	paths := make([]string, 0, len(r.files))
+	for _, file := range r.files {
+		paths = append(paths, file.DisplayPath)
+	}
+	return listFilesResult(paths, params)
+}
+
+func (r *multiFileReader) Search(params SearchParams) (string, error) {
+	params = NormalizeSearchParams(params)
+	if strings.TrimSpace(params.Path) != "" {
+		reader, err := r.readerForPath(params.Path, "search_file", false)
+		if err != nil {
+			return "", err
+		}
+		raw, err := reader.Search(params)
+		if err != nil {
+			return "", err
+		}
+		r.refreshLoadCount()
+		return raw, nil
+	}
+
+	allMatches := make([]SearchMatch, 0, 32)
+	actualMode := params.Mode
+	for _, reader := range r.ordered {
+		if err := reader.ensureLoaded(); err != nil {
+			return "", err
+		}
+		matches, mode, err := searchMatches(reader.lines, reader.displayPath, params)
+		if err != nil {
+			return "", err
+		}
+		if actualMode == "auto" && mode != "" {
+			actualMode = mode
+		}
+		allMatches = append(allMatches, matches...)
+	}
+	r.refreshLoadCount()
+
+	totalMatches := len(allMatches)
+	start := min(params.Offset, totalMatches)
+	end := min(start+params.Limit, totalMatches)
+	pagedMatches := slices.Clone(allMatches[start:end])
+
+	result := SearchResult{
+		Query:         params.Query,
+		Path:          params.Path,
+		RequestedMode: params.Mode,
+		Mode:          actualMode,
+		Limit:         params.Limit,
+		Offset:        params.Offset,
+		MatchCount:    len(pagedMatches),
+		TotalMatches:  totalMatches,
+		HasMore:       end < totalMatches,
+		Matches:       pagedMatches,
+	}
+	if result.HasMore {
+		result.NextOffset = end
+	}
+
+	return MarshalJSON(result)
+}
+
+func (r *multiFileReader) ReadLines(path string, start, end int) (string, error) {
+	reader, err := r.readerForPath(path, "read_lines", true)
+	if err != nil {
+		return "", err
+	}
+	raw, err := reader.ReadLines(path, start, end)
+	if err != nil {
+		return "", err
+	}
+	r.refreshLoadCount()
+	return raw, nil
+}
+
+func (r *multiFileReader) ReadAround(path string, line, before, after int) (string, error) {
+	reader, err := r.readerForPath(path, "read_around", true)
+	if err != nil {
+		return "", err
+	}
+	raw, err := reader.ReadAround(path, line, before, after)
+	if err != nil {
+		return "", err
+	}
+	r.refreshLoadCount()
+	return raw, nil
+}
+
+func (r *multiFileReader) readerForPath(path string, tool string, required bool) (*cachedLineReader, error) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		if required {
+			return nil, NewToolError("invalid_arguments", "path is required when multiple files are attached", false, map[string]any{
+				"tool":  tool,
+				"field": "path",
+			})
+		}
+		return nil, nil
+	}
+	reader, ok := r.byPath[trimmed]
+	if !ok {
+		return nil, NewToolError("invalid_arguments", "path is not part of the attached corpus", false, map[string]any{
+			"tool": tool,
+			"path": trimmed,
+		})
+	}
+	return reader, nil
+}
+
+func (r *multiFileReader) refreshLoadCount() {
+	total := 0
+	for _, reader := range r.ordered {
+		total += reader.loadCount
+	}
+	r.loadCount = total
+}
+
 func (r *cachedLineReader) Search(params SearchParams) (string, error) {
 	if err := r.ensureLoaded(); err != nil {
 		return "", err
 	}
 
-	return searchInLines(r.lines, params)
+	if !r.matchesPath(params.Path) {
+		return "", NewToolError("invalid_arguments", "path does not match the available file", false, map[string]any{
+			"tool": "search_file",
+			"path": params.Path,
+		})
+	}
+
+	return searchInLines(r.lines, r.displayPath, params)
 }
 
-func (r *cachedLineReader) ReadLines(start, end int) (string, error) {
+func (r *cachedLineReader) ReadLines(path string, start, end int) (string, error) {
 	if err := r.ensureLoaded(); err != nil {
 		return "", err
 	}
+	if !r.matchesPath(path) {
+		return "", NewToolError("invalid_arguments", "path does not match the available file", false, map[string]any{
+			"tool": "read_lines",
+			"path": path,
+		})
+	}
 
-	return readLinesFromLines(r.lines, start, end)
+	return readLinesFromLines(r.lines, r.displayPath, start, end)
 }
 
-func (r *cachedLineReader) ReadAround(line, before, after int) (string, error) {
+func (r *cachedLineReader) ReadAround(path string, line, before, after int) (string, error) {
 	if err := r.ensureLoaded(); err != nil {
 		return "", err
 	}
+	if !r.matchesPath(path) {
+		return "", NewToolError("invalid_arguments", "path does not match the available file", false, map[string]any{
+			"tool": "read_around",
+			"path": path,
+		})
+	}
 
-	return readAroundFromLines(r.lines, line, before, after)
+	return readAroundFromLines(r.lines, r.displayPath, line, before, after)
 }
 
 func MarshalJSON(v any) (string, error) {
@@ -207,6 +431,7 @@ func readAllLines(reader io.Reader) ([]string, error) {
 }
 
 func NormalizeSearchParams(params SearchParams) SearchParams {
+	params.Path = strings.TrimSpace(params.Path)
 	params.Query = strings.TrimSpace(params.Query)
 
 	if params.Mode == "" {
@@ -235,38 +460,46 @@ func NormalizeSearchParams(params SearchParams) SearchParams {
 	return params
 }
 
-func searchInLines(lines []string, params SearchParams) (string, error) {
-	params = NormalizeSearchParams(params)
+func NormalizeListFilesParams(params ListFilesParams) ListFilesParams {
+	if params.Limit <= 0 {
+		params.Limit = defaultListFilesLimit
+	}
+	if params.Limit > maxListFilesLimit {
+		params.Limit = maxListFilesLimit
+	}
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+	return params
+}
 
-	if params.Query == "" {
-		return "", NewToolError("invalid_arguments", "query must not be empty", false, map[string]any{
-			"tool":  "search_file",
-			"field": "query",
-		})
+func listFilesResult(paths []string, params ListFilesParams) (string, error) {
+	params = NormalizeListFilesParams(params)
+
+	totalFiles := len(paths)
+	start := min(params.Offset, totalFiles)
+	end := min(start+params.Limit, totalFiles)
+
+	result := ListFilesResult{
+		Limit:      params.Limit,
+		Offset:     params.Offset,
+		FileCount:  end - start,
+		TotalFiles: totalFiles,
+		HasMore:    end < totalFiles,
+		Files:      slices.Clone(paths[start:end]),
+	}
+	if result.HasMore {
+		result.NextOffset = end
 	}
 
-	var matches []SearchMatch
-	actualMode := params.Mode
+	return MarshalJSON(result)
+}
 
-	switch params.Mode {
-	case "literal":
-		matches = literalMatches(lines, params.Query, params.ContextLines)
-	case "regex":
-		regexMatches, err := regexMatches(lines, params.Query, params.ContextLines)
-		if err != nil {
-			return "", err
-		}
-		matches = regexMatches
-	case "auto":
-		matches = literalMatches(lines, params.Query, params.ContextLines)
-		actualMode = "literal"
-		if len(matches) == 0 {
-			matches = tokenOverlapMatches(lines, params.Query, params.ContextLines)
-			actualMode = "token_overlap"
-		}
-	default:
-		matches = literalMatches(lines, params.Query, params.ContextLines)
-		actualMode = "literal"
+func searchInLines(lines []string, displayPath string, params SearchParams) (string, error) {
+	params = NormalizeSearchParams(params)
+	matches, actualMode, err := searchMatches(lines, displayPath, params)
+	if err != nil {
+		return "", err
 	}
 
 	totalMatches := len(matches)
@@ -276,6 +509,7 @@ func searchInLines(lines []string, params SearchParams) (string, error) {
 
 	result := SearchResult{
 		Query:         params.Query,
+		Path:          displayPath,
 		RequestedMode: params.Mode,
 		Mode:          actualMode,
 		Limit:         params.Limit,
@@ -292,18 +526,55 @@ func searchInLines(lines []string, params SearchParams) (string, error) {
 	return MarshalJSON(result)
 }
 
-func literalMatches(lines []string, query string, contextLines int) []SearchMatch {
+func searchMatches(lines []string, displayPath string, params SearchParams) ([]SearchMatch, string, error) {
+	params = NormalizeSearchParams(params)
+
+	if params.Query == "" {
+		return nil, "", NewToolError("invalid_arguments", "query must not be empty", false, map[string]any{
+			"tool":  "search_file",
+			"field": "query",
+		})
+	}
+
+	var matches []SearchMatch
+	actualMode := params.Mode
+
+	switch params.Mode {
+	case "literal":
+		matches = literalMatches(lines, displayPath, params.Query, params.ContextLines)
+	case "regex":
+		regexMatches, err := regexMatches(lines, displayPath, params.Query, params.ContextLines)
+		if err != nil {
+			return nil, "", err
+		}
+		matches = regexMatches
+	case "auto":
+		matches = literalMatches(lines, displayPath, params.Query, params.ContextLines)
+		actualMode = "literal"
+		if len(matches) == 0 {
+			matches = tokenOverlapMatches(lines, displayPath, params.Query, params.ContextLines)
+			actualMode = "token_overlap"
+		}
+	default:
+		matches = literalMatches(lines, displayPath, params.Query, params.ContextLines)
+		actualMode = "literal"
+	}
+
+	return matches, actualMode, nil
+}
+
+func literalMatches(lines []string, displayPath string, query string, contextLines int) []SearchMatch {
 	lowerQuery := strings.ToLower(query)
 	matches := make([]SearchMatch, 0)
 	for idx, line := range lines {
 		if strings.Contains(strings.ToLower(line), lowerQuery) {
-			matches = append(matches, buildSearchMatch(lines, idx, line, 1, "literal_match", contextLines))
+			matches = append(matches, buildSearchMatch(lines, displayPath, idx, line, 1, "literal_match", contextLines))
 		}
 	}
 	return matches
 }
 
-func regexMatches(lines []string, query string, contextLines int) ([]SearchMatch, error) {
+func regexMatches(lines []string, displayPath string, query string, contextLines int) ([]SearchMatch, error) {
 	re, err := regexp.Compile("(?i)" + query)
 	if err != nil {
 		return nil, NewToolError("invalid_arguments", "invalid regex for search_file", false, map[string]any{
@@ -317,14 +588,14 @@ func regexMatches(lines []string, query string, contextLines int) ([]SearchMatch
 	matches := make([]SearchMatch, 0)
 	for idx, line := range lines {
 		if re.MatchString(line) {
-			matches = append(matches, buildSearchMatch(lines, idx, line, 1, "regex_match", contextLines))
+			matches = append(matches, buildSearchMatch(lines, displayPath, idx, line, 1, "regex_match", contextLines))
 		}
 	}
 
 	return matches, nil
 }
 
-func tokenOverlapMatches(lines []string, query string, contextLines int) []SearchMatch {
+func tokenOverlapMatches(lines []string, displayPath string, query string, contextLines int) []SearchMatch {
 	tokens := tokenizeQuery(query)
 	if len(tokens) < 2 {
 		return []SearchMatch{}
@@ -337,7 +608,7 @@ func tokenOverlapMatches(lines []string, query string, contextLines int) []Searc
 			continue
 		}
 		reason := fmt.Sprintf("token_overlap:%d/%d", matchedTokens, len(tokens))
-		matches = append(matches, buildSearchMatch(lines, idx, line, score, reason, contextLines))
+		matches = append(matches, buildSearchMatch(lines, displayPath, idx, line, score, reason, contextLines))
 	}
 
 	slices.SortStableFunc(matches, func(a, b SearchMatch) int {
@@ -392,10 +663,11 @@ func overlapScore(line string, tokens []string) (float64, int) {
 	return math.Round(score*1000) / 1000, matchedTokens
 }
 
-func buildSearchMatch(lines []string, idx int, content string, score float64, reason string, contextLines int) SearchMatch {
+func buildSearchMatch(lines []string, displayPath string, idx int, content string, score float64, reason string, contextLines int) SearchMatch {
 	match := SearchMatch{
 		LineNumber: idx + 1,
 		Content:    content,
+		Path:       displayPath,
 		Score:      score,
 		Reason:     reason,
 	}
@@ -403,24 +675,25 @@ func buildSearchMatch(lines []string, idx int, content string, score float64, re
 	if contextLines > 0 {
 		start := max(idx-contextLines, 0)
 		if start < idx {
-			match.ContextBefore = buildLineSlices(lines, start+1, idx)
+			match.ContextBefore = buildLineSlices(lines, displayPath, start+1, idx)
 		}
 
 		end := min(idx+contextLines+1, len(lines))
 		if idx+1 < end {
-			match.ContextAfter = buildLineSlices(lines, idx+2, end)
+			match.ContextAfter = buildLineSlices(lines, displayPath, idx+2, end)
 		}
 	}
 
 	return match
 }
 
-func readLinesFromLines(lines []string, start int, end int) (string, error) {
+func readLinesFromLines(lines []string, displayPath string, start int, end int) (string, error) {
 	if start < 1 {
 		start = 1
 	}
 
 	result := ReadLinesResult{
+		Path:      displayPath,
 		StartLine: start,
 		EndLine:   end,
 		Lines:     []LineSlice{},
@@ -430,12 +703,12 @@ func readLinesFromLines(lines []string, start int, end int) (string, error) {
 		return MarshalJSON(result)
 	}
 
-	result.Lines = buildLineSlices(lines, start, end)
+	result.Lines = buildLineSlices(lines, displayPath, start, end)
 	result.LineCount = len(result.Lines)
 	return MarshalJSON(result)
 }
 
-func readAroundFromLines(lines []string, line, before, after int) (string, error) {
+func readAroundFromLines(lines []string, displayPath string, line, before, after int) (string, error) {
 	if line < 1 {
 		return "", NewToolError("invalid_arguments", "line must be >= 1", false, map[string]any{
 			"tool":  "read_around",
@@ -458,6 +731,7 @@ func readAroundFromLines(lines []string, line, before, after int) (string, error
 	}
 
 	result := ReadAroundResult{
+		Path:      displayPath,
 		Line:      line,
 		Before:    before,
 		After:     after,
@@ -467,14 +741,14 @@ func readAroundFromLines(lines []string, line, before, after int) (string, error
 	}
 
 	if start <= end {
-		result.Lines = buildLineSlices(lines, start, end)
+		result.Lines = buildLineSlices(lines, displayPath, start, end)
 	}
 	result.LineCount = len(result.Lines)
 
 	return MarshalJSON(result)
 }
 
-func buildLineSlices(lines []string, start int, end int) []LineSlice {
+func buildLineSlices(lines []string, displayPath string, start int, end int) []LineSlice {
 	if start < 1 {
 		start = 1
 	}
@@ -490,6 +764,7 @@ func buildLineSlices(lines []string, start int, end int) []LineSlice {
 		result = append(result, LineSlice{
 			LineNumber: lineNumber,
 			Content:    lines[lineNumber-1],
+			Path:       displayPath,
 		})
 	}
 	return result
@@ -516,7 +791,7 @@ func ReadLines(path string, startLine, endLine int) (string, error) {
 	} else {
 		reader = NewFileReader(path)
 	}
-	return reader.ReadLines(startLine, endLine)
+	return reader.ReadLines("", startLine, endLine)
 }
 
 func ReadAround(path string, line, before, after int) (string, error) {
@@ -526,7 +801,7 @@ func ReadAround(path string, line, before, after int) (string, error) {
 	} else {
 		reader = NewFileReader(path)
 	}
-	return reader.ReadAround(line, before, after)
+	return reader.ReadAround("", line, before, after)
 }
 
 func StdinSearch(query string) (string, error) {
@@ -543,8 +818,28 @@ func StdinReadAround(line, before, after int) (string, error) {
 
 func ExecuteTool(call openai.ToolCall, reader LineReader) (string, error) {
 	switch call.Function.Name {
+	case "list_files":
+		var params struct {
+			Limit  int `json:"limit"`
+			Offset int `json:"offset"`
+		}
+		if strings.TrimSpace(call.Function.Arguments) != "" {
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
+				return "", NewToolError("invalid_arguments", "invalid arguments for list_files", false, map[string]any{
+					"tool":  "list_files",
+					"error": err.Error(),
+				})
+			}
+		}
+
+		return reader.ListFiles(ListFilesParams{
+			Limit:  params.Limit,
+			Offset: params.Offset,
+		})
+
 	case "search_file":
 		var params struct {
+			Path         string `json:"path"`
 			Query        string `json:"query"`
 			Mode         string `json:"mode"`
 			Limit        int    `json:"limit"`
@@ -559,6 +854,7 @@ func ExecuteTool(call openai.ToolCall, reader LineReader) (string, error) {
 		}
 
 		return reader.Search(SearchParams{
+			Path:         params.Path,
 			Query:        params.Query,
 			Mode:         params.Mode,
 			Limit:        params.Limit,
@@ -568,8 +864,9 @@ func ExecuteTool(call openai.ToolCall, reader LineReader) (string, error) {
 
 	case "read_lines":
 		var params struct {
-			StartLine int `json:"start_line"`
-			EndLine   int `json:"end_line"`
+			Path      string `json:"path"`
+			StartLine int    `json:"start_line"`
+			EndLine   int    `json:"end_line"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
 			return "", NewToolError("invalid_arguments", "invalid arguments for read_lines", false, map[string]any{
@@ -578,13 +875,14 @@ func ExecuteTool(call openai.ToolCall, reader LineReader) (string, error) {
 			})
 		}
 
-		return reader.ReadLines(params.StartLine, params.EndLine)
+		return reader.ReadLines(params.Path, params.StartLine, params.EndLine)
 
 	case "read_around":
 		var params struct {
-			Line   int `json:"line"`
-			Before int `json:"before"`
-			After  int `json:"after"`
+			Path   string `json:"path"`
+			Line   int    `json:"line"`
+			Before int    `json:"before"`
+			After  int    `json:"after"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
 			return "", NewToolError("invalid_arguments", "invalid arguments for read_around", false, map[string]any{
@@ -593,7 +891,7 @@ func ExecuteTool(call openai.ToolCall, reader LineReader) (string, error) {
 			})
 		}
 
-		return reader.ReadAround(params.Line, params.Before, params.After)
+		return reader.ReadAround(params.Path, params.Line, params.Before, params.After)
 
 	default:
 		return "", NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
@@ -648,8 +946,27 @@ func SummarizeToolArguments(call openai.ToolCall) map[string]any {
 	}
 
 	switch call.Function.Name {
+	case "list_files":
+		var params struct {
+			Limit  int `json:"limit"`
+			Offset int `json:"offset"`
+		}
+		if strings.TrimSpace(call.Function.Arguments) != "" {
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
+				return map[string]any{"decode_error": err.Error()}
+			}
+		}
+		normalized := NormalizeListFilesParams(ListFilesParams{
+			Limit:  params.Limit,
+			Offset: params.Offset,
+		})
+		return map[string]any{
+			"limit":  normalized.Limit,
+			"offset": normalized.Offset,
+		}
 	case "search_file":
 		var params struct {
+			Path         string `json:"path"`
 			Query        string `json:"query"`
 			Mode         string `json:"mode"`
 			Limit        int    `json:"limit"`
@@ -660,45 +977,60 @@ func SummarizeToolArguments(call openai.ToolCall) map[string]any {
 			return map[string]any{"decode_error": err.Error()}
 		}
 		normalized := NormalizeSearchParams(SearchParams{
+			Path:         params.Path,
 			Query:        params.Query,
 			Mode:         params.Mode,
 			Limit:        params.Limit,
 			Offset:       params.Offset,
 			ContextLines: params.ContextLines,
 		})
-		return map[string]any{
+		summary := map[string]any{
 			"query":         normalized.Query,
 			"mode":          normalized.Mode,
 			"limit":         normalized.Limit,
 			"offset":        normalized.Offset,
 			"context_lines": normalized.ContextLines,
 		}
+		if normalized.Path != "" {
+			summary["path"] = normalized.Path
+		}
+		return summary
 	case "read_lines":
 		var params struct {
-			StartLine int `json:"start_line"`
-			EndLine   int `json:"end_line"`
+			Path      string `json:"path"`
+			StartLine int    `json:"start_line"`
+			EndLine   int    `json:"end_line"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
 			return map[string]any{"decode_error": err.Error()}
 		}
-		return map[string]any{
+		summary := map[string]any{
 			"start_line": params.StartLine,
 			"end_line":   params.EndLine,
 		}
+		if strings.TrimSpace(params.Path) != "" {
+			summary["path"] = strings.TrimSpace(params.Path)
+		}
+		return summary
 	case "read_around":
 		var params struct {
-			Line   int `json:"line"`
-			Before int `json:"before"`
-			After  int `json:"after"`
+			Path   string `json:"path"`
+			Line   int    `json:"line"`
+			Before int    `json:"before"`
+			After  int    `json:"after"`
 		}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
 			return map[string]any{"decode_error": err.Error()}
 		}
-		return map[string]any{
+		summary := map[string]any{
 			"line":   params.Line,
 			"before": params.Before,
 			"after":  params.After,
 		}
+		if strings.TrimSpace(params.Path) != "" {
+			summary["path"] = strings.TrimSpace(params.Path)
+		}
+		return summary
 	default:
 		return map[string]any{
 			"raw_arguments": call.Function.Arguments,
@@ -708,6 +1040,20 @@ func SummarizeToolArguments(call openai.ToolCall) map[string]any {
 
 func SummarizeToolResult(toolName string, raw string) map[string]any {
 	switch toolName {
+	case "list_files":
+		var result ListFilesResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return map[string]any{"decode_error": err.Error()}
+		}
+		summary := map[string]any{
+			"file_count":  result.FileCount,
+			"total_files": result.TotalFiles,
+			"has_more":    result.HasMore,
+		}
+		if result.NextOffset > 0 {
+			summary["next_offset"] = result.NextOffset
+		}
+		return summary
 	case "search_file":
 		var result SearchResult
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
@@ -719,6 +1065,9 @@ func SummarizeToolResult(toolName string, raw string) map[string]any {
 			"total_matches": result.TotalMatches,
 			"has_more":      result.HasMore,
 		}
+		if strings.TrimSpace(result.Path) != "" {
+			summary["path"] = strings.TrimSpace(result.Path)
+		}
 		if result.NextOffset > 0 {
 			summary["next_offset"] = result.NextOffset
 		}
@@ -728,22 +1077,30 @@ func SummarizeToolResult(toolName string, raw string) map[string]any {
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return map[string]any{"decode_error": err.Error()}
 		}
-		return map[string]any{
+		summary := map[string]any{
 			"start_line": result.StartLine,
 			"end_line":   result.EndLine,
 			"line_count": result.LineCount,
 		}
+		if strings.TrimSpace(result.Path) != "" {
+			summary["path"] = strings.TrimSpace(result.Path)
+		}
+		return summary
 	case "read_around":
 		var result ReadAroundResult
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return map[string]any{"decode_error": err.Error()}
 		}
-		return map[string]any{
+		summary := map[string]any{
 			"line":       result.Line,
 			"start_line": result.StartLine,
 			"end_line":   result.EndLine,
 			"line_count": result.LineCount,
 		}
+		if strings.TrimSpace(result.Path) != "" {
+			summary["path"] = strings.TrimSpace(result.Path)
+		}
+		return summary
 	default:
 		return nil
 	}

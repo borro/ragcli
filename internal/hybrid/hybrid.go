@@ -3,6 +3,8 @@ package hybrid
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,14 +52,16 @@ const (
 )
 
 type Segment struct {
-	ID        int    `json:"id"`
-	Level     string `json:"level"`
-	Kind      string `json:"kind"`
-	StartLine int    `json:"start_line"`
-	EndLine   int    `json:"end_line"`
-	ByteStart int    `json:"byte_start"`
-	ByteEnd   int    `json:"byte_end"`
-	Text      string `json:"text"`
+	SourcePath  string `json:"source_path"`
+	DisplayPath string `json:"display_path,omitempty"`
+	ID          int    `json:"id"`
+	Level       string `json:"level"`
+	Kind        string `json:"kind"`
+	StartLine   int    `json:"start_line"`
+	EndLine     int    `json:"end_line"`
+	ByteStart   int    `json:"byte_start"`
+	ByteEnd     int    `json:"byte_end"`
+	Text        string `json:"text"`
 }
 
 type RetrievedHit struct {
@@ -109,6 +113,17 @@ type cachedIndex struct {
 	Embeddings [][]float32
 }
 
+type preparedSource struct {
+	Bytes        int
+	Hash         string
+	FileCount    int
+	MicroCount   int
+	Segments     []Segment
+	Profile      DocumentProfile
+	MultiProfile bool
+	SpoolPath    string
+}
+
 type indexManifest = retrieval.Manifest
 
 const (
@@ -126,7 +141,7 @@ var (
 	errReasoningOnlyOutput = errors.New("chat response returned reasoning-only output")
 )
 
-func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester, source input.Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester, source input.FileBackedSource, opts Options, question string, plan *verbose.Plan) (string, error) {
 	prepareMeter := plan.Stage("prepare").Slice(2, 2)
 	segmentsMeter := plan.Stage("segments")
 	retrievalMeter := plan.Stage("retrieval")
@@ -134,31 +149,31 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 	factMeter := plan.Stage("facts")
 	coverageMeter := plan.Stage("coverage")
 	finalMeter := plan.Stage("final")
-	if source.Reader == nil {
-		return "", errors.New("hybrid source reader is required")
-	}
 
 	startedAt := time.Now()
 	prepareMeter.Start(localize.T("progress.hybrid.read_input"))
 	displayName := normalizeSourceDisplayName(source)
-	snapshot, err := spoolSourceSnapshot(source.Reader, displayName, opts)
+	prepared, err := prepareHybridSource(source, displayName, opts)
 	if err != nil {
-		return "", fmt.Errorf("failed to spool source: %w", err)
+		return "", fmt.Errorf("failed to prepare source: %w", err)
 	}
-	defer func() {
-		_ = os.Remove(snapshot.Path)
-	}()
-	prepareMeter.Done(localize.T("progress.hybrid.read_done", localize.Data{"Bytes": snapshot.Bytes}))
-	if snapshot.Bytes == 0 {
+	if strings.TrimSpace(prepared.SpoolPath) != "" {
+		defer func() {
+			_ = os.Remove(prepared.SpoolPath)
+		}()
+	}
+	prepareMeter.Done(localize.T("progress.hybrid.read_done", localize.Data{"Bytes": prepared.Bytes}))
+	if prepared.Bytes == 0 {
 		slog.Info("hybrid processing finished", "reason", "empty_input")
 		return localize.T("map.answer.empty_file"), nil
 	}
 
-	readPath := normalizeSourceReadPath(source)
+	readPath := normalizeSourceSnapshotPath(source)
 	slog.Info("hybrid processing started",
 		"source", displayName,
 		"has_file_path", strings.TrimSpace(readPath) != "",
-		"content_bytes", snapshot.Bytes,
+		"content_bytes", prepared.Bytes,
+		"file_count", prepared.FileCount,
 		"top_k", opts.TopK,
 		"final_k", opts.FinalK,
 		"map_k", opts.MapK,
@@ -166,11 +181,9 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 		"fallback", opts.Fallback,
 	)
 
-	profile := snapshot.Profile
-	microCount, meso, err := segmentDocumentFromFile(snapshot.Path, profile, opts)
-	if err != nil {
-		return "", fmt.Errorf("failed to segment source: %w", err)
-	}
+	profile := prepared.Profile
+	microCount := prepared.MicroCount
+	meso := prepared.Segments
 	if len(meso) == 0 {
 		slog.Info("hybrid processing finished", "reason", "no_segments", "source", displayName)
 		return localize.T("map.answer.no_info"), nil
@@ -182,7 +195,11 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 		"meso_segments", len(meso),
 	)
 	segmentsMeter.Start(localize.T("progress.hybrid.segment_start"))
-	segmentsMeter.Done(localize.T("progress.hybrid.segment_done", localize.Data{"Profile": profile, "Count": len(meso)}))
+	if prepared.MultiProfile {
+		segmentsMeter.Done(localize.T("progress.hybrid.segment_done_corpus", localize.Data{"Files": prepared.FileCount, "Count": len(meso)}))
+	} else {
+		segmentsMeter.Done(localize.T("progress.hybrid.segment_done", localize.Data{"Profile": profile, "Count": len(meso)}))
+	}
 
 	slog.Debug("hybrid lexical retrieval started", "segment_count", len(meso))
 	retrievalMeter.Start(localize.T("progress.hybrid.lexical_start"))
@@ -192,13 +209,13 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 
 	retrievalMeter.Note(localize.T("progress.hybrid.semantic_start"))
 	slog.Debug("hybrid semantic retrieval started", "segment_count", len(meso))
-	semanticHits, semanticErr := semanticRetrieve(ctx, embedder, displayName, snapshot.Hash, meso, opts, question)
+	semanticHits, semanticErr := semanticRetrieve(ctx, embedder, displayName, prepared.Hash, meso, opts, question)
 	if semanticErr != nil {
 		slog.Warn("hybrid semantic retrieval failed", "fallback", opts.Fallback, "error", semanticErr)
 		switch opts.Fallback {
 		case "map":
 			slog.Info("hybrid switching to map fallback", "reason", "semantic_retrieval_failed")
-			return fallbackToMap(ctx, chat, source, opts, question, snapshot.Path, nil)
+			return fallbackToMap(ctx, chat, source, opts, question, nil)
 		case "rag-only":
 			slog.Warn("hybrid semantic retrieval unavailable, continuing with lexical retrieval only", "error", semanticErr)
 		default:
@@ -220,7 +237,7 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 		slog.Warn("hybrid retrieval too weak", "regions", len(regions), "fallback", opts.Fallback)
 		if opts.Fallback == "map" {
 			slog.Info("hybrid switching to map fallback", "reason", "weak_retrieval")
-			return fallbackToMap(ctx, chat, source, opts, question, snapshot.Path, nil)
+			return fallbackToMap(ctx, chat, source, opts, question, nil)
 		}
 		if len(regions) == 0 {
 			slog.Info("hybrid processing finished", "reason", "no_evidence", "duration", roundDuration(time.Since(startedAt)))
@@ -284,7 +301,7 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 		extraLexical := lexicalRetrieve(followUpQuery, meso)
 		extraSemantic := []RetrievedHit(nil)
 		if semanticErr == nil {
-			extraSemantic, _ = semanticRetrieve(ctx, embedder, displayName, snapshot.Hash, meso, opts, followUpQuery)
+			extraSemantic, _ = semanticRetrieve(ctx, embedder, displayName, prepared.Hash, meso, opts, followUpQuery)
 		}
 		extra := fuseAndExpandRegions(extraLexical, extraSemantic, meso, readPath, displayName, opts)
 		extra = filterRegionsBySegments(extra, existing)
@@ -323,7 +340,7 @@ func Run(ctx context.Context, chat llm.ChatAutoContextRequester, embedder llm.Em
 	if err != nil {
 		if (errors.Is(err, errEmptyChatContent) || errors.Is(err, errReasoningOnlyOutput)) && opts.Fallback == "map" {
 			slog.Warn("hybrid answer synthesis returned empty content, switching to map fallback")
-			return fallbackToMap(ctx, chat, source, opts, question, snapshot.Path, nil)
+			return fallbackToMap(ctx, chat, source, opts, question, nil)
 		}
 		return "", err
 	}
@@ -379,12 +396,13 @@ func segmentDocument(content []byte, profile DocumentProfile, opts Options) ([]S
 	return segmentLines(lines, profile, opts)
 }
 
-func segmentDocumentFromFile(path string, profile DocumentProfile, opts Options) (int, []Segment, error) {
+func segmentDocumentFromFile(path string, sourcePath string, displayPath string, profile DocumentProfile, opts Options) (int, []Segment, error) {
 	lines, err := readLines(path)
 	if err != nil {
 		return 0, nil, err
 	}
-	return microSegmentCount(lines, opts.ReadWindow), buildMesoSegments(lines, profile, opts), nil
+	microCount, meso := segmentDocumentFromLines(lines, sourcePath, displayPath, profile, opts, 0)
+	return microCount, meso, nil
 }
 
 func segmentLines(lines []lineInfo, profile DocumentProfile, opts Options) ([]Segment, []Segment) {
@@ -392,9 +410,13 @@ func segmentLines(lines []lineInfo, profile DocumentProfile, opts Options) ([]Se
 		return nil, nil
 	}
 
-	micro := buildMicroSegments(lines, opts.ReadWindow)
-	meso := buildMesoSegments(lines, profile, opts)
+	micro := buildMicroSegments(lines, "", "", opts.ReadWindow, 0)
+	_, meso := segmentDocumentFromLines(lines, "", "", profile, opts, 0)
 	return micro, meso
+}
+
+func segmentDocumentFromLines(lines []lineInfo, sourcePath string, displayPath string, profile DocumentProfile, opts Options, startID int) (int, []Segment) {
+	return microSegmentCount(lines, opts.ReadWindow), buildMesoSegments(lines, sourcePath, displayPath, profile, opts, startID)
 }
 
 func microSegmentCount(lines []lineInfo, readWindow int) int {
@@ -490,6 +512,115 @@ func spoolSourceSnapshot(reader io.Reader, sourcePath string, opts Options) (*so
 	}, nil
 }
 
+func prepareHybridSource(source input.FileBackedSource, displayName string, opts Options) (*preparedSource, error) {
+	if !source.IsMultiFile() {
+		reader, err := source.Open()
+		if err != nil {
+			return nil, err
+		}
+		snapshot, snapshotErr := spoolSourceSnapshot(reader, displayName, opts)
+		closeErr := reader.Close()
+		if snapshotErr != nil {
+			return nil, snapshotErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		microCount, meso, err := segmentDocumentFromFile(snapshot.Path, snapshot.Path, displayName, snapshot.Profile, opts)
+		if err != nil {
+			_ = os.Remove(snapshot.Path)
+			return nil, err
+		}
+		return &preparedSource{
+			Bytes:      snapshot.Bytes,
+			Hash:       snapshot.Hash,
+			FileCount:  1,
+			MicroCount: microCount,
+			Segments:   meso,
+			Profile:    snapshot.Profile,
+			SpoolPath:  snapshot.Path,
+		}, nil
+	}
+
+	files := source.BackingFiles()
+	hash, err := hashHybridFiles(files, []string{
+		displayName,
+		fmt.Sprintf("%d", hybridIndexSchemaVersion),
+		fmt.Sprintf("%d", opts.ChunkSize),
+		fmt.Sprintf("%d", opts.ChunkOverlap),
+		opts.EmbeddingModel,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	segments := make([]Segment, 0, len(files)*2)
+	fileCount := 0
+	totalBytes := 0
+	totalMicro := 0
+	profile := ProfileUnknown
+	startID := 0
+
+	for _, file := range files {
+		lines, err := readLines(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Stat(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		totalBytes += int(info.Size())
+		fileCount++
+
+		stats := profileStats{}
+		for _, line := range lines {
+			collectProfileStats(line.text, &stats)
+		}
+		fileProfile := detectProfile(file.DisplayPath, stats.headingCount, stats.logLikeCount, stats.nonEmpty)
+		if fileCount == 1 {
+			profile = fileProfile
+		}
+		microCount, fileSegments := segmentDocumentFromLines(lines, file.Path, file.DisplayPath, fileProfile, opts, startID)
+		totalMicro += microCount
+		startID += len(fileSegments)
+		segments = append(segments, fileSegments...)
+	}
+
+	return &preparedSource{
+		Bytes:        totalBytes,
+		Hash:         hash,
+		FileCount:    fileCount,
+		MicroCount:   totalMicro,
+		Segments:     segments,
+		Profile:      profile,
+		MultiProfile: source.IsMultiFile(),
+	}, nil
+}
+
+func hashHybridFiles(files []input.File, hashParts []string) (string, error) {
+	hasher := sha256.New()
+	for _, part := range hashParts {
+		_, _ = fmt.Fprintf(hasher, "|%s", part)
+	}
+	for _, file := range files {
+		_, _ = fmt.Fprintf(hasher, "|%s|", file.DisplayPath)
+		reader, err := os.Open(file.Path)
+		if err != nil {
+			return "", err
+		}
+		_, copyErr := io.Copy(hasher, reader)
+		closeErr := reader.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
 func detectProfile(sourcePath string, headingCount, logLikeCount int, nonEmpty bool) DocumentProfile {
 	lowerPath := strings.ToLower(strings.TrimSpace(sourcePath))
 	switch {
@@ -511,17 +642,17 @@ func detectProfile(sourcePath string, headingCount, logLikeCount int, nonEmpty b
 	}
 }
 
-func buildMicroSegments(lines []lineInfo, readWindow int) []Segment {
+func buildMicroSegments(lines []lineInfo, sourcePath string, displayPath string, readWindow int, startID int) []Segment {
 	window := max(readWindow*2+1, 8)
 	segments := make([]Segment, 0, microSegmentCount(lines, readWindow))
 	for start := 0; start < len(lines); start += window {
 		end := min(start+window, len(lines))
-		segments = append(segments, buildSegment(len(segments), "micro", "window", lines[start:end]))
+		segments = append(segments, buildSegment(startID+len(segments), sourcePath, displayPath, "micro", "window", lines[start:end]))
 	}
 	return segments
 }
 
-func buildMesoSegments(lines []lineInfo, profile DocumentProfile, opts Options) []Segment {
+func buildMesoSegments(lines []lineInfo, sourcePath string, displayPath string, profile DocumentProfile, opts Options, startID int) []Segment {
 	var groups []segmentGroup
 
 	switch profile {
@@ -542,7 +673,7 @@ func buildMesoSegments(lines []lineInfo, profile DocumentProfile, opts Options) 
 		if kind == "" {
 			kind = "section"
 		}
-		segments = append(segments, buildSegment(len(segments), "meso", kind, group.lines))
+		segments = append(segments, buildSegment(startID+len(segments), sourcePath, displayPath, "meso", kind, group.lines))
 	}
 	return segments
 }
@@ -698,20 +829,22 @@ func groupRuneCount(lines []lineInfo) int {
 	return total
 }
 
-func buildSegment(id int, level, kind string, lines []lineInfo) Segment {
+func buildSegment(id int, sourcePath string, displayPath string, level, kind string, lines []lineInfo) Segment {
 	parts := make([]string, 0, len(lines))
 	for _, line := range lines {
 		parts = append(parts, line.text)
 	}
 	return Segment{
-		ID:        id,
-		Level:     level,
-		Kind:      kind,
-		StartLine: lines[0].lineNo,
-		EndLine:   lines[len(lines)-1].lineNo,
-		ByteStart: lines[0].byteStart,
-		ByteEnd:   lines[len(lines)-1].byteEnd,
-		Text:      strings.Join(parts, "\n"),
+		SourcePath:  sourcePath,
+		DisplayPath: displayPath,
+		ID:          id,
+		Level:       level,
+		Kind:        kind,
+		StartLine:   lines[0].lineNo,
+		EndLine:     lines[len(lines)-1].lineNo,
+		ByteStart:   lines[0].byteStart,
+		ByteEnd:     lines[len(lines)-1].byteEnd,
+		Text:        strings.Join(parts, "\n"),
 	}
 }
 
@@ -935,7 +1068,7 @@ func embedQuery(ctx context.Context, embedder llm.EmbeddingRequester, question s
 	return retrieval.EmbedQuery(ctx, embedder, question, "hybrid query")
 }
 
-func fuseAndExpandRegions(lexicalHits, semanticHits []RetrievedHit, segments []Segment, sourcePath, displayName string, opts Options) []Region {
+func fuseAndExpandRegions(lexicalHits, semanticHits []RetrievedHit, segments []Segment, _ string, _ string, opts Options) []Region {
 	type fusionState struct {
 		Score      float64
 		BestLine   int
@@ -1001,6 +1134,9 @@ func fuseAndExpandRegions(lexicalHits, semanticHits []RetrievedHit, segments []S
 			if id < 0 || id >= len(segments) {
 				continue
 			}
+			if segments[id].SourcePath != segments[item.ID].SourcePath {
+				continue
+			}
 			if current, ok := selected[id]; !ok || item.Score > current.Score {
 				selected[id] = scoredSegment{
 					ID:       id,
@@ -1022,7 +1158,7 @@ func fuseAndExpandRegions(lexicalHits, semanticHits []RetrievedHit, segments []S
 	for i := 0; i < len(ids); {
 		start := i
 		end := i + 1
-		for end < len(ids) && ids[end] == ids[end-1]+1 {
+		for end < len(ids) && ids[end] == ids[end-1]+1 && segments[ids[end]].SourcePath == segments[ids[end-1]].SourcePath {
 			end++
 		}
 
@@ -1060,8 +1196,8 @@ func fuseAndExpandRegions(lexicalHits, semanticHits []RetrievedHit, segments []S
 			Score:       score,
 			BestLine:    bestLine,
 			HitSources:  hitSources,
-			SourcePath:  sourcePath,
-			DisplayName: displayName,
+			SourcePath:  first.SourcePath,
+			DisplayName: first.DisplayPath,
 		})
 		i = end
 	}
@@ -1101,6 +1237,9 @@ func dedupeRegions(regions []Region) []Region {
 }
 
 func overlapRatio(a, b Region) float64 {
+	if a.SourcePath != b.SourcePath {
+		return 0
+	}
 	start := max(a.StartLine, b.StartLine)
 	end := min(a.EndLine, b.EndLine)
 	if end < start {
@@ -1342,19 +1481,9 @@ func mergeFactBlocks(left, right string) string {
 	return normalizeFacts(combined)
 }
 
-func fallbackToMap(ctx context.Context, chat llm.ChatAutoContextRequester, source input.Source, opts Options, question string, sourcePath string, plan *verbose.Plan) (string, error) {
+func fallbackToMap(ctx context.Context, chat llm.ChatAutoContextRequester, source input.SnapshotSource, opts Options, question string, plan *verbose.Plan) (string, error) {
 	slog.Debug("hybrid map fallback started", "chunk_length_mode", "auto_or_default")
-	file, err := os.Open(sourcePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to open fallback source: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	return mapmode.Run(ctx, chat, input.Source{
-		Reader:      file,
-		Path:        source.Path,
-		DisplayName: source.DisplayName,
-	}, mapmode.Options{
+	return mapmode.Run(ctx, chat, source, mapmode.Options{
 		Concurrency:    1,
 		ChunkLength:    10000,
 		LengthExplicit: false,
@@ -1541,26 +1670,25 @@ func isInstructionLike(line string) bool {
 	return false
 }
 
-func normalizeSourceDisplayName(source input.Source) string {
-	if strings.TrimSpace(source.DisplayName) != "" {
-		displayName := strings.TrimSpace(source.DisplayName)
+func normalizeSourceDisplayName(source input.SourceMeta) string {
+	if displayName := strings.TrimSpace(source.DisplayName()); displayName != "" {
 		if strings.Contains(displayName, string(os.PathSeparator)) {
 			return filepath.Base(displayName)
 		}
 		return displayName
 	}
-	if strings.TrimSpace(source.Path) != "" {
-		return strings.TrimSpace(filepath.Base(source.Path))
+	if inputPath := source.InputPath(); inputPath != "" {
+		return strings.TrimSpace(filepath.Base(inputPath))
 	}
 	return "stdin"
 }
 
-func normalizeSourceReadPath(source input.Source) string {
-	if strings.TrimSpace(source.Path) != "" {
-		return strings.TrimSpace(source.Path)
+func normalizeSourceSnapshotPath(source input.SnapshotSource) string {
+	if readPath := source.SnapshotPath(); readPath != "" {
+		return readPath
 	}
-	if strings.TrimSpace(source.DisplayName) != "" {
-		return strings.TrimSpace(source.DisplayName)
+	if displayName := strings.TrimSpace(source.DisplayName()); displayName != "" {
+		return displayName
 	}
 	return ""
 }

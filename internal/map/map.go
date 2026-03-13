@@ -795,15 +795,17 @@ func selfRefine(ctx context.Context, client llm.ChatRequester, question, facts, 
 // PIPELINE
 //
 
-func Run(ctx context.Context, client llm.ChatAutoContextRequester, source input.Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+func Run(ctx context.Context, client llm.ChatAutoContextRequester, source input.SnapshotSource, opts Options, question string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
 	inputMode := "stdin"
-	if strings.TrimSpace(source.Path) != "" {
+	if source.Kind() != input.KindStdin {
 		inputMode = "file"
 	}
-	if source.Reader == nil {
-		return "", errors.New("map source reader is required")
+	readerHandle, err := source.Open()
+	if err != nil {
+		return "", err
 	}
+	defer func() { _ = readerHandle.Close() }()
 	stats := &pipelineStats{}
 	chunkingMeter := plan.Stage("chunking")
 	chunkMeter := plan.Stage("chunks")
@@ -812,7 +814,7 @@ func Run(ctx context.Context, client llm.ChatAutoContextRequester, source input.
 	finalMeter := plan.Stage("final")
 	chunkingMeter.Start(localize.T("progress.map.chunking_start"))
 
-	reader := bufio.NewReader(source.Reader)
+	reader := bufio.NewReader(readerHandle)
 	if _, err := reader.Peek(1); err != nil {
 		if errors.Is(err, io.EOF) {
 			chunkingMeter.Done(localize.T("progress.map.chunking_done", localize.Data{"Count": 0}))

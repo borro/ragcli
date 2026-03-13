@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -38,6 +40,57 @@ type scriptedRequester struct {
 	requests  []openai.ChatCompletionRequest
 }
 
+type testSource struct {
+	kind         input.Kind
+	inputPath    string
+	snapshotPath string
+	files        []input.File
+}
+
+func (s testSource) Kind() input.Kind {
+	return s.kind
+}
+
+func (s testSource) InputPath() string {
+	return s.inputPath
+}
+
+func (s testSource) DisplayName() string {
+	if path := strings.TrimSpace(s.inputPath); path != "" {
+		return path
+	}
+	if s.kind == input.KindStdin {
+		return "stdin"
+	}
+	if len(s.files) > 0 && strings.TrimSpace(s.files[0].DisplayPath) != "" {
+		return s.files[0].DisplayPath
+	}
+	return strings.TrimSpace(s.snapshotPath)
+}
+
+func (s testSource) SnapshotPath() string {
+	return s.snapshotPath
+}
+
+func (s testSource) Open() (io.ReadCloser, error) {
+	if strings.TrimSpace(s.snapshotPath) == "" {
+		return nil, os.ErrNotExist
+	}
+	return os.Open(s.snapshotPath)
+}
+
+func (s testSource) BackingFiles() []input.File {
+	return append([]input.File(nil), s.files...)
+}
+
+func (s testSource) FileCount() int {
+	return len(s.files)
+}
+
+func (s testSource) IsMultiFile() bool {
+	return s.kind == input.KindDirectory || len(s.files) > 1
+}
+
 func (s *scriptedRequester) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
 	s.requests = append(s.requests, req)
 	index := len(s.requests) - 1
@@ -62,15 +115,79 @@ func (s *scriptedRequester) SendRequestWithMetrics(_ context.Context, req openai
 }
 
 func runTools(ctx context.Context, client llm.ChatRequester, filePath string, prompt string, plan *verbose.Plan) (string, error) {
-	displayName := strings.TrimSpace(filePath)
-	if displayName == "" {
-		displayName = "stdin"
+	snapshotPath := strings.TrimSpace(filePath)
+	if snapshotPath == "" || !pathExists(snapshotPath) {
+		snapshotPath = writeAnonymousTempFile("placeholder\n")
 	}
 
-	return Run(ctx, client, input.Source{
-		Path:        filePath,
-		DisplayName: displayName,
-	}, prompt, plan)
+	source := testSource{
+		kind:         input.KindFile,
+		inputPath:    filePath,
+		snapshotPath: snapshotPath,
+		files: []input.File{{
+			Path:        snapshotPath,
+			DisplayPath: filepath.Base(filePath),
+		}},
+	}
+	if filePath == "" {
+		source.kind = input.KindStdin
+		source.inputPath = ""
+		source.files[0].DisplayPath = "stdin"
+	}
+
+	return runToolsWithSource(ctx, client, source, prompt, plan)
+}
+
+func runToolsWithSource(ctx context.Context, client llm.ChatRequester, source input.FileBackedSource, prompt string, plan *verbose.Plan) (string, error) {
+	return Run(ctx, client, source, prompt, plan)
+}
+
+func pathExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func writeAnonymousTempFile(content string) string {
+	tmpFile, err := os.CreateTemp("", "tools-test-*")
+	if err != nil {
+		panic(err)
+	}
+	if _, err := io.WriteString(tmpFile, content); err != nil {
+		_ = tmpFile.Close()
+		panic(err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		panic(err)
+	}
+	return tmpFile.Name()
+}
+
+func directorySource(path string, label string, files []input.File) testSource {
+	return testSource{
+		kind:         input.KindDirectory,
+		inputPath:    path,
+		snapshotPath: writeAnonymousTempFile(""),
+		files:        append([]input.File(nil), files...),
+	}
+}
+
+func fileSource(path string, label string) testSource {
+	snapshotPath := strings.TrimSpace(path)
+	if snapshotPath == "" || !pathExists(snapshotPath) {
+		snapshotPath = writeAnonymousTempFile("")
+	}
+	return testSource{
+		kind:         input.KindFile,
+		inputPath:    path,
+		snapshotPath: snapshotPath,
+		files: []input.File{{
+			Path:        snapshotPath,
+			DisplayPath: filepath.Base(path),
+		}},
+	}
 }
 
 func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
@@ -94,6 +211,43 @@ func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 	}
 	if len(client.requests[0].Tools) != 3 {
 		t.Fatalf("tools sent = %d, want 3", len(client.requests[0].Tools))
+	}
+}
+
+func TestRunTools_DirectoryInputAddsListFilesTool(t *testing.T) {
+	setRussianLocale(t)
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "Готовый ответ", nil)),
+		},
+	}
+
+	source := directorySource("/tmp/corpus", "/tmp/corpus", []input.File{
+		{Path: writeTempFile(t, "alpha\n"), DisplayPath: "a.txt"},
+		{Path: writeTempFile(t, "beta\n"), DisplayPath: "nested/b.txt"},
+	})
+
+	_, err := runToolsWithSource(context.Background(), client, source, "Что в директории?", nil)
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+
+	if len(client.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(client.requests))
+	}
+	if len(client.requests[0].Tools) != 4 {
+		t.Fatalf("tools sent = %d, want 4", len(client.requests[0].Tools))
+	}
+	if client.requests[0].Tools[0].Function == nil || client.requests[0].Tools[0].Function.Name != "list_files" {
+		t.Fatalf("first tool = %#v, want list_files", client.requests[0].Tools[0].Function)
+	}
+
+	userPrompt := client.requests[0].Messages[1].Content
+	if !strings.Contains(userPrompt, "Доступно файлов для анализа: 2.") {
+		t.Fatalf("user prompt = %q, want file count", userPrompt)
+	}
+	if !strings.Contains(userPrompt, "сначала вызови list_files") {
+		t.Fatalf("user prompt = %q, want list_files hint", userPrompt)
 	}
 }
 
@@ -420,7 +574,8 @@ func TestRunTools_NoProgressFinalizesWithoutTools(t *testing.T) {
 }
 
 func TestToolLoopState_DuplicateSearchMarksCachedPayload(t *testing.T) {
-	state := newToolLoopState(writeTempFile(t, "alpha\nbeta\n"))
+	filePath := writeTempFile(t, "alpha\nbeta\n")
+	state := newToolLoopState(fileSource(filePath, filePath))
 
 	first, _, err := state.executeToolCall(toolCall("call-1", "search_file", `{"query":"alpha"}`))
 	if err != nil {
@@ -448,7 +603,8 @@ func TestToolLoopState_DuplicateSearchMarksCachedPayload(t *testing.T) {
 }
 
 func TestToolLoopState_ReadAroundSeenLinesMarksNoProgress(t *testing.T) {
-	state := newToolLoopState(writeTempFile(t, "one\ntwo\nthree\nfour\n"))
+	filePath := writeTempFile(t, "one\ntwo\nthree\nfour\n")
+	state := newToolLoopState(fileSource(filePath, filePath))
 
 	_, firstMeta, err := state.executeToolCall(toolCall("call-1", "read_lines", `{"start_line":1,"end_line":3}`))
 	if err != nil {
@@ -464,6 +620,54 @@ func TestToolLoopState_ReadAroundSeenLinesMarksNoProgress(t *testing.T) {
 	}
 	if !secondMeta.AlreadySeen || secondMeta.NovelLines != 0 {
 		t.Fatalf("secondMeta = %+v, want already seen with no novel lines", secondMeta)
+	}
+}
+
+func TestToolLoopState_MultiFilePathsKeepSeenLinesSeparate(t *testing.T) {
+	firstPath := writeTempFile(t, "alpha\n")
+	secondPath := writeTempFile(t, "alpha\n")
+	state := newToolLoopState(directorySource("/tmp/corpus", "corpus", []input.File{
+		{Path: firstPath, DisplayPath: "a.txt"},
+		{Path: secondPath, DisplayPath: "b.txt"},
+	}))
+
+	_, firstMeta, err := state.executeToolCall(toolCall("call-1", "read_lines", `{"path":"a.txt","start_line":1,"end_line":1}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(first) error = %v", err)
+	}
+	_, secondMeta, err := state.executeToolCall(toolCall("call-2", "read_lines", `{"path":"b.txt","start_line":1,"end_line":1}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(second) error = %v", err)
+	}
+
+	if firstMeta.NovelLines != 1 {
+		t.Fatalf("firstMeta = %+v, want one novel line", firstMeta)
+	}
+	if secondMeta.NovelLines != 1 || secondMeta.AlreadySeen {
+		t.Fatalf("secondMeta = %+v, want separate line tracking per path", secondMeta)
+	}
+}
+
+func TestToolLoopState_ListFilesPaginationCountsAsProgress(t *testing.T) {
+	state := newToolLoopState(directorySource("/tmp/corpus", "corpus", []input.File{
+		{Path: writeTempFile(t, "alpha\n"), DisplayPath: "a.txt"},
+		{Path: writeTempFile(t, "beta\n"), DisplayPath: "b.txt"},
+	}))
+
+	_, firstMeta, err := state.executeToolCall(toolCall("call-1", "list_files", `{"limit":1,"offset":0}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(first) error = %v", err)
+	}
+	_, secondMeta, err := state.executeToolCall(toolCall("call-2", "list_files", `{"limit":1,"offset":1}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(second) error = %v", err)
+	}
+
+	if firstMeta.NovelLines != 1 || firstMeta.AlreadySeen {
+		t.Fatalf("firstMeta = %+v, want one novel file entry", firstMeta)
+	}
+	if secondMeta.NovelLines != 1 || secondMeta.AlreadySeen {
+		t.Fatalf("secondMeta = %+v, want second page to count as progress", secondMeta)
 	}
 }
 
@@ -510,11 +714,11 @@ func TestRunTools_UserPromptMentionsToolsFileContext(t *testing.T) {
 	}
 
 	userPrompt := client.requests[0].Messages[1].Content
-	if !strings.Contains(userPrompt, "Файл уже доступен через инструменты") {
-		t.Fatalf("user prompt = %q, want tools file context", userPrompt)
+	if !strings.Contains(userPrompt, "Входной путь уже доступен через инструменты") {
+		t.Fatalf("user prompt = %q, want tools path context", userPrompt)
 	}
-	if !strings.Contains(userPrompt, `Имя файла для анализа: "rest2push.log".`) {
-		t.Fatalf("user prompt = %q, want file name", userPrompt)
+	if !strings.Contains(userPrompt, `Путь для анализа: "/tmp/rest2push.log".`) {
+		t.Fatalf("user prompt = %q, want path name", userPrompt)
 	}
 	if !strings.Contains(userPrompt, `Вопрос: "Есть ли тут явные критические ошибки?"`) {
 		t.Fatalf("user prompt = %q, want original question", userPrompt)

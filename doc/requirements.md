@@ -12,6 +12,7 @@
 ## 2. Поддерживаемые сценарии
 
 - Q&A по большим markdown- и plain-text документам.
+- Q&A по директориям с локальными текстовыми файлами как по одному corpus.
 - Summary и извлечение выводов из длинных отчётов.
 - Исследование логов по строкам, диапазонам и локальному контексту.
 - Использование как standalone CLI и как элемента shell pipeline через `stdin`.
@@ -19,7 +20,7 @@
 Не входит в текущий scope:
 
 - Веб-интерфейс.
-- Многодокументный корпус с общей коллекцией индексов.
+- Глобальная shared-коллекция индексов поверх нескольких независимых директорий.
 - Внешний persistent metadata store поверх файлового индекса.
 
 ## 3. CLI-контракт
@@ -45,9 +46,14 @@
 
 ### 3.2 Входные данные
 
-- `--file`/`-f` задаёт путь к входному файлу.
-- Если `--file` не задан, вход читается из `stdin`.
-- Для унификации downstream-пайплайнов `stdin` материализуется во временный файл и переоткрывается как `input.Source`.
+- `--path` задаёт путь к входному файлу или директории.
+- `--file` и `-f` остаются alias-ами для совместимости.
+- Если `--path` не задан, вход читается из `stdin`.
+- Канонический env var для входа — `INPUT_PATH`, `INPUT_FILE` остаётся compatibility alias.
+- Для унификации downstream-пайплайнов `stdin` материализуется во временный snapshot; mode-пакеты дочитывают его через `input.Source.Open()`.
+- Если вход — директория, она рекурсивно обходится в лексикографическом порядке по относительным путям.
+- В corpus включаются только regular text files; dot-directories, symlink-объекты и бинарные файлы пропускаются.
+- Для `map` и map-fallback директорий строится synthetic corpus с file-boundary headers.
 - Временный файл от `stdin` должен удаляться при cleanup.
 
 ### 3.3 Конфигурация LLM
@@ -103,6 +109,7 @@
 - выполнять reduce fan-in итерациями, пока не останется один блок фактов;
 - строить финальный ответ по reduced facts;
 - запускать self-critique и self-refine до финального возврата.
+- при directory input работать по детерминированному synthetic corpus, где сохранены границы файлов.
 
 Опции `map`:
 
@@ -124,12 +131,13 @@
 
 Режим должен:
 
-- материализовать вход в spool-файл с hash-based identity;
 - строить или переиспользовать индекс по hash входа, schema version, chunking params и embedding model;
+- для директорий считать hash по упорядоченной последовательности `(relative path, raw content)`;
 - хранить manifest, chunks и embeddings в отдельной директории индекса;
+- при directory input chunk-ать каждый файл отдельно с file-local line numbers;
 - embed-ить query, ранжировать чанки, опционально rerank-ить и выбирать evidence;
 - синтезировать ответ только по evidence chunks;
-- дописывать в финал секцию `Sources:`.
+- дописывать в финал секцию `Sources:` с relative paths внутри директории.
 
 Опции `rag`:
 
@@ -157,9 +165,10 @@
 Режим должен:
 
 - определять профиль документа: `markdown`, `logs`, `plain`, `unknown`;
-- сегментировать документ в meso-level регионы;
+- сегментировать документ или каждый файл в директории в meso-level регионы;
 - выполнять lexical и semantic retrieval;
 - сливать хиты в регионы, расширять их и дочитывать соседний контекст;
+- не объединять соседние сегменты и регионы через границы файлов;
 - извлекать факты map-style по top regions;
 - выполнять coverage check и при необходимости targeted reread;
 - синтезировать финальный ответ по фактам и evidence;
@@ -193,7 +202,9 @@
 
 Режим должен:
 
-- отдавать модели набор локальных инструментов `search_file`, `read_lines`, `read_around`;
+- отдавать модели набор локальных инструментов `list_files`, `search_file`, `read_lines`, `read_around`;
+- для directory input давать модели способ перечислить доступные relative paths перед file-local reads;
+- для directory input поддерживать corpus-wide search и file-local reads через обязательный `path` у `read_lines`/`read_around`;
 - крутить tool loop до финального ответа, лимита ходов или forced finalization;
 - кэшировать уже выполненные tool calls;
 - отличать отсутствие прогресса от новых строк/нового контекста;
@@ -202,9 +213,11 @@
 
 Инструменты должны поддерживать:
 
+- `list_files(limit, offset)`
 - `search_file(query, mode, limit, offset, context_lines)`
-- `read_lines(start_line, end_line)`
-- `read_around(line, before, after)`
+- `search_file(path?, query, mode, limit, offset, context_lines)`
+- `read_lines(path?, start_line, end_line)`
+- `read_around(path?, line, before, after)`
 
 Публичные лимиты текущей реализации:
 

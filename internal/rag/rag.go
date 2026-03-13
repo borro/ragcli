@@ -3,6 +3,8 @@ package rag
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -77,16 +79,12 @@ type candidate struct {
 	Score      float64
 }
 
-func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source input.Source, opts Options, question string, plan *verbose.Plan) (string, error) {
+func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequester, source input.FileBackedSource, opts Options, question string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
 	stats := pipelineStats{}
 	indexMeter := plan.Stage("index")
 	retrievalMeter := plan.Stage("retrieval")
 	finalMeter := plan.Stage("final")
-
-	if source.Reader == nil {
-		return "", errors.New("rag source reader is required")
-	}
 
 	indexMeter.Start(localize.T("progress.rag.read_input"))
 	index, err := buildOrLoadIndex(ctx, embedder, source, opts, &stats, indexMeter)
@@ -148,14 +146,26 @@ func Run(ctx context.Context, chat llm.ChatRequester, embedder llm.EmbeddingRequ
 	return appendSources(answer, evidence), nil
 }
 
-func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, source input.Source, opts Options, stats *pipelineStats, indexMeter verbose.Meter) (*Index, error) {
+func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, source input.FileBackedSource, opts Options, stats *pipelineStats, indexMeter verbose.Meter) (*Index, error) {
 	if err := os.MkdirAll(opts.IndexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create rag index dir: %w", err)
 	}
 	retrieval.CleanupExpiredIndexes(opts.IndexDir, opts.IndexTTL)
 
+	if source.IsMultiFile() {
+		return buildOrLoadIndexFromFiles(ctx, embedder, source, opts, stats, indexMeter)
+	}
+
 	sourcePath := normalizeSourcePath(source)
-	spooled, err := retrieval.SpoolSource(source.Reader, "ragcli-rag-source-*", []string{
+	reader, err := source.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+
+	spooled, err := retrieval.SpoolSource(reader, "ragcli-rag-source-*", []string{
 		sourcePath,
 		fmt.Sprintf("%d", indexSchemaVersion),
 		fmt.Sprintf("%d", opts.ChunkSize),
@@ -225,12 +235,118 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 	return index, nil
 }
 
-func normalizeSourcePath(source input.Source) string {
-	if strings.TrimSpace(source.DisplayName) != "" {
-		return strings.TrimSpace(source.DisplayName)
+func buildOrLoadIndexFromFiles(ctx context.Context, embedder llm.EmbeddingRequester, source input.FileBackedSource, opts Options, stats *pipelineStats, indexMeter verbose.Meter) (*Index, error) {
+	sourcePath := normalizeSourcePath(source)
+	files := source.BackingFiles()
+	inputHash, err := hashSourceFiles(files, []string{
+		sourcePath,
+		fmt.Sprintf("%d", indexSchemaVersion),
+		fmt.Sprintf("%d", opts.ChunkSize),
+		fmt.Sprintf("%d", opts.ChunkOverlap),
+		opts.EmbeddingModel,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash source files: %w", err)
 	}
-	if strings.TrimSpace(source.Path) != "" {
-		return strings.TrimSpace(source.Path)
+	indexDir := filepath.Join(opts.IndexDir, inputHash)
+
+	if cached, err := loadIndex(indexDir, opts.IndexTTL); err == nil {
+		stats.CacheHit = true
+		indexMeter.Done(localize.T("progress.rag.cache_hit"))
+		return cached, nil
+	}
+
+	chunks, err := chunkSourceFiles(files, inputHash, opts.ChunkSize, opts.ChunkOverlap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to chunk source files: %w", err)
+	}
+	if len(chunks) == 0 {
+		return nil, errors.New("input did not produce retrieval chunks")
+	}
+	indexMeter.Note(localize.T("progress.rag.index_build", localize.Data{"Count": len(chunks)}))
+	embeddings, calls, tokens, err := embedChunks(ctx, embedder, chunks, indexMeter)
+	if err != nil {
+		return nil, err
+	}
+	stats.EmbeddingCalls += calls
+	stats.EmbeddingTokens += tokens
+
+	index := &Index{
+		Manifest: Manifest{
+			SchemaVersion:  indexSchemaVersion,
+			CreatedAt:      time.Now().UTC(),
+			InputHash:      inputHash,
+			SourcePath:     sourcePath,
+			EmbeddingModel: opts.EmbeddingModel,
+			ChunkSize:      opts.ChunkSize,
+			ChunkOverlap:   opts.ChunkOverlap,
+			ItemCount:      len(chunks),
+		},
+		Chunks:     chunks,
+		Embeddings: embeddings,
+	}
+
+	if err := persistIndex(indexDir, index); err != nil {
+		if cached, loadErr := loadIndex(indexDir, opts.IndexTTL); loadErr == nil {
+			stats.CacheHit = true
+			indexMeter.Done(localize.T("progress.rag.index_race_cached"))
+			return cached, nil
+		}
+		return nil, err
+	}
+	indexMeter.Done(localize.T("progress.rag.index_saved"))
+	return index, nil
+}
+
+func hashSourceFiles(files []input.File, hashParts []string) (string, error) {
+	hasher := sha256.New()
+	for _, part := range hashParts {
+		_, _ = fmt.Fprintf(hasher, "|%s", part)
+	}
+	for _, file := range files {
+		_, _ = fmt.Fprintf(hasher, "|%s|", file.DisplayPath)
+		reader, err := os.Open(file.Path)
+		if err != nil {
+			return "", err
+		}
+		_, copyErr := io.Copy(hasher, reader)
+		closeErr := reader.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func chunkSourceFiles(files []input.File, docID string, chunkSize, overlap int) ([]Chunk, error) {
+	chunks := make([]Chunk, 0, len(files)*2)
+	for _, file := range files {
+		reader, err := os.Open(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		fileChunks, chunkErr := chunkTextReader(reader, file.DisplayPath, docID, chunkSize, overlap)
+		closeErr := reader.Close()
+		if chunkErr != nil {
+			return nil, chunkErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		chunks = append(chunks, fileChunks...)
+	}
+	return chunks, nil
+}
+
+func normalizeSourcePath(source input.SourceMeta) string {
+	if displayName := strings.TrimSpace(source.DisplayName()); displayName != "" {
+		return displayName
+	}
+	if inputPath := source.InputPath(); inputPath != "" {
+		return inputPath
 	}
 	return "stdin"
 }

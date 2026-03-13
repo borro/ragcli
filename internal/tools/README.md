@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Пакет реализует режим `tools`: tool-calling orchestration loop, в котором модель исследует файл через локальные инструменты и только потом формирует ответ.
+Пакет реализует режим `tools`: tool-calling orchestration loop, в котором модель исследует файл или директорию через локальные инструменты и только потом формирует ответ.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
@@ -17,7 +17,7 @@
 ## Ключевые entrypoints/types
 
 - `Run(ctx, client, source, prompt, plan)`
-- `NewToolsConfig(prompt, filePath)`
+- `NewToolsConfig(prompt, source)`
 - `toolLoopState`
 - `orchestrationError`
 
@@ -47,9 +47,12 @@
 
 ## Инварианты и ошибки
 
-- Режим работает только когда у источника есть путь; для `stdin` это обеспечивается временным файлом из `internal/input`.
+- Режим работает только когда `source.SnapshotPath()` непустой; для `stdin` и директорий это обеспечивается `internal/input`.
 - JSON — единственный wire-format результатов инструментов.
+- Для directory input `list_files` перечисляет доступные relative paths.
+- Для directory input `search_file` может искать по всему corpus, а `read_lines`/`read_around` требуют `path`.
 - Повторные вызовы тех же инструментов не должны бесконечно расширять context без новых строк.
+- Tracking прогресса должен различать одинаковые номера строк в разных файлах.
 - Пустой финальный ответ после лимитов превращается в orchestration error.
 
 ## Что подтверждают тесты

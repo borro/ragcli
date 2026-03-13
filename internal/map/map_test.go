@@ -739,11 +739,14 @@ func itoa(v int) string {
 }
 
 func runMap(ctx context.Context, client llm.ChatAutoContextRequester, reader io.Reader, opts Options, question string, plan *verbose.Plan) (string, error) {
-	return Run(ctx, client, input.Source{
-		Reader:      reader,
-		Path:        "input.txt",
-		DisplayName: "input.txt",
-	}, opts, question, plan)
+	handle, err := input.Open("", reader)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = handle.Close()
+	}()
+	return Run(ctx, client, handle.Source(), opts, question, plan)
 }
 
 func planWithoutPrepare(reporter verbose.Reporter) *verbose.Plan {

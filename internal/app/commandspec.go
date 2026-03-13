@@ -454,14 +454,14 @@ func stageTemplate(key string, labelKey string, slots int) stageTemplateSpec {
 func globalFlagSpecs() []flagSpec {
 	return []flagSpec{
 		{
-			names:      []string{"--file", "-f"},
+			names:      []string{"--path", "--file", "-f"},
 			takesValue: true,
 			build: func() cli.Flag {
 				return &cli.StringFlag{
-					Name:    "file",
-					Aliases: []string{"f"},
-					Usage:   localize.T("cli.flag.file.usage"),
-					Sources: cli.EnvVars("INPUT_FILE"),
+					Name:    "path",
+					Aliases: []string{"file", "f"},
+					Usage:   localize.T("cli.flag.path.usage"),
+					Sources: cli.EnvVars("INPUT_PATH", "INPUT_FILE"),
 				}
 			},
 		},
@@ -613,7 +613,7 @@ func flagMatches(spec flagSpec, token string) bool {
 
 func bindCommonOptions(cmd *cli.Command) CommonOptions {
 	return CommonOptions{
-		InputPath: cmd.String("file"),
+		InputPath: cmd.String("path"),
 		Prompt:    bindPrompt(cmd),
 		Raw:       cmd.Bool("raw"),
 		Debug:     cmd.Bool("debug"),

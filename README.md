@@ -27,7 +27,7 @@
 | `map` | Нужно разбить большой файл на чанки и агрегировать ответ по ним | Работает с объёмом, который неудобно отправлять одним куском | На больших файлах может быть медленным, а между чанками теряется часть контекста |
 | `rag` | Нужен retrieval по релевантным фрагментам, а не чтение файла целиком | Локальный индекс и ответ по evidence chunks | Нужен совместимый embedding endpoint (`/embeddings`) |
 | `hybrid` | Документ длинный, структура смешанная, и нужен баланс между retrieval, дочитыванием соседнего контекста и извлечением фактов | Комбинирует lexical/semantic retrieval, локальное дочитывание и map-style сбор фактов | Нужен совместимый embedding endpoint (`/embeddings`); режим обычно сложнее в тюнинге, чем чистый `rag` |
-| `tools` | Нужно найти конкретные строки, секции или причины в файле | Модель умеет вызывать `search_file`, `read_lines`, `read_around` | Требуется корректная поддержка tool calling на backend'е |
+| `tools` | Нужно найти конкретные строки, секции или причины в файле или директории | Модель умеет вызывать `list_files`, `search_file`, `read_lines`, `read_around` | Требуется корректная поддержка tool calling на backend'е |
 
 Короткая эвристика:
 - Для больших логов и summary-задач начинайте с `map`, если файл не помещается в один запрос и вас устраивает более долгий прогон.
@@ -70,16 +70,16 @@ export LLM_PROXY_URL=http://127.0.0.1:1080   # optional explicit proxy
 
 ```powershell
 $env:LLM_PROXY_URL = "http://127.0.0.1:1080"
-./ragcli rag --file spec.txt "Какие ограничения описаны?"
+./ragcli rag --path spec.txt "Какие ограничения описаны?"
 ```
 
 ### Первый запуск
 
 ```bash
-./ragcli map --file document.txt "Какие основные выводы?"
-./ragcli rag --file spec.txt "Что сказано про retry policy?"
-./ragcli tools --file app.log "Где в логах причины 5xx?"
-./ragcli rag --proxy-url http://127.0.0.1:1080 --file spec.txt "Какие ограничения описаны?"
+./ragcli map --path document.txt "Какие основные выводы?"
+./ragcli rag --path spec.txt "Что сказано про retry policy?"
+./ragcli tools --path app.log "Где в логах причины 5xx?"
+./ragcli rag --proxy-url http://127.0.0.1:1080 --path spec.txt "Какие ограничения описаны?"
 ```
 
 ## Практические заметки
@@ -88,7 +88,8 @@ $env:LLM_PROXY_URL = "http://127.0.0.1:1080"
 - На локальных моделях и при фактически последовательной обработке `map` обычно не даёт выигрыша по скорости.
 - `rag` отвечает только по найденным evidence chunks, поэтому качество зависит от embedding-модели и параметров chunking.
 - `hybrid` сочетает lexical/semantic retrieval, точечное дочитывание и map-style извлечение фактов, поэтому обычно полезен для длинных документов со смешанной структурой.
-- `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `search_file`, `read_lines` и `read_around`.
+- `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `list_files`, `search_file`, `read_lines` и `read_around`.
+- `--path` может указывать и на директорию: `map` работает по synthetic corpus, а `rag`/`hybrid`/`tools` сохраняют file-aware пути и line numbers.
 - Если backend плохо поддерживает tool calling, режим `tools` может работать менее надёжно.
 - В интерактивном терминале `ragcli` рендерит финальный Markdown-ответ через ANSI-стили; если вывод перенаправлен в файл или pipe, остаётся сырой Markdown без ANSI.
 - `--raw` принудительно отключает markdown-рендер и печатает исходный ответ как есть.
@@ -104,40 +105,40 @@ $env:LLM_PROXY_URL = "http://127.0.0.1:1080"
 ### `map`
 
 ```bash
-./ragcli map --file report.txt -c 4 "Собери ключевые выводы"
+./ragcli map --path report.txt -c 4 "Собери ключевые выводы"
 cat report.txt | ./ragcli map "Какие риски и ограничения описаны в документе?"
-./ragcli map --file report.txt --length 8000 --debug "Что означает --retry в этом документе?"
-./ragcli map --file report.txt --raw "Верни ответ без терминального markdown-рендера"
+./ragcli map --path report.txt --length 8000 --debug "Что означает --retry в этом документе?"
+./ragcli map --path report.txt --raw "Верни ответ без терминального markdown-рендера"
 ```
 
 ### `rag`
 
 ```bash
-./ragcli rag --file architecture.md --embedding-model text-embedding-3-small \
+./ragcli rag --path architecture.md --embedding-model text-embedding-3-small \
   "Какие ограничения описаны в разделе про масштабирование?"
 
 cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
   "Какие требования относятся к отказоустойчивости?"
 
-./ragcli rag --proxy-url http://127.0.0.1:1080 --file architecture.md \
+./ragcli rag --proxy-url http://127.0.0.1:1080 --path architecture.md \
   "Какие ограничения описаны в документе?"
 
-./ragcli rag --no-proxy --file architecture.md \
+./ragcli rag --no-proxy --path architecture.md \
   "Собери требования без использования системного прокси"
 ```
 
 ### `hybrid`
 
 ```bash
-./ragcli hybrid --file design.md --verbose \
+./ragcli hybrid --path design.md --verbose \
   "Какие ограничения и компромиссы описаны в документе?"
 ```
 
 ### `tools`
 
 ```bash
-./ragcli tools --file app.log "Где начинаются ошибки авторизации?"
-./ragcli tools --file handbook.md --debug \
+./ragcli tools --path app.log "Где начинаются ошибки авторизации?"
+./ragcli tools --path handbook.md --debug \
   "Что сказано про release process и rollback?"
 ```
 
@@ -158,7 +159,8 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 - `ragcli --version` и `ragcli version` выводят версию.
 - `ragcli help map` и `ragcli map --help` показывают help одной и той же команды.
 - `prompt` передаётся как позиционный аргумент.
-- `--file` опционален: если его нет, команда читает входные данные из `stdin`.
+- `--path` опционален: если его нет, команда читает входные данные из `stdin`.
+- `--file` и `-f` остаются alias-ами для совместимости.
 
 ## Важные флаги и переменные окружения
 
@@ -166,7 +168,8 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 
 | Флаг | Переменная | Значение |
 | --- | --- | --- |
-| `--file`, `-f` | `INPUT_FILE` | Путь к входному файлу; если не задан, читается `stdin` |
+| `--path` | `INPUT_PATH` | Канонический путь к входному файлу или директории; если не задан, читается `stdin` |
+| `--file`, `-f` | `INPUT_FILE` | Alias для совместимости с тем же значением |
 | `--api-url` | `LLM_API_URL` | URL OpenAI-compatible API |
 | `--api-key` | `OPENAI_API_KEY` | API key |
 | `--proxy-url` | `LLM_PROXY_URL` | Явный proxy URL для всех LLM HTTP-запросов |
