@@ -25,7 +25,6 @@
 Входящие:
 
 - `internal/app`
-- `internal/hybrid` как fallback target
 
 Исходящие:
 

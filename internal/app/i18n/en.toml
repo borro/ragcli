@@ -10,9 +10,6 @@ usage = "Process large text in chunks with map-reduce"
 [cli.command.rag]
 usage = "Build a local retrieval index and answer from evidence chunks"
 
-[cli.command.hybrid]
-usage = "Combine retrieval, local reading, and map aggregation"
-
 [cli.command.tools]
 usage = "Give the model tools for targeted file investigation"
 
@@ -48,36 +45,6 @@ usage = "Directory for the local index."
 
 [cli.flag.rag.rerank]
 usage = "Rerank strategy: heuristic, off, model."
-
-[cli.flag.hybrid.embedding_model]
-usage = "Embedding model for semantic retrieval."
-
-[cli.flag.hybrid.chunk_size]
-usage = "Target meso-segment size for semantic retrieval."
-
-[cli.flag.hybrid.chunk_overlap]
-usage = "Overlap between neighboring meso-segments."
-
-[cli.flag.hybrid.index_ttl]
-usage = "Time to live for the local semantic index."
-
-[cli.flag.hybrid.index_dir]
-usage = "Directory for the local semantic index."
-
-[cli.flag.hybrid.top_k]
-usage = "How many fusion candidates to keep after retrieval."
-
-[cli.flag.hybrid.final_k]
-usage = "How many regions to keep for final synthesis."
-
-[cli.flag.hybrid.map_k]
-usage = "How many regions to send through map-style fact extraction."
-
-[cli.flag.hybrid.read_window]
-usage = "How many lines to read around a strong match."
-
-[cli.flag.hybrid.fallback]
-usage = "Fallback when retrieval is weak or embeddings are unavailable: map, rag-only, fail."
 
 [cli.flag.path]
 usage = "Path to the input file or directory. If omitted, the command reads stdin."
@@ -138,16 +105,6 @@ Examples:
   ragcli tools --path app.log --debug "Where do the logs show the causes of 5xx?"
 
 """
-hybrid = """
-Combines lexical and semantic retrieval, reads exact lines locally, and aggregates facts only from the selected regions.
-
-Examples:
-  ragcli hybrid --path file.txt "What does the document say about retry policy and limitations?"
-  ragcli hybrid --path app.log --hybrid-fallback rag-only "Where is the 5xx root cause and what happens nearby?"
-  cat handbook.md | ragcli hybrid --hybrid-top-k 10 --hybrid-map-k 5 "What are the release process and rollback steps?"
-
-"""
-
 [error.prompt]
 required = "missing required argument: prompt"
 
@@ -164,7 +121,6 @@ render_markdown = "render markdown: {{.Error}}"
 [progress.mode]
 map = "map"
 tools = "tools"
-hybrid = "hybrid"
 rag = "rag"
 
 [progress.detail.prepare]

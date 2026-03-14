@@ -3,7 +3,7 @@
 [![CI master](https://github.com/borro/ragcli/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/borro/ragcli/actions/workflows/ci.yaml)
 [![Codecov](https://codecov.io/gh/borro/ragcli/graph/badge.svg?token=NXBH710VR0)](https://codecov.io/gh/borro/ragcli)
 
-`ragcli` помогает задавать вопросы к большим локальным текстам через LLM из терминала. Он работает с OpenAI-compatible API и поддерживает четыре режима: `map`, retrieval-ориентированный `rag`, гибридный `hybrid` и agentic `tools`.
+`ragcli` помогает задавать вопросы к большим локальным текстам через LLM из терминала. Он работает с OpenAI-compatible API и поддерживает три режима: `map`, retrieval-ориентированный `rag` и agentic `tools`.
 
 Подходит для логов, документации, отчётов и других файлов, которые неудобно скармливать модели целиком. Если входной файл не указан, команда читает `stdin`, поэтому `ragcli` удобно встраивать в shell-скрипты и пайплайны.
 
@@ -26,20 +26,18 @@
 | --- | --- | --- | --- |
 | `map` | Нужно разбить большой файл на чанки и агрегировать ответ по ним | Работает с объёмом, который неудобно отправлять одним куском | На больших файлах может быть медленным, а между чанками теряется часть контекста |
 | `rag` | Нужен retrieval по релевантным фрагментам, а не чтение файла целиком | Локальный индекс и ответ по evidence chunks | Нужен совместимый embedding endpoint (`/embeddings`) |
-| `hybrid` | Документ длинный, структура смешанная, и нужен баланс между retrieval, дочитыванием соседнего контекста и извлечением фактов | Комбинирует lexical/semantic retrieval, локальное дочитывание и map-style сбор фактов | Нужен совместимый embedding endpoint (`/embeddings`); режим обычно сложнее в тюнинге, чем чистый `rag` |
 | `tools` | Нужно найти конкретные строки, секции или причины в файле или директории | Модель умеет вызывать `list_files`, `search_file`, `read_lines`, `read_around` | Требуется корректная поддержка tool calling на backend'е |
 
 Короткая эвристика:
 - Для больших логов и summary-задач начинайте с `map`, если файл не помещается в один запрос и вас устраивает более долгий прогон.
 - Для Q&A по документу с опорой на релевантные куски используйте `rag`.
-- Для длинных документов со смешанной структурой, где одного retrieval мало, попробуйте `hybrid`.
 - Для точечного расследования по строкам и секциям используйте `tools`.
 
 ## Требования
 
 - Go `1.25.6+` для сборки из исходников.
 - OpenAI-compatible API для chat completion.
-- Для `rag` и `hybrid` дополнительно нужен совместимый embedding endpoint (`/embeddings`).
+- Для `rag` дополнительно нужен совместимый embedding endpoint (`/embeddings`).
 - Поддерживаемые сценарии включают локальные backend'ы вроде Ollama, LM Studio и vLLM, если они совместимы по API.
 
 ## Quickstart
@@ -60,7 +58,7 @@ export LLM_PROXY_URL=http://127.0.0.1:1080   # optional explicit proxy
 
 Если `LLM_MODEL` не задана, `ragcli` использует значение по умолчанию `local-model`. Во многих локальных OpenAI-compatible backend'ах это означает "возьми последнюю загруженную модель", но это поведение определяется самим backend'ом, а не CLI.
 
-Для режимов `rag` и `hybrid`, если `--embedding-model` и `EMBEDDING_MODEL` не заданы, CLI по умолчанию использует embedding-модель `text-embedding-nomic-embed-text-v1.5`. Если backend ожидает другую модель, переопределите её флагом или переменной окружения.
+Для режима `rag`, если `--embedding-model` и `EMBEDDING_MODEL` не заданы, CLI по умолчанию использует embedding-модель `text-embedding-nomic-embed-text-v1.5`. Если backend ожидает другую модель, переопределите её флагом или переменной окружения.
 
 После этого можно запускать команды без постоянной передачи `--api-url`, `--api-key` и `--model`.
 
@@ -87,9 +85,8 @@ $env:LLM_PROXY_URL = "http://127.0.0.1:1080"
 - `map` полезен, когда файл приходится обрабатывать чанками, но на больших файлах такой прогон может занимать заметное время.
 - На локальных моделях и при фактически последовательной обработке `map` обычно не даёт выигрыша по скорости.
 - `rag` отвечает только по найденным evidence chunks, поэтому качество зависит от embedding-модели и параметров chunking.
-- `hybrid` сочетает lexical/semantic retrieval, точечное дочитывание и map-style извлечение фактов, поэтому обычно полезен для длинных документов со смешанной структурой.
 - `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `list_files`, `search_file`, `read_lines` и `read_around`.
-- `--path` может указывать и на директорию: `map` работает по synthetic corpus, а `rag`/`hybrid`/`tools` сохраняют file-aware пути и line numbers.
+- `--path` может указывать и на директорию: `map` работает по synthetic corpus, а `rag`/`tools` сохраняют file-aware пути и line numbers.
 - Если backend плохо поддерживает tool calling, режим `tools` может работать менее надёжно.
 - В интерактивном терминале `ragcli` рендерит финальный Markdown-ответ через ANSI-стили; если вывод перенаправлен в файл или pipe, остаётся сырой Markdown без ANSI.
 - `--raw` принудительно отключает markdown-рендер и печатает исходный ответ как есть.
@@ -127,13 +124,6 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
   "Собери требования без использования системного прокси"
 ```
 
-### `hybrid`
-
-```bash
-./ragcli hybrid --path design.md --verbose \
-  "Какие ограничения и компромиссы описаны в документе?"
-```
-
 ### `tools`
 
 ```bash
@@ -148,7 +138,6 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 
 - `ragcli map [options] <prompt>`
 - `ragcli rag [options] <prompt>`
-- `ragcli hybrid [options] <prompt>`
 - `ragcli tools [options] <prompt>`
 - `ragcli version`
 - `ragcli help [command]`
@@ -174,7 +163,7 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 | `--api-key` | `OPENAI_API_KEY` | API key |
 | `--proxy-url` | `LLM_PROXY_URL` | Явный proxy URL для всех LLM HTTP-запросов |
 | `--no-proxy` | `LLM_NO_PROXY` | Отключить любой proxy для запросов `ragcli` |
-| `--model` | `LLM_MODEL` | Chat-модель для `map`, `rag`, `hybrid`, `tools` |
+| `--model` | `LLM_MODEL` | Chat-модель для `map`, `rag`, `tools` |
 | `--retry`, `-r` | `RETRY` | Количество retry для LLM HTTP-клиента |
 | `--raw` | `RAW` | Отключить markdown-рендер финального ответа и печатать сырой текст |
 | `--debug`, `-d` | `DEBUG` | Подробные runtime-логи в `stderr`; без флага ошибки печатаются одной строкой |
@@ -197,24 +186,12 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 - `--rag-index-dir` или `RAG_INDEX_DIR`
 - `--rag-rerank` или `RAG_RERANK`
 
-`hybrid`:
-
-- `--embedding-model` или `EMBEDDING_MODEL`
-- `--rag-index-ttl` или `RAG_INDEX_TTL`
-- `--rag-index-dir` или `RAG_INDEX_DIR`
-- `--hybrid-top-k` или `HYBRID_TOP_K`
-- `--hybrid-final-k` или `HYBRID_FINAL_K`
-- `--hybrid-map-k` или `HYBRID_MAP_K`
-- `--hybrid-read-window` или `HYBRID_READ_WINDOW`
-- `--hybrid-fallback` или `HYBRID_FALLBACK`
-
 Полный справочник по текущим флагам смотрите через встроенный help:
 
 ```bash
 ./ragcli --help
 ./ragcli map --help
 ./ragcli rag --help
-./ragcli hybrid --help
 ./ragcli tools --help
 ```
 

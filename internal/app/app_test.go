@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/borro/ragcli/internal/hybrid"
 	"github.com/borro/ragcli/internal/localize"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
@@ -134,21 +133,6 @@ func TestRunRAGHelp(t *testing.T) {
 	for _, needle := range []string{"--embedding-model", "--rag-top-k", "--rag-index-ttl"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in rag help:\n%s", needle, output)
-		}
-	}
-}
-
-func TestRunHybridHelp(t *testing.T) {
-	var stdout bytes.Buffer
-
-	exitCode := Run([]string{"hybrid", "--help"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
-	if exitCode != 0 {
-		t.Fatalf("Run(hybrid --help) exit code = %d, want 0", exitCode)
-	}
-	output := stdout.String()
-	for _, needle := range []string{"--hybrid-top-k", "--hybrid-map-k", "--hybrid-fallback", "--embedding-model", "--rag-index-ttl"} {
-		if !strings.Contains(output, needle) {
-			t.Fatalf("stdout missing %q in hybrid help:\n%s", needle, output)
 		}
 	}
 }
@@ -353,47 +337,6 @@ func TestCLIRAGCommandBindingFromEnv(t *testing.T) {
 	}
 	if captured.LLM.EmbeddingModel != "embed-v2" {
 		t.Fatalf("EmbeddingModel = %q, want embed-v2", captured.LLM.EmbeddingModel)
-	}
-}
-
-func TestCLIHybridCommandBinding(t *testing.T) {
-	captured, _, err := runCLIForTest([]string{
-		"hybrid",
-		"--embedding-model", "embed-v2",
-		"--hybrid-top-k", "6",
-		"--hybrid-final-k", "9",
-		"--hybrid-map-k", "7",
-		"--hybrid-read-window", "5",
-		"--hybrid-fallback", "rag-only",
-		"--rag-chunk-size", "1200",
-		"question",
-	})
-	if err != nil {
-		t.Fatalf("runCLIForTest() error = %v", err)
-	}
-	if captured.Name() != "hybrid" {
-		t.Fatalf("Name = %q, want hybrid", captured.Name())
-	}
-	if captured.LLM.EmbeddingModel != "embed-v2" {
-		t.Fatalf("EmbeddingModel = %q, want embed-v2", captured.LLM.EmbeddingModel)
-	}
-	if mustPayload[hybrid.Options](t, captured).TopK != 6 {
-		t.Fatalf("TopK = %d, want 6", mustPayload[hybrid.Options](t, captured).TopK)
-	}
-	if mustPayload[hybrid.Options](t, captured).FinalK != 6 {
-		t.Fatalf("FinalK = %d, want normalized 6", mustPayload[hybrid.Options](t, captured).FinalK)
-	}
-	if mustPayload[hybrid.Options](t, captured).MapK != 6 {
-		t.Fatalf("MapK = %d, want normalized 6", mustPayload[hybrid.Options](t, captured).MapK)
-	}
-	if mustPayload[hybrid.Options](t, captured).ReadWindow != 5 {
-		t.Fatalf("ReadWindow = %d, want 5", mustPayload[hybrid.Options](t, captured).ReadWindow)
-	}
-	if mustPayload[hybrid.Options](t, captured).Fallback != "rag-only" {
-		t.Fatalf("Fallback = %q, want rag-only", mustPayload[hybrid.Options](t, captured).Fallback)
-	}
-	if mustPayload[hybrid.Options](t, captured).ChunkSize != 1200 {
-		t.Fatalf("ChunkSize = %d, want 1200", mustPayload[hybrid.Options](t, captured).ChunkSize)
 	}
 }
 

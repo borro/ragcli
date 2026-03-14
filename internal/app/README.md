@@ -34,7 +34,6 @@
 - `internal/llm`
 - `internal/map`
 - `internal/rag`
-- `internal/hybrid`
 - `internal/tools`
 - `internal/verbose`
 - `internal/localize`

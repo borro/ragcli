@@ -6,7 +6,7 @@
 
 - тонкую точку входа `cmd/ragcli`;
 - orchestration-слой `internal/app`;
-- mode-пакеты `map`, `rag`, `hybrid`, `tools`;
+- mode-пакеты `map`, `rag`, `tools`;
 - shared infrastructure: `llm`, `input`, `retrieval`, `verbose`, `localize`, `logging`.
 
 Главный принцип: `internal/app` связывает CLI, input lifecycle, создание клиентов и вывод результата, а domain-specific пайплайны живут в отдельных пакетах режимов.
@@ -23,12 +23,8 @@ flowchart LR
     app --> logging["internal/logging"]
     app --> map["internal/map"]
     app --> rag["internal/rag"]
-    app --> hybrid["internal/hybrid"]
     app --> tools["internal/tools"]
     rag --> retrieval["internal/retrieval"]
-    hybrid --> retrieval
-    hybrid --> map
-    hybrid --> filetools["internal/tools/filetools"]
     tools --> filetools
     llm --> goopenai["go-openai"]
 ```
@@ -38,9 +34,8 @@ flowchart LR
 - `cmd/ragcli` не содержит логики кроме вызова `app.Run`.
 - `internal/app` знает про все режимы и shared packages; режимы не знают про CLI.
 - `internal/map` не зависит от retrieval и tool calling.
-- `internal/rag` и `internal/hybrid` используют `internal/retrieval` как общее ядро файлового retrieval.
+- `internal/rag` использует `internal/retrieval` как общее ядро файлового retrieval.
 - `internal/tools` оркестрирует tool calling, а перечисление файлов и чтение строк делегирует `internal/tools/filetools`.
-- Исключение к чистой изоляции режимов: `internal/hybrid` использует `internal/map` как fallback path.
 
 ## 3. Жизненный цикл запуска
 
@@ -189,32 +184,7 @@ flowchart TD
 - `chunks.jsonl`
 - `embeddings.jsonl`
 
-### 5.3 `hybrid`
-
-`hybrid` — самый сложный режим. Он совмещает retrieval, локальное дочитывание и map-style извлечение фактов.
-
-Основной pipeline:
-
-1. `spoolSourceSnapshot` сохраняет вход и одновременно собирает статистику для document profiling.
-2. `detectProfile` выбирает профиль `markdown`, `logs`, `plain`, `unknown`.
-3. Документ сегментируется в meso-segments.
-4. Выполняются lexical и semantic retrieval.
-5. Хиты сливаются в regions, расширяются и ранжируются.
-6. `groundEvidence` дочитывает окна вокруг лучших линий.
-7. `mapExtractFacts` вытаскивает факты по top regions.
-8. `checkCoverage` проверяет, достаточно ли evidence и нет ли противоречий.
-9. Если coverage слабое, строится follow-up query и запускается targeted reread.
-10. Финальный ответ синтезируется по фактам и evidence, затем получает `Sources:`.
-
-Fallback semantics:
-
-- `map` — при проблемах semantic retrieval или пустой финал переключается на `map` pipeline.
-- `rag-only` — semantic errors деградируют до lexical-only поведения без падения.
-- `fail` — ошибка пробрасывается наружу.
-
-Архитектурная особенность: `hybrid` — единственный режим, который легально импортирует другой режим (`internal/map`) как fallback-реализацию.
-
-### 5.4 `tools`
+### 5.3 `tools`
 
 `tools` не строит retrieval index и не загружает файл в prompt целиком. Вместо этого режим оркестрирует диалог модели с локальными file-tools: `list_files`, `search_file`, `read_lines`, `read_around`.
 
@@ -232,7 +202,6 @@ Fallback semantics:
 
 - JSON-контракты инструментов должны переиспользоваться;
 - line-based доступ удобнее тестировать отдельно от orchestration loop;
-- часть line-grounding логики повторно полезна в `hybrid`.
 
 ## 6. Файловые и временные артефакты
 
@@ -240,8 +209,7 @@ Fallback semantics:
 | --- | --- | --- | --- |
 | temp file from `stdin` | `internal/input` | дать режимам path + random access | удаляется в `Handle.Close()` |
 | spooled source for `rag` | `internal/retrieval` | стабильный hash и повторное чтение | удаляется после завершения run |
-| spooled source for `hybrid` | `internal/hybrid` через `retrieval.SpoolSource` | profiling, segmentation, reread | удаляется после завершения run |
-| index dir | `internal/rag`, `internal/hybrid` | кэш embeddings и metadata | живёт до TTL cleanup |
+| index dir | `internal/rag` | кэш embeddings и metadata | живёт до TTL cleanup |
 
 ## 7. Что считать публичным поведением
 
@@ -250,8 +218,8 @@ Fallback semantics:
 - CLI-команды, флаги, env-переменные и defaults;
 - разделение `stdout`/`stderr`;
 - наличие локализации `ru`/`en`;
-- semantics режимов `map`, `rag`, `hybrid`, `tools`;
-- формат источников в ответах `rag` и `hybrid`.
+- semantics режимов `map`, `rag`, `tools`;
+- формат источников в ответах `rag`.
 
 Не считаются жёстким public API:
 

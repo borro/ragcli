@@ -2,11 +2,10 @@
 
 ## 1. Назначение
 
-`ragcli` — CLI-инструмент для вопросов к большим локальным текстам через OpenAI-compatible API. Он нужен в случаях, когда документ, лог или отчёт неудобно отправлять в модель одним куском и требуется один из четырёх режимов:
+`ragcli` — CLI-инструмент для вопросов к большим локальным текстам через OpenAI-compatible API. Он нужен в случаях, когда документ, лог или отчёт неудобно отправлять в модель одним куском и требуется один из трёх режимов:
 
 - `map` — chunked map-reduce обработка.
 - `rag` — retrieval по локальному индексу.
-- `hybrid` — комбинированный retrieval + дочитывание + извлечение фактов.
 - `tools` — agentic-исследование файла через tool calling.
 
 ## 2. Поддерживаемые сценарии
@@ -31,7 +30,6 @@
 
 - `ragcli map [options] <prompt>`
 - `ragcli rag [options] <prompt>`
-- `ragcli hybrid [options] <prompt>`
 - `ragcli tools [options] <prompt>`
 - `ragcli version`
 - `ragcli help [command]`
@@ -64,7 +62,7 @@
 | --- | --- | --- | --- |
 | `--api-url` | `LLM_API_URL` | Базовый URL OpenAI-compatible API | `http://localhost:1234/v1` |
 | `--api-key` | `OPENAI_API_KEY` | API key | пусто |
-| `--model` | `LLM_MODEL` | Chat-модель для `map`, `rag`, `hybrid`, `tools` | `local-model` |
+| `--model` | `LLM_MODEL` | Chat-модель для `map`, `rag`, `tools` | `local-model` |
 | `--retry`, `-r` | `RETRY` | Число повторов поверх первой попытки | `3` |
 | `--proxy-url` | `LLM_PROXY_URL` | Явный proxy URL для всех LLM-запросов | пусто |
 | `--no-proxy` | `LLM_NO_PROXY` | Полностью отключить proxy для LLM-запросов | `false` |
@@ -73,7 +71,7 @@
 
 - `.env` подгружается автоматически через `godotenv.Load()`.
 - Proxy precedence: `--no-proxy` сильнее `--proxy-url`; `--proxy-url` сильнее `HTTP_PROXY`/`HTTPS_PROXY`; иначе используется proxy окружения.
-- Для `rag` и `hybrid` дополнительно нужен embeddings endpoint.
+- Для `rag` дополнительно нужен embeddings endpoint.
 - CLI default для `--embedding-model` — `text-embedding-nomic-embed-text-v1.5`.
 
 ### 3.4 Вывод и UX
@@ -158,45 +156,7 @@
 - `chunk-overlap` не может быть больше или равен `chunk-size`, иначе приводится к `chunk-size / 4`;
 - `rag-rerank` принимает `heuristic`, `off`, `model`, неизвестные значения нормализуются в `heuristic`.
 
-### 4.3 `hybrid`
-
-Назначение: retrieval-пайплайн для длинных документов со смешанной структурой, где одного `rag` недостаточно.
-
-Режим должен:
-
-- определять профиль документа: `markdown`, `logs`, `plain`, `unknown`;
-- сегментировать документ или каждый файл в директории в meso-level регионы;
-- выполнять lexical и semantic retrieval;
-- сливать хиты в регионы, расширять их и дочитывать соседний контекст;
-- не объединять соседние сегменты и регионы через границы файлов;
-- извлекать факты map-style по top regions;
-- выполнять coverage check и при необходимости targeted reread;
-- синтезировать финальный ответ по фактам и evidence;
-- поддерживать fallback, если semantic retrieval или финальная генерация оказались недоступны.
-
-Опции `hybrid`:
-
-| Флаг | Env | Значение | Фактический default |
-| --- | --- | --- | --- |
-| `--embedding-model` | `EMBEDDING_MODEL` | Embedding-модель | `text-embedding-nomic-embed-text-v1.5` |
-| `--rag-chunk-size` | `RAG_CHUNK_SIZE` | Размер сегмента для индексирования | `1800` |
-| `--rag-chunk-overlap` | `RAG_CHUNK_OVERLAP` | Overlap | `200` |
-| `--rag-index-ttl` | `RAG_INDEX_TTL` | TTL индекса | `24h` |
-| `--rag-index-dir` | `RAG_INDEX_DIR` | Базовая директория индексов | `os.TempDir()/ragcli-index` |
-| `--hybrid-top-k` | `HYBRID_TOP_K` | Число retrieval кандидатов | `8` |
-| `--hybrid-final-k` | `HYBRID_FINAL_K` | Число финальных evidence regions | `4` |
-| `--hybrid-map-k` | `HYBRID_MAP_K` | Число regions для map-style fact extraction | `4` |
-| `--hybrid-read-window` | `HYBRID_READ_WINDOW` | Ширина дочитывания вокруг лучшей строки | `3` |
-| `--hybrid-fallback` | `HYBRID_FALLBACK` | Стратегия fallback | `map` |
-
-Нормализация и ограничения:
-
-- `final-k` не может быть больше `top-k`;
-- `map-k` не может быть больше `top-k`;
-- `read-window` минимум `1`;
-- `hybrid-fallback` принимает `map`, `rag-only`, `fail`, неизвестные значения нормализуются в `map`.
-
-### 4.4 `tools`
+### 4.3 `tools`
 
 Назначение: agentic анализ файла через tool calling вместо загрузки всего текста в prompt.
 
@@ -236,7 +196,7 @@
 ### 5.2 Локальные артефакты и приватность
 
 - `stdin` сохраняется во временный файл только на время обработки и затем удаляется.
-- Индексы `rag`/`hybrid` лежат на локальной файловой системе и публикуются атомарно через temp dir + rename.
+- Индексы `rag` лежат на локальной файловой системе и публикуются атомарно через temp dir + rename.
 - Права на индексные файлы и временные директории должны быть приватными (`0700` для директорий, `0600` для файлов).
 - Просроченные индексы должны очищаться по TTL.
 
@@ -256,7 +216,7 @@
 ## 6. Формат результата
 
 - `map` возвращает чистый ответ модели без секции `Sources`.
-- `rag` и `hybrid` всегда дописывают секцию `Sources:` с deduplicated источниками.
+- `rag` всегда дописывает секцию `Sources:` с deduplicated источниками.
 - Если evidence не найдено, `rag` должен возвращать честный insufficient-data ответ и `Sources:\n- none`.
 - Raw output перед печатью обрезается по краям `strings.TrimSpace`.
 

@@ -33,7 +33,6 @@
 - `internal/app`
 - `internal/map`
 - `internal/rag`
-- `internal/hybrid`
 - `internal/tools`
 - `internal/retrieval`
 
