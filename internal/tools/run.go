@@ -9,10 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/borro/ragcli/internal/aitools"
+	"github.com/borro/ragcli/internal/aitools/files"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
-	"github.com/borro/ragcli/internal/tools/filetools"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -55,14 +56,8 @@ func (e orchestrationError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
-type toolExecutionRecord struct {
-	raw      string
-	lineKeys map[string]struct{}
-}
-
 type toolLoopState struct {
-	reader                filetools.LineReader
-	callCache             map[string]toolExecutionRecord
+	registry              aitools.Registry
 	seenLines             map[string]struct{}
 	consecutiveNoProgress int
 	consecutiveDuplicates int
@@ -78,136 +73,7 @@ type toolExecutionMeta struct {
 	SuggestedNextOffset int    `json:"suggested_next_offset,omitempty"`
 }
 
-func NewToolsConfig(prompt string, source input.FileBackedSource) toolsConfig {
-	multiFile := source.IsMultiFile()
-	tools := make([]openai.Tool, 0, 4)
-	if multiFile {
-		tools = append(tools, openai.Tool{
-			Type: "function",
-			Function: &openai.FunctionDefinition{
-				Name:        "list_files",
-				Description: localize.T("tools.description.list_files"),
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"limit": map[string]any{
-							"type":        "integer",
-							"description": localize.T("tools.param.limit"),
-						},
-						"offset": map[string]any{
-							"type":        "integer",
-							"description": localize.T("tools.param.offset"),
-						},
-					},
-				},
-			},
-		})
-	}
-	tools = append(tools,
-		openai.Tool{
-			Type: "function",
-			Function: &openai.FunctionDefinition{
-				Name:        "search_file",
-				Description: localize.T("tools.description.search_file"),
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{
-							"type":        "string",
-							"description": localize.T("tools.param.path"),
-						},
-						"query": map[string]any{
-							"type":        "string",
-							"description": localize.T("tools.param.query"),
-						},
-						"mode": map[string]any{
-							"type":        "string",
-							"enum":        []string{"auto", "literal", "regex"},
-							"description": localize.T("tools.param.mode"),
-						},
-						"limit": map[string]any{
-							"type":        "integer",
-							"description": localize.T("tools.param.limit"),
-						},
-						"offset": map[string]any{
-							"type":        "integer",
-							"description": localize.T("tools.param.offset"),
-						},
-						"context_lines": map[string]any{
-							"type":        "integer",
-							"description": localize.T("tools.param.context_lines"),
-						},
-					},
-					"required": []string{"query"},
-				},
-			},
-		},
-		openai.Tool{
-			Type: "function",
-			Function: &openai.FunctionDefinition{
-				Name:        "read_lines",
-				Description: localize.T("tools.description.read_lines"),
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{
-							"type":        "string",
-							"description": localize.T("tools.param.path"),
-						},
-						"start_line": map[string]any{
-							"type":        "integer",
-							"description": localize.T("tools.param.start_line"),
-						},
-						"end_line": map[string]any{
-							"type":        "integer",
-							"description": localize.T("tools.param.end_line"),
-						},
-					},
-					"required": func() []string {
-						if multiFile {
-							return []string{"path", "start_line", "end_line"}
-						}
-						return []string{"start_line", "end_line"}
-					}(),
-				},
-			},
-		},
-		openai.Tool{
-			Type: "function",
-			Function: &openai.FunctionDefinition{
-				Name:        "read_around",
-				Description: localize.T("tools.description.read_around"),
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{
-							"type":        "string",
-							"description": localize.T("tools.param.path"),
-						},
-						"line": map[string]any{
-							"type":        "integer",
-							"description": localize.T("tools.param.line"),
-						},
-						"before": map[string]any{
-							"type":        "integer",
-							"description": localize.T("tools.param.before"),
-						},
-						"after": map[string]any{
-							"type":        "integer",
-							"description": localize.T("tools.param.after"),
-						},
-					},
-					"required": func() []string {
-						if multiFile {
-							return []string{"path", "line"}
-						}
-						return []string{"line"}
-					}(),
-				},
-			},
-		},
-	)
-
+func NewToolsConfig(prompt string, source input.FileBackedSource, definitions []openai.Tool) toolsConfig {
 	systemMessage := openai.ChatCompletionMessage{
 		Role:    "system",
 		Content: localize.T("tools.prompt.system"),
@@ -219,7 +85,7 @@ func NewToolsConfig(prompt string, source input.FileBackedSource) toolsConfig {
 	}
 
 	return toolsConfig{
-		tools:         tools,
+		tools:         append([]openai.Tool(nil), definitions...),
 		systemMessage: systemMessage,
 		userQuestion:  userQuestion,
 	}
@@ -235,6 +101,11 @@ func buildToolsUserPrompt(prompt string, source input.FileBackedSource) string {
 	if source.IsMultiFile() {
 		lines = append(lines, localize.T("tools.prompt.user.file_count", localize.Data{"Count": source.FileCount()}))
 		lines = append(lines, localize.T("tools.prompt.user.list_hint"))
+	} else {
+		lines = append(lines, localize.T("tools.prompt.user.single_file_hint"))
+		if source.Kind() == input.KindStdin {
+			lines = append(lines, localize.T("tools.prompt.user.stdin_hint"))
+		}
 	}
 	lines = append(lines, localize.T("tools.prompt.user.question", localize.Data{"Prompt": prompt}))
 	return strings.Join(lines, "\n")
@@ -252,11 +123,11 @@ func Run(ctx context.Context, client llm.ChatRequester, source input.FileBackedS
 	finalMeter := plan.Stage("final")
 	initMeter.Start(localize.T("progress.tools.session_start"))
 
-	toolsConfig := NewToolsConfig(prompt, source)
+	loopState := newToolLoopState(source)
+	toolsConfig := NewToolsConfig(prompt, source, loopState.registry.ToolDefinitions())
 	messages := make([]openai.ChatCompletionMessage, 0, 2)
 	messages = append(messages, toolsConfig.systemMessage, toolsConfig.userQuestion)
 	initMeter.Done(localize.T("progress.tools.session_done"))
-	loopState := newToolLoopState(source)
 	var toolChoiceToSend interface{} = "auto"
 	emptyFinalAnswerRetries := 0
 	stalledToolRetries := 0
@@ -428,22 +299,26 @@ func Run(ctx context.Context, client llm.ChatRequester, source input.FileBackedS
 }
 
 func newToolLoopState(source input.FileBackedSource) *toolLoopState {
-	var reader filetools.LineReader
+	var reader files.LineReader
 	if source.IsMultiFile() {
-		files := make([]filetools.CorpusFile, 0, source.FileCount())
+		corpusFiles := make([]files.CorpusFile, 0, source.FileCount())
 		for _, file := range source.BackingFiles() {
-			files = append(files, filetools.CorpusFile{
+			corpusFiles = append(corpusFiles, files.CorpusFile{
 				Path:        file.Path,
 				DisplayPath: file.DisplayPath,
 			})
 		}
-		reader = filetools.NewCorpusReader(files)
+		reader = files.NewCorpusReader(corpusFiles)
 	} else {
-		reader = filetools.NewFileReader(source.SnapshotPath())
+		if source.Kind() == input.KindStdin {
+			reader = files.NewNamedFileReader(source.SnapshotPath(), source.DisplayName())
+		} else {
+			reader = files.NewFileReader(source.SnapshotPath())
+		}
 	}
+	toolset := files.NewTools(reader, files.ToolOptions{MultiFile: source.IsMultiFile()})
 	return &toolLoopState{
-		reader:    reader,
-		callCache: make(map[string]toolExecutionRecord),
+		registry:  aitools.NewRegistry(toolset...),
 		seenLines: make(map[string]struct{}),
 	}
 }
@@ -476,10 +351,10 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 		default:
 		}
 
-		result, meta, err := s.executeToolCall(call)
+		result, meta, err := s.executeToolCall(ctx, call)
 		if err != nil {
 			slog.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
-			toolErr, marshalErr := filetools.MarshalJSON(filetools.AsToolError(err))
+			toolErr, marshalErr := files.MarshalJSON(files.AsToolError(err))
 			if marshalErr != nil {
 				return nil, marshalErr
 			}
@@ -532,57 +407,38 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 	return results, nil
 }
 
-func (s *toolLoopState) executeToolCall(call openai.ToolCall) (string, toolExecutionMeta, error) {
-	filetools.LogToolCallStarted(call, filetools.SummarizeToolArguments(call))
-	signature, err := canonicalToolSignature(call)
+func (s *toolLoopState) executeToolCall(ctx context.Context, call openai.ToolCall) (string, toolExecutionMeta, error) {
+	result, err := s.registry.Execute(ctx, call)
 	if err != nil {
-		filetools.LogToolCallError(call, 0, err)
 		return "", toolExecutionMeta{}, err
 	}
 
-	if cached, ok := s.callCache[signature]; ok {
+	if result.Cached {
 		s.stats.cacheHits++
 		s.stats.duplicateCalls++
 
 		meta := toolExecutionMeta{
 			Cached:       true,
-			Duplicate:    true,
+			Duplicate:    result.Duplicate,
 			AlreadySeen:  true,
 			NovelLines:   0,
 			ProgressHint: "duplicate tool call; reuse cached result and change strategy instead of repeating the same request",
 		}
-		if suggested := suggestedNextOffset(call.Function.Name, cached.raw); suggested > 0 {
+		if suggested := intHint(result.Hints, files.HintSuggestedNextOffset); suggested > 0 {
 			meta.SuggestedNextOffset = suggested
 		}
 
-		annotated, err := annotateToolPayload(cached.raw, meta)
+		annotated, err := annotateToolPayload(result.Payload, meta)
 		if err != nil {
-			filetools.LogToolCallError(call, 0, err)
 			return "", toolExecutionMeta{}, err
 		}
-		summary := filetools.SummarizeToolResult(call.Function.Name, cached.raw)
-		if summary == nil {
-			summary = map[string]any{}
-		}
-		summary["cached"] = true
-		summary["duplicate"] = true
-		summary["novel_lines"] = meta.NovelLines
-		filetools.LogToolCallFinished(call, 0, "cached", summary)
-		return annotated, meta, err
+		return annotated, meta, nil
 	}
 
-	startedAt := time.Now()
-	raw, err := filetools.ExecuteTool(call, s.reader)
-	if err != nil {
-		filetools.LogToolCallError(call, time.Since(startedAt), err)
-		return "", toolExecutionMeta{}, err
+	lineKeys := make(map[string]struct{}, len(result.ProgressKeys))
+	for _, key := range result.ProgressKeys {
+		lineKeys[key] = struct{}{}
 	}
-
-	lineKeys, err := extractLineNumbers(call.Function.Name, raw)
-	if err != nil {
-		return "", toolExecutionMeta{}, err
-	}
-
 	novelLines := 0
 	for key := range lineKeys {
 		if _, seen := s.seenLines[key]; seen {
@@ -601,19 +457,13 @@ func (s *toolLoopState) executeToolCall(call openai.ToolCall) (string, toolExecu
 	} else {
 		meta.ProgressHint = "new lines discovered; read local context or answer if evidence is sufficient"
 	}
-	if suggested := suggestedNextOffset(call.Function.Name, raw); suggested > 0 {
+	if suggested := intHint(result.Hints, files.HintSuggestedNextOffset); suggested > 0 {
 		meta.SuggestedNextOffset = suggested
 	}
 
-	annotated, err := annotateToolPayload(raw, meta)
+	annotated, err := annotateToolPayload(result.Payload, meta)
 	if err != nil {
-		filetools.LogToolCallError(call, time.Since(startedAt), err)
 		return "", toolExecutionMeta{}, err
-	}
-
-	s.callCache[signature] = toolExecutionRecord{
-		raw:      raw,
-		lineKeys: lineKeys,
 	}
 
 	switch call.Function.Name {
@@ -625,121 +475,7 @@ func (s *toolLoopState) executeToolCall(call openai.ToolCall) (string, toolExecu
 		s.stats.uniqueReads++
 	}
 
-	summary := filetools.SummarizeToolResult(call.Function.Name, raw)
-	if summary == nil {
-		summary = map[string]any{}
-	}
-	summary["novel_lines"] = meta.NovelLines
-	summary["already_seen"] = meta.AlreadySeen
-	filetools.LogToolCallFinished(call, time.Since(startedAt), "ok", summary)
-
 	return annotated, meta, nil
-}
-
-func canonicalToolSignature(call openai.ToolCall) (string, error) {
-	switch call.Function.Name {
-	case "list_files":
-		var params struct {
-			Limit  int `json:"limit"`
-			Offset int `json:"offset"`
-		}
-		if strings.TrimSpace(call.Function.Arguments) != "" {
-			if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-				return "", filetools.NewToolError("invalid_arguments", "invalid arguments for list_files", false, map[string]any{
-					"tool":  "list_files",
-					"error": err.Error(),
-				})
-			}
-		}
-		normalized := filetools.NormalizeListFilesParams(filetools.ListFilesParams{
-			Limit:  params.Limit,
-			Offset: params.Offset,
-		})
-		body, err := filetools.MarshalJSON(normalized)
-		if err != nil {
-			return "", err
-		}
-		return call.Function.Name + ":" + body, nil
-	case "search_file":
-		var params struct {
-			Path         string `json:"path"`
-			Query        string `json:"query"`
-			Mode         string `json:"mode"`
-			Limit        int    `json:"limit"`
-			Offset       int    `json:"offset"`
-			ContextLines int    `json:"context_lines"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", filetools.NewToolError("invalid_arguments", "invalid arguments for search_file", false, map[string]any{
-				"tool":  "search_file",
-				"error": err.Error(),
-			})
-		}
-
-		normalized := filetools.NormalizeSearchParams(filetools.SearchParams{
-			Path:         params.Path,
-			Query:        params.Query,
-			Mode:         params.Mode,
-			Limit:        params.Limit,
-			Offset:       params.Offset,
-			ContextLines: params.ContextLines,
-		})
-		body, err := filetools.MarshalJSON(normalized)
-		if err != nil {
-			return "", err
-		}
-		return call.Function.Name + ":" + body, nil
-
-	case "read_lines":
-		var params struct {
-			Path      string `json:"path"`
-			StartLine int    `json:"start_line"`
-			EndLine   int    `json:"end_line"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", filetools.NewToolError("invalid_arguments", "invalid arguments for read_lines", false, map[string]any{
-				"tool":  "read_lines",
-				"error": err.Error(),
-			})
-		}
-		if params.StartLine < 1 {
-			params.StartLine = 1
-		}
-		params.Path = strings.TrimSpace(params.Path)
-		body, err := filetools.MarshalJSON(params)
-		if err != nil {
-			return "", err
-		}
-		return call.Function.Name + ":" + body, nil
-
-	case "read_around":
-		var params struct {
-			Path   string `json:"path"`
-			Line   int    `json:"line"`
-			Before int    `json:"before"`
-			After  int    `json:"after"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", filetools.NewToolError("invalid_arguments", "invalid arguments for read_around", false, map[string]any{
-				"tool":  "read_around",
-				"error": err.Error(),
-			})
-		}
-		if params.Before < 0 {
-			params.Before = filetools.DefaultReadAroundBefore
-		}
-		if params.After < 0 {
-			params.After = filetools.DefaultReadAroundAfter
-		}
-		params.Path = strings.TrimSpace(params.Path)
-		body, err := filetools.MarshalJSON(params)
-		if err != nil {
-			return "", err
-		}
-		return call.Function.Name + ":" + body, nil
-	default:
-		return "", filetools.NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{"tool": call.Function.Name})
-	}
 }
 
 func annotateToolPayload(raw string, meta toolExecutionMeta) (string, error) {
@@ -769,90 +505,33 @@ func annotateToolPayload(raw string, meta toolExecutionMeta) (string, error) {
 		payload["suggested_next_offset"] = meta.SuggestedNextOffset
 	}
 
-	return filetools.MarshalJSON(payload)
-}
-
-func extractLineNumbers(toolName, raw string) (map[string]struct{}, error) {
-	lines := make(map[string]struct{})
-
-	switch toolName {
-	case "list_files":
-		var result filetools.ListFilesResult
-		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return nil, fmt.Errorf("failed to decode list_files result: %w", err)
-		}
-		for _, path := range result.Files {
-			lines["file:"+strings.TrimSpace(path)] = struct{}{}
-		}
-	case "search_file":
-		var result filetools.SearchResult
-		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return nil, fmt.Errorf("failed to decode search result: %w", err)
-		}
-		for _, match := range result.Matches {
-			lines[lineKey(match.Path, result.Path, match.LineNumber)] = struct{}{}
-			for _, line := range match.ContextBefore {
-				lines[lineKey(line.Path, result.Path, line.LineNumber)] = struct{}{}
-			}
-			for _, line := range match.ContextAfter {
-				lines[lineKey(line.Path, result.Path, line.LineNumber)] = struct{}{}
-			}
-		}
-	case "read_lines":
-		var result filetools.ReadLinesResult
-		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return nil, fmt.Errorf("failed to decode read_lines result: %w", err)
-		}
-		for _, line := range result.Lines {
-			lines[lineKey(line.Path, result.Path, line.LineNumber)] = struct{}{}
-		}
-	case "read_around":
-		var result filetools.ReadAroundResult
-		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return nil, fmt.Errorf("failed to decode read_around result: %w", err)
-		}
-		for _, line := range result.Lines {
-			lines[lineKey(line.Path, result.Path, line.LineNumber)] = struct{}{}
-		}
-	default:
-		return nil, fmt.Errorf("unsupported tool for line extraction: %s", toolName)
-	}
-
-	return lines, nil
-}
-
-func lineKey(linePath string, fallbackPath string, lineNumber int) string {
-	path := strings.TrimSpace(linePath)
-	if path == "" {
-		path = strings.TrimSpace(fallbackPath)
-	}
-	return fmt.Sprintf("%s:%d", path, lineNumber)
-}
-
-func suggestedNextOffset(toolName, raw string) int {
-	switch toolName {
-	case "list_files":
-		var result filetools.ListFilesResult
-		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return 0
-		}
-		if result.HasMore {
-			return result.NextOffset
-		}
-	case "search_file":
-		var result filetools.SearchResult
-		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return 0
-		}
-		if result.HasMore {
-			return result.NextOffset
-		}
-	}
-	return 0
+	return files.MarshalJSON(payload)
 }
 
 func errorsAsOrchestration(err error, target *orchestrationError) bool {
 	return errors.As(err, target)
+}
+
+func intHint(hints map[string]any, key string) int {
+	if hints == nil {
+		return 0
+	}
+	value, ok := hints[key]
+	if !ok {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
+	}
 }
 
 func shouldRetryWithoutTools(err orchestrationError) bool {

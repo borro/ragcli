@@ -251,6 +251,43 @@ func TestRunTools_DirectoryInputAddsListFilesTool(t *testing.T) {
 	}
 }
 
+func TestRunTools_StdinPromptExplainsSingleFileMode(t *testing.T) {
+	setRussianLocale(t)
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "Готовый ответ", nil)),
+		},
+	}
+
+	_, err := runTools(context.Background(), client, "", "Какой версии go-openai?", nil)
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+
+	if len(client.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(client.requests))
+	}
+	if len(client.requests[0].Tools) != 3 {
+		t.Fatalf("tools sent = %d, want 3", len(client.requests[0].Tools))
+	}
+
+	systemPrompt := client.requests[0].Messages[0].Content
+	if !strings.Contains(systemPrompt, "Если подключён ровно один файл, list_files недоступен и не нужен") {
+		t.Fatalf("system prompt = %q, want single-file instruction", systemPrompt)
+	}
+
+	userPrompt := client.requests[0].Messages[1].Content
+	if !strings.Contains(userPrompt, "Подключён ровно один файл.") {
+		t.Fatalf("user prompt = %q, want single-file hint", userPrompt)
+	}
+	if !strings.Contains(userPrompt, "Этот единственный файл пришёл через stdin") {
+		t.Fatalf("user prompt = %q, want stdin hint", userPrompt)
+	}
+	if strings.Contains(userPrompt, "сначала вызови list_files") {
+		t.Fatalf("user prompt = %q, must not suggest list_files for single-file stdin", userPrompt)
+	}
+}
+
 func TestRunTools_VerboseEmitsSingleFinalCompletionLine(t *testing.T) {
 	setRussianLocale(t)
 	client := &scriptedRequester{
@@ -577,11 +614,11 @@ func TestToolLoopState_DuplicateSearchMarksCachedPayload(t *testing.T) {
 	filePath := writeTempFile(t, "alpha\nbeta\n")
 	state := newToolLoopState(fileSource(filePath, filePath))
 
-	first, _, err := state.executeToolCall(toolCall("call-1", "search_file", `{"query":"alpha"}`))
+	first, _, err := state.executeToolCall(context.Background(), toolCall("call-1", "search_file", `{"query":"alpha"}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(first) error = %v", err)
 	}
-	second, meta, err := state.executeToolCall(toolCall("call-2", "search_file", `{"query":"alpha"}`))
+	second, meta, err := state.executeToolCall(context.Background(), toolCall("call-2", "search_file", `{"query":"alpha"}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(second) error = %v", err)
 	}
@@ -602,15 +639,40 @@ func TestToolLoopState_DuplicateSearchMarksCachedPayload(t *testing.T) {
 	}
 }
 
+func TestToolLoopState_StdinAliasPathWorksForSingleFileReader(t *testing.T) {
+	filePath := writeTempFile(t, "github.com/sashabaranov/go-openai v1.41.2\n")
+	source := testSource{
+		kind:         input.KindStdin,
+		inputPath:    "",
+		snapshotPath: filePath,
+		files: []input.File{{
+			Path:        filePath,
+			DisplayPath: "stdin",
+		}},
+	}
+	state := newToolLoopState(source)
+
+	result, meta, err := state.executeToolCall(context.Background(), toolCall("call-stdin", "search_file", `{"path":"stdin","query":"go-openai"}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(stdin alias) error = %v", err)
+	}
+	if meta.NovelLines == 0 {
+		t.Fatalf("meta = %+v, want novel lines from stdin alias path", meta)
+	}
+	if !strings.Contains(result, "v1.41.2") {
+		t.Fatalf("result = %q, want version from stdin alias path", result)
+	}
+}
+
 func TestToolLoopState_ReadAroundSeenLinesMarksNoProgress(t *testing.T) {
 	filePath := writeTempFile(t, "one\ntwo\nthree\nfour\n")
 	state := newToolLoopState(fileSource(filePath, filePath))
 
-	_, firstMeta, err := state.executeToolCall(toolCall("call-1", "read_lines", `{"start_line":1,"end_line":3}`))
+	_, firstMeta, err := state.executeToolCall(context.Background(), toolCall("call-1", "read_lines", `{"start_line":1,"end_line":3}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(first) error = %v", err)
 	}
-	_, secondMeta, err := state.executeToolCall(toolCall("call-2", "read_around", `{"line":2,"before":1,"after":1}`))
+	_, secondMeta, err := state.executeToolCall(context.Background(), toolCall("call-2", "read_around", `{"line":2,"before":1,"after":1}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(second) error = %v", err)
 	}
@@ -631,11 +693,11 @@ func TestToolLoopState_MultiFilePathsKeepSeenLinesSeparate(t *testing.T) {
 		{Path: secondPath, DisplayPath: "b.txt"},
 	}))
 
-	_, firstMeta, err := state.executeToolCall(toolCall("call-1", "read_lines", `{"path":"a.txt","start_line":1,"end_line":1}`))
+	_, firstMeta, err := state.executeToolCall(context.Background(), toolCall("call-1", "read_lines", `{"path":"a.txt","start_line":1,"end_line":1}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(first) error = %v", err)
 	}
-	_, secondMeta, err := state.executeToolCall(toolCall("call-2", "read_lines", `{"path":"b.txt","start_line":1,"end_line":1}`))
+	_, secondMeta, err := state.executeToolCall(context.Background(), toolCall("call-2", "read_lines", `{"path":"b.txt","start_line":1,"end_line":1}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(second) error = %v", err)
 	}
@@ -654,11 +716,11 @@ func TestToolLoopState_ListFilesPaginationCountsAsProgress(t *testing.T) {
 		{Path: writeTempFile(t, "beta\n"), DisplayPath: "b.txt"},
 	}))
 
-	_, firstMeta, err := state.executeToolCall(toolCall("call-1", "list_files", `{"limit":1,"offset":0}`))
+	_, firstMeta, err := state.executeToolCall(context.Background(), toolCall("call-1", "list_files", `{"limit":1,"offset":0}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(first) error = %v", err)
 	}
-	_, secondMeta, err := state.executeToolCall(toolCall("call-2", "list_files", `{"limit":1,"offset":1}`))
+	_, secondMeta, err := state.executeToolCall(context.Background(), toolCall("call-2", "list_files", `{"limit":1,"offset":1}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(second) error = %v", err)
 	}

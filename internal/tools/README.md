@@ -8,16 +8,15 @@
 
 ## Зона ответственности
 
-- объявление tool definitions для chat completion;
 - построение system/user prompts режима;
 - orchestration loop по turns;
-- обработка tool calls, кэширование и guards против зацикливания;
+- обработка tool calls и cross-turn guards против зацикливания;
 - финализация режима после содержательного text answer.
 
 ## Ключевые entrypoints/types
 
 - `Run(ctx, client, source, prompt, plan)`
-- `NewToolsConfig(prompt, source)`
+- `NewToolsConfig(prompt, source, definitions)`
 - `toolLoopState`
 - `orchestrationError`
 
@@ -31,15 +30,16 @@
 
 - `internal/input`
 - `internal/llm`
-- `internal/tools/filetools`
+- `internal/aitools`
+- `internal/aitools/files`
 - `internal/verbose`
 - `internal/localize`
 
 ## Основной поток
 
-1. Создаются tool definitions и стартовые сообщения.
+1. Создаются file-domain tools через `aitools/files`, затем из них собирается registry в `aitools`.
 2. В каждом turn модель получает chat request с доступными инструментами.
-3. Запрошенные tool calls выполняются локально через `filetools`.
+3. Запрошенные tool calls выполняются локально через registry из `aitools`.
 4. Результаты сериализуются в JSON и возвращаются модели как `role=tool`.
 5. Loop отслеживает cache hits, duplicate calls и отсутствие прогресса.
 6. При зацикливании применяются stop/retry/forced-finalization guards.
@@ -66,6 +66,6 @@
 ## Куда вносить изменения
 
 - Orchestration loop и лимиты: `run.go`.
-- Добавление нового file tool почти всегда требует и изменения `internal/tools/filetools`.
+- Добавление нового file tool почти всегда требует и изменения constructors в `internal/aitools/files`.
 - При изменении JSON-контрактов обновляйте документацию пакета и общую архитектуру.
-- Локализованные tool descriptions, prompts и progress: `i18n/{en,ru}.toml`.
+- Локализованные prompts и progress режима: `i18n/{en,ru}.toml`.

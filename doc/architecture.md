@@ -7,7 +7,7 @@
 - тонкую точку входа `cmd/ragcli`;
 - orchestration-слой `internal/app`;
 - mode-пакеты `map`, `rag`, `tools`;
-- shared infrastructure: `llm`, `input`, `retrieval`, `verbose`, `localize`, `logging`.
+- shared infrastructure: `llm`, `input`, `retrieval`, `aitools`, `verbose`, `localize`, `logging`.
 
 Главный принцип: `internal/app` связывает CLI, input lifecycle, создание клиентов и вывод результата, а domain-specific пайплайны живут в отдельных пакетах режимов.
 
@@ -25,7 +25,8 @@ flowchart LR
     app --> rag["internal/rag"]
     app --> tools["internal/tools"]
     rag --> retrieval["internal/retrieval"]
-    tools --> filetools
+    tools --> aitools["internal/aitools"]
+    tools --> aitoolsfiles["internal/aitools/files"]
     llm --> goopenai["go-openai"]
 ```
 
@@ -35,7 +36,7 @@ flowchart LR
 - `internal/app` знает про все режимы и shared packages; режимы не знают про CLI.
 - `internal/map` не зависит от retrieval и tool calling.
 - `internal/rag` использует `internal/retrieval` как общее ядро файлового retrieval.
-- `internal/tools` оркестрирует tool calling, а перечисление файлов и чтение строк делегирует `internal/tools/filetools`.
+- `internal/tools` оркестрирует tool calling, а общий registry/API делегирует `internal/aitools`, файловый домен — `internal/aitools/files`.
 
 ## 3. Жизненный цикл запуска
 
@@ -198,10 +199,11 @@ flowchart TD
 6. При зацикливании включаются защитные ветки: retry without tools, stop-calls prompt, forced finalization.
 7. Режим завершает работу, когда получает содержательный финальный text answer.
 
-Почему `filetools` вынесен отдельно:
+Почему `aitools`/`aitools/files` вынесены отдельно:
 
-- JSON-контракты инструментов должны переиспользоваться;
-- line-based доступ удобнее тестировать отдельно от orchestration loop;
+- общий AI-tool registry и контракты должны переиспользоваться между режимами;
+- файловый домен удобно развивать отдельно от orchestration loop и отдельно от будущих не-файловых tools;
+- каждый concrete tool можно подключать в разных сочетаниях через общий `aitools.Registry`.
 
 ## 6. Файловые и временные артефакты
 
@@ -230,5 +232,5 @@ flowchart TD
 ## 8. Куда расширять систему
 
 - Новый режим добавляется через `internal/<mode>` + регистрацию в `internal/app/commandspec.go`.
-- Новая общая файловая функциональность сначала оценивается на перенос в `internal/retrieval` или `internal/tools/filetools`, а не в отдельный режим.
+- Новая общая AI-tool функциональность сначала оценивается на перенос в `internal/aitools` или соответствующий доменный пакет `internal/aitools/<domain>`, а не в отдельный режим.
 - Изменения CLI-описания в `internal/app` должны сопровождаться обновлением `doc/requirements.md`, `README.md` и package-level README соответствующих пакетов.
