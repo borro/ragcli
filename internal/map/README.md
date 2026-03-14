@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Пакет реализует режим `map`: approximate-token chunking, parallel map-фазу, iterative reduce и self-refine финального ответа.
+Пакет реализует режим `map`: approximate-token chunking, parallel map-фазу, iterative reduce и self-refine финального ответа как запасной сценарий для длинных текстов, когда retrieval или tool calling не подходят.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
@@ -25,7 +25,6 @@
 Входящие:
 
 - `internal/app`
-- `internal/hybrid` как fallback target
 
 Исходящие:
 
@@ -47,6 +46,7 @@
 ## Инварианты и ошибки
 
 - Пакет не использует embeddings.
+- Режим стоит рассматривать как fallback: он проще по зависимостям, но хуже удерживает глобальный контекст, чем retrieval- или tool-based сценарии.
 - Chunking старается сохранять границы строк; oversized line режется отдельно.
 - Пустой файл и отсутствие полезных map-results не считаются ошибкой исполнения.
 - Approximate token budgeting завязан на эвристики, а не на точный tokenizer.

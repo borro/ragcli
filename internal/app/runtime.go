@@ -270,9 +270,21 @@ func executeMapCommand(session *commandSession) (string, error) {
 }
 
 func executeToolsCommand(session *commandSession) (string, error) {
-	return session.withChatInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester) (string, error) {
-		slog.Info("starting tools processing")
-		return tools.Run(session.ctx, client, source, session.inv.Common.Prompt, session.plan)
+	opts, err := payloadAs[tools.Options](session.inv.payload)
+	if err != nil {
+		return "", err
+	}
+
+	if !opts.EnableRAG {
+		return session.withChatInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester) (string, error) {
+			slog.Info("starting tools processing")
+			return tools.Run(session.ctx, client, nil, source, opts, session.inv.Common.Prompt, session.plan)
+		})
+	}
+
+	return session.withChatAndEmbeddingInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
+		slog.Info("starting tools processing", "rag_enabled", true)
+		return tools.Run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
 	})
 }
 
@@ -294,9 +306,7 @@ func executeHybridCommand(session *commandSession) (string, error) {
 		return "", err
 	}
 
-	prepareOpen := session.plan.Stage("prepare").Slice(1, 2)
-
-	return session.withChatAndEmbeddingInput(prepareOpen, func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
+	return session.withChatAndEmbeddingInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
 		slog.Info("starting hybrid processing")
 		return hybrid.Run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
 	})

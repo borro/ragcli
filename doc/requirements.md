@@ -4,10 +4,10 @@
 
 `ragcli` — CLI-инструмент для вопросов к большим локальным текстам через OpenAI-compatible API. Он нужен в случаях, когда документ, лог или отчёт неудобно отправлять в модель одним куском и требуется один из четырёх режимов:
 
-- `map` — chunked map-reduce обработка.
-- `rag` — retrieval по локальному индексу.
-- `hybrid` — комбинированный retrieval + дочитывание + извлечение фактов.
+- `hybrid` — seeded retrieval с последующей проверкой через tools.
 - `tools` — agentic-исследование файла через tool calling.
+- `rag` — retrieval по локальному индексу.
+- `map` — запасная chunked map-reduce обработка, когда retrieval или tool calling не подходят.
 
 ## 2. Поддерживаемые сценарии
 
@@ -29,10 +29,10 @@
 
 Поддерживаются команды:
 
-- `ragcli map [options] <prompt>`
-- `ragcli rag [options] <prompt>`
 - `ragcli hybrid [options] <prompt>`
 - `ragcli tools [options] <prompt>`
+- `ragcli rag [options] <prompt>`
+- `ragcli map [options] <prompt>`
 - `ragcli version`
 - `ragcli help [command]`
 
@@ -64,7 +64,7 @@
 | --- | --- | --- | --- |
 | `--api-url` | `LLM_API_URL` | Базовый URL OpenAI-compatible API | `http://localhost:1234/v1` |
 | `--api-key` | `OPENAI_API_KEY` | API key | пусто |
-| `--model` | `LLM_MODEL` | Chat-модель для `map`, `rag`, `hybrid`, `tools` | `local-model` |
+| `--model` | `LLM_MODEL` | Chat-модель для `hybrid`, `tools`, `rag`, `map` | `local-model` |
 | `--retry`, `-r` | `RETRY` | Число повторов поверх первой попытки | `3` |
 | `--proxy-url` | `LLM_PROXY_URL` | Явный proxy URL для всех LLM-запросов | пусто |
 | `--no-proxy` | `LLM_NO_PROXY` | Полностью отключить proxy для LLM-запросов | `false` |
@@ -73,7 +73,7 @@
 
 - `.env` подгружается автоматически через `godotenv.Load()`.
 - Proxy precedence: `--no-proxy` сильнее `--proxy-url`; `--proxy-url` сильнее `HTTP_PROXY`/`HTTPS_PROXY`; иначе используется proxy окружения.
-- Для `rag` и `hybrid` дополнительно нужен embeddings endpoint.
+- Для `hybrid`, `tools --rag` и `rag` дополнительно нужен embeddings endpoint.
 - CLI default для `--embedding-model` — `text-embedding-nomic-embed-text-v1.5`.
 
 ### 3.4 Вывод и UX
@@ -97,35 +97,87 @@
 
 ## 4. Режимы обработки
 
-### 4.1 `map`
+### 4.1 `hybrid`
 
-Назначение: обработка длинного текста чанками с последующей агрегацией.
+Назначение: начать с semantic retrieval, а затем дать модели проверить релевантность, дочитать локальный контекст и при необходимости перезапустить retrieval через tools.
 
 Режим должен:
 
-- разбивать вход на чанки по approximate token budget, а не по фиксированным байтам;
-- сохранять разбиение по строкам, а oversized single line дорезать по rune offsets;
-- уметь параллелить map-фазу через worker pool размера `--concurrency`;
-- выполнять reduce fan-in итерациями, пока не останется один блок фактов;
-- строить финальный ответ по reduced facts;
-- запускать self-critique и self-refine до финального возврата.
-- при directory input работать по детерминированному synthetic corpus, где сохранены границы файлов.
+- заранее строить или переиспользовать тот же локальный индекс, что используют `tools --rag` и `rag`;
+- до первого model turn выполнять synthetic `search_rag` по исходному вопросу;
+- класть seeded `search_rag` call и его JSON-результат в историю как assistant/tool pair;
+- после seeded retrieval запускать тот же orchestration loop и тот же набор инструментов, что и `tools --rag`;
+- позволять модели оценить seeded result, исследовать файлы через file-tools и при необходимости повторно вызывать `search_rag` с уточнённым запросом;
+- всегда дописывать в финал секцию `Sources:` по всем успешным evidence-producing tool results, показанным модели;
+- не считать `list_files` источником для `Sources:`;
+- не останавливаться только из-за слабого seeded retrieval, если индекс успешно подготовлен.
 
-Опции `map`:
+Инструменты `hybrid`:
 
-| Флаг | Env | Значение | Фактический default |
+- `list_files(limit, offset)` при directory input
+- `search_file(path?, query, mode, limit, offset, context_lines)`
+- `search_rag(path?, query, limit, offset)`
+- `read_lines(path?, start_line, end_line)`
+- `read_around(path?, line, before, after)`
+
+Опции `hybrid`:
+
+| Flag | Env | Значение | Default |
 | --- | --- | --- | --- |
-| `--concurrency`, `-c` | `CONCURRENCY` | Число параллельных map-вызовов | `1` |
-| `--length`, `-l` | `LENGTH` | Явный лимит контекста в approximate tokens | `10000` в help; runtime auto-resolve при отсутствии explicit override |
+| `--embedding-model` | `EMBEDDING_MODEL` | Embedding-модель для seeded retrieval и повторных `search_rag` | `text-embedding-nomic-embed-text-v1.5` |
+| `--rag-top-k` | `RAG_TOP_K` | Максимум semantic candidates для `search_rag` | `8` |
+| `--rag-chunk-size` | `RAG_CHUNK_SIZE` | Размер чанка индекса | `1800` |
+| `--rag-chunk-overlap` | `RAG_CHUNK_OVERLAP` | Overlap соседних чанков | `200` |
+| `--rag-index-ttl` | `RAG_INDEX_TTL` | TTL локального индекса | `24h` |
+| `--rag-index-dir` | `RAG_INDEX_DIR` | Базовая директория индексов | `os.TempDir()/ragcli-index` |
+| `--rag-rerank` | `RAG_RERANK` | Стратегия rerank для `search_rag` | `heuristic` |
 
-Дополнительные инварианты:
+### 4.2 `tools`
 
-- если `--length` не задан явно, режим пытается определить размер контекста через `ResolveAutoContextLength`;
-- при неуспехе auto-detect используется fallback `10000`;
-- пустой файл возвращает ответ об empty input;
-- отсутствие полезных map-results возвращает ответ об insufficient information без падения.
+Назначение: agentic анализ файла через tool calling вместо загрузки всего текста в prompt.
 
-### 4.2 `rag`
+Режим должен:
+
+- отдавать модели набор локальных инструментов `list_files`, `search_file`, `read_lines`, `read_around`;
+- по флагу `--rag` дополнительно прединдексировать вход и отдавать инструмент `search_rag`;
+- для directory input давать модели способ перечислить доступные relative paths перед file-local reads;
+- для directory input поддерживать corpus-wide search и file-local reads через обязательный `path` у `read_lines`/`read_around`;
+- крутить tool loop до финального ответа, лимита ходов или forced finalization;
+- кэшировать уже выполненные tool calls;
+- отличать отсутствие прогресса от новых строк/нового контекста;
+- ограничивать повторы, пустые финальные ответы и дублирующиеся вызовы;
+- возвращать orchestration error, если модель зациклилась и не даёт содержательного финального ответа.
+
+Инструменты должны поддерживать:
+
+- `list_files(limit, offset)`
+- `search_file(query, mode, limit, offset, context_lines)`
+- `search_file(path?, query, mode, limit, offset, context_lines)`
+- `search_rag(query, limit, offset)`
+- `search_rag(path?, query, limit, offset)`
+- `read_lines(path?, start_line, end_line)`
+- `read_around(path?, line, before, after)`
+
+Опции `tools`:
+
+| Flag | Env | Значение | Default |
+| --- | --- | --- | --- |
+| `--rag` | `TOOLS_RAG` | Включить pre-index + `search_rag` | `false` |
+| `--embedding-model` | `EMBEDDING_MODEL` | Embedding-модель для `search_rag` | `text-embedding-nomic-embed-text-v1.5` |
+| `--rag-top-k` | `RAG_TOP_K` | Максимум semantic candidates для `search_rag` | `8` |
+| `--rag-chunk-size` | `RAG_CHUNK_SIZE` | Размер чанка индекса для `tools --rag` | `1800` |
+| `--rag-chunk-overlap` | `RAG_CHUNK_OVERLAP` | Overlap соседних чанков | `200` |
+| `--rag-index-ttl` | `RAG_INDEX_TTL` | TTL локального индекса | `24h` |
+| `--rag-index-dir` | `RAG_INDEX_DIR` | Базовая директория индексов | `os.TempDir()/ragcli-index` |
+| `--rag-rerank` | `RAG_RERANK` | Стратегия rerank для `search_rag` | `heuristic` |
+
+Публичные лимиты текущей реализации:
+
+- максимум `20` turns в одном orchestration loop;
+- guard на повторные no-progress/duplicate tool runs;
+- JSON-результаты инструментов как единственный wire-format между локальным tool runner и моделью.
+
+### 4.3 `rag`
 
 Назначение: retrieval по локальному файловому индексу.
 
@@ -158,72 +210,33 @@
 - `chunk-overlap` не может быть больше или равен `chunk-size`, иначе приводится к `chunk-size / 4`;
 - `rag-rerank` принимает `heuristic`, `off`, `model`, неизвестные значения нормализуются в `heuristic`.
 
-### 4.3 `hybrid`
+### 4.4 `map`
 
-Назначение: retrieval-пайплайн для длинных документов со смешанной структурой, где одного `rag` недостаточно.
+Назначение: запасная обработка длинного текста чанками с последующей агрегацией, если retrieval или tool calling использовать нельзя.
 
 Режим должен:
 
-- определять профиль документа: `markdown`, `logs`, `plain`, `unknown`;
-- сегментировать документ или каждый файл в директории в meso-level регионы;
-- выполнять lexical и semantic retrieval;
-- сливать хиты в регионы, расширять их и дочитывать соседний контекст;
-- не объединять соседние сегменты и регионы через границы файлов;
-- извлекать факты map-style по top regions;
-- выполнять coverage check и при необходимости targeted reread;
-- синтезировать финальный ответ по фактам и evidence;
-- поддерживать fallback, если semantic retrieval или финальная генерация оказались недоступны.
+- разбивать вход на чанки по approximate token budget, а не по фиксированным байтам;
+- сохранять разбиение по строкам, а oversized single line дорезать по rune offsets;
+- уметь параллелить map-фазу через worker pool размера `--concurrency`;
+- выполнять reduce fan-in итерациями, пока не останется один блок фактов;
+- строить финальный ответ по reduced facts;
+- запускать self-critique и self-refine до финального возврата;
+- при directory input работать по детерминированному synthetic corpus, где сохранены границы файлов.
 
-Опции `hybrid`:
+Опции `map`:
 
 | Флаг | Env | Значение | Фактический default |
 | --- | --- | --- | --- |
-| `--embedding-model` | `EMBEDDING_MODEL` | Embedding-модель | `text-embedding-nomic-embed-text-v1.5` |
-| `--rag-chunk-size` | `RAG_CHUNK_SIZE` | Размер сегмента для индексирования | `1800` |
-| `--rag-chunk-overlap` | `RAG_CHUNK_OVERLAP` | Overlap | `200` |
-| `--rag-index-ttl` | `RAG_INDEX_TTL` | TTL индекса | `24h` |
-| `--rag-index-dir` | `RAG_INDEX_DIR` | Базовая директория индексов | `os.TempDir()/ragcli-index` |
-| `--hybrid-top-k` | `HYBRID_TOP_K` | Число retrieval кандидатов | `8` |
-| `--hybrid-final-k` | `HYBRID_FINAL_K` | Число финальных evidence regions | `4` |
-| `--hybrid-map-k` | `HYBRID_MAP_K` | Число regions для map-style fact extraction | `4` |
-| `--hybrid-read-window` | `HYBRID_READ_WINDOW` | Ширина дочитывания вокруг лучшей строки | `3` |
-| `--hybrid-fallback` | `HYBRID_FALLBACK` | Стратегия fallback | `map` |
+| `--concurrency`, `-c` | `CONCURRENCY` | Число параллельных map-вызовов | `1` |
+| `--length`, `-l` | `LENGTH` | Явный лимит контекста в approximate tokens | `10000` в help; runtime auto-resolve при отсутствии explicit override |
 
-Нормализация и ограничения:
+Дополнительные инварианты:
 
-- `final-k` не может быть больше `top-k`;
-- `map-k` не может быть больше `top-k`;
-- `read-window` минимум `1`;
-- `hybrid-fallback` принимает `map`, `rag-only`, `fail`, неизвестные значения нормализуются в `map`.
-
-### 4.4 `tools`
-
-Назначение: agentic анализ файла через tool calling вместо загрузки всего текста в prompt.
-
-Режим должен:
-
-- отдавать модели набор локальных инструментов `list_files`, `search_file`, `read_lines`, `read_around`;
-- для directory input давать модели способ перечислить доступные relative paths перед file-local reads;
-- для directory input поддерживать corpus-wide search и file-local reads через обязательный `path` у `read_lines`/`read_around`;
-- крутить tool loop до финального ответа, лимита ходов или forced finalization;
-- кэшировать уже выполненные tool calls;
-- отличать отсутствие прогресса от новых строк/нового контекста;
-- ограничивать повторы, пустые финальные ответы и дублирующиеся вызовы;
-- возвращать orchestration error, если модель зациклилась и не даёт содержательного финального ответа.
-
-Инструменты должны поддерживать:
-
-- `list_files(limit, offset)`
-- `search_file(query, mode, limit, offset, context_lines)`
-- `search_file(path?, query, mode, limit, offset, context_lines)`
-- `read_lines(path?, start_line, end_line)`
-- `read_around(path?, line, before, after)`
-
-Публичные лимиты текущей реализации:
-
-- максимум `20` turns в одном orchestration loop;
-- guard на повторные no-progress/duplicate tool runs;
-- JSON-результаты инструментов как единственный wire-format между локальным tool runner и моделью.
+- если `--length` не задан явно, режим пытается определить размер контекста через `ResolveAutoContextLength`;
+- при неуспехе auto-detect используется fallback `10000`;
+- пустой файл возвращает ответ об empty input;
+- отсутствие полезных map-results возвращает ответ об insufficient information без падения.
 
 ## 5. Нефункциональные требования
 
@@ -236,7 +249,7 @@
 ### 5.2 Локальные артефакты и приватность
 
 - `stdin` сохраняется во временный файл только на время обработки и затем удаляется.
-- Индексы `rag`/`hybrid` лежат на локальной файловой системе и публикуются атомарно через temp dir + rename.
+- Индексы `hybrid`, `tools --rag` и `rag` лежат на локальной файловой системе и публикуются атомарно через temp dir + rename.
 - Права на индексные файлы и временные директории должны быть приватными (`0700` для директорий, `0600` для файлов).
 - Просроченные индексы должны очищаться по TTL.
 
@@ -255,8 +268,9 @@
 
 ## 6. Формат результата
 
+- `hybrid` всегда дописывает секцию `Sources:` с deduplicated источниками по evidence results текущей tool session.
+- `rag` всегда дописывает секцию `Sources:` с deduplicated источниками.
 - `map` возвращает чистый ответ модели без секции `Sources`.
-- `rag` и `hybrid` всегда дописывают секцию `Sources:` с deduplicated источниками.
 - Если evidence не найдено, `rag` должен возвращать честный insufficient-data ответ и `Sources:\n- none`.
 - Raw output перед печатью обрезается по краям `strings.TrimSpace`.
 

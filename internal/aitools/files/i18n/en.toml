@@ -1,0 +1,18 @@
+[tools.description]
+list_files = "Return the list of files from the attached directory corpus with pagination via limit/offset. Returns JSON with limit, offset, file_count, total_files, has_more, next_offset, and files, plus cached, duplicate, already_seen, novel_lines, progress_hint, suggested_next_offset."
+search_file = "Search the attached file or directory corpus. Supports optional path, mode=auto|literal|regex, pagination via limit/offset, and context_lines for neighboring lines. Returns JSON with query, path, requested_mode, mode, match_count, total_matches, has_more, next_offset, plus cached, duplicate, already_seen, novel_lines, progress_hint, suggested_next_offset."
+read_lines = "Read a range of lines from the attached file. For directory corpora path is required. Returns JSON with path, start_line, end_line, line_count, lines, plus cached, duplicate, already_seen, novel_lines, progress_hint."
+read_around = "Read a window of lines around a specific line in the attached file. For directory corpora path is required. Returns JSON with path, line, before, after, start_line, end_line, line_count, lines, plus cached, duplicate, already_seen, novel_lines, progress_hint."
+
+[tools.param]
+path = "Relative path inside the attached directory corpus; omit it only when a single file is attached or for corpus-wide search"
+query = "Search query string for the file"
+mode = "auto first performs literal search, then token overlap fallback; use regex only for explicit patterns"
+limit = "Maximum results for the current search page"
+offset = "Offset for search result pagination"
+context_lines = "How many neighboring lines to return around each match"
+start_line = "Start line (1-based)"
+end_line = "End line"
+line = "Target line (1-based)"
+before = "How many lines to return before the target line"
+after = "How many lines to return after the target line"

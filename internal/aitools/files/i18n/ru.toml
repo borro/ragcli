@@ -1,0 +1,18 @@
+[tools.description]
+list_files = "Вернуть список файлов из подключённой директории с pagination через limit/offset. Возвращает JSON с limit, offset, file_count, total_files, has_more, next_offset и files, а также служебные поля cached, duplicate, already_seen, novel_lines, progress_hint, suggested_next_offset."
+search_file = "Искать по подключённому файлу или корпусу файлов из директории. Поддерживает необязательный path, mode=auto|literal|regex, pagination через limit/offset и context_lines для соседних строк. Возвращает JSON с query, path, requested_mode, mode, match_count, total_matches, has_more, next_offset, а также служебные поля cached, duplicate, already_seen, novel_lines, progress_hint, suggested_next_offset."
+read_lines = "Прочитать диапазон строк из подключённого файла. Для директорий path обязателен. Возвращает JSON с path, start_line, end_line, line_count, lines и служебные поля cached, duplicate, already_seen, novel_lines, progress_hint."
+read_around = "Прочитать окно строк вокруг конкретной строки в подключённом файле. Для директорий path обязателен. Возвращает JSON с path, line, before, after, start_line, end_line, line_count, lines и служебные поля cached, duplicate, already_seen, novel_lines, progress_hint."
+
+[tools.param]
+path = "Относительный путь внутри подключённой директории; можно опустить только когда подключён один файл или нужен поиск по всему корпусу"
+query = "Строка запроса для поиска по файлу"
+mode = "auto сначала делает literal поиск, потом token overlap fallback; regex используйте только для явных шаблонов"
+limit = "Максимум результатов на текущую страницу поиска"
+offset = "Смещение для пагинации результатов поиска"
+context_lines = "Сколько соседних строк вернуть вокруг каждого совпадения"
+start_line = "Начальная строка (начиная с 1)"
+end_line = "Конечная строка"
+line = "Целевая строка (начиная с 1)"
+before = "Сколько строк вернуть перед целевой строкой"
+after = "Сколько строк вернуть после целевой строки"

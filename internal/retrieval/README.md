@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Это общее retrieval-ядро для `rag` и `hybrid`: spool source, line walking, vector helpers, файловый индекс и общий формат citations.
+Это общее retrieval-ядро для `rag`: spool source, line walking, vector helpers, файловый индекс и общий формат citations.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
@@ -31,7 +31,6 @@
 Входящие:
 
 - `internal/rag`
-- `internal/hybrid`
 
 Исходящие:
 

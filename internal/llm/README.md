@@ -31,11 +31,10 @@
 Входящие:
 
 - `internal/app`
-- `internal/map`
-- `internal/rag`
-- `internal/hybrid`
 - `internal/tools`
+- `internal/rag`
 - `internal/retrieval`
+- `internal/map`
 
 Исходящие:
 

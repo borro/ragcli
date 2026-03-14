@@ -1,4 +1,4 @@
-package filetools
+package files
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/borro/ragcli/internal/aitools"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -239,7 +240,7 @@ func TestSearchFile(t *testing.T) {
 
 				if tt.errorCode != "" {
 					var toolErr ToolError
-					if !errorsAs(err, &toolErr) {
+					if !errors.As(err, &toolErr) {
 						t.Fatalf("expected ToolError, got %T", err)
 					}
 					if toolErr.Code != tt.errorCode {
@@ -419,7 +420,7 @@ func TestReadAround_InvalidLine(t *testing.T) {
 	}
 
 	var toolErr ToolError
-	if !errorsAs(err, &toolErr) {
+	if !errors.As(err, &toolErr) {
 		t.Fatalf("expected ToolError, got %T", err)
 	}
 	if toolErr.Code != "invalid_arguments" {
@@ -499,6 +500,218 @@ func TestListFiles_DefaultsAndPagination(t *testing.T) {
 	}
 	if got := strings.Join(secondResult.Files, ","); got != "z.log" {
 		t.Fatalf("files = %q, want second page", got)
+	}
+}
+
+func TestToolDefinitions_SingleAndMultiFile(t *testing.T) {
+	singleFile := aitools.NewRegistry(NewTools(nil, ToolOptions{MultiFile: false})...).ToolDefinitions()
+	if len(singleFile) != 3 {
+		t.Fatalf("len(singleFile) = %d, want 3", len(singleFile))
+	}
+	if toolByName(singleFile, "list_files") != nil {
+		t.Fatal("single-file tool set unexpectedly contains list_files")
+	}
+
+	readLinesSingle := toolByName(singleFile, "read_lines")
+	if readLinesSingle == nil {
+		t.Fatal("single-file tool set missing read_lines")
+	}
+	if required := requiredFields(t, *readLinesSingle); len(required) != 2 || !containsString(required, "start_line") || !containsString(required, "end_line") {
+		t.Fatalf("single-file read_lines required = %#v, want start_line/end_line", required)
+	}
+
+	multiFile := aitools.NewRegistry(NewTools(nil, ToolOptions{MultiFile: true})...).ToolDefinitions()
+	if len(multiFile) != 4 {
+		t.Fatalf("len(multiFile) = %d, want 4", len(multiFile))
+	}
+	listFiles := toolByName(multiFile, "list_files")
+	if listFiles == nil {
+		t.Fatal("multi-file tool set missing list_files")
+	}
+	if desc := listFiles.Function.Description; strings.TrimSpace(desc) == "" {
+		t.Fatal("list_files description must not be empty")
+	}
+
+	readLinesMulti := toolByName(multiFile, "read_lines")
+	if readLinesMulti == nil {
+		t.Fatal("multi-file tool set missing read_lines")
+	}
+	if required := requiredFields(t, *readLinesMulti); len(required) != 3 || !containsString(required, "path") || !containsString(required, "start_line") || !containsString(required, "end_line") {
+		t.Fatalf("multi-file read_lines required = %#v, want path/start_line/end_line", required)
+	}
+
+	readAroundMulti := toolByName(multiFile, "read_around")
+	if readAroundMulti == nil {
+		t.Fatal("multi-file tool set missing read_around")
+	}
+	if required := requiredFields(t, *readAroundMulti); len(required) != 2 || !containsString(required, "path") || !containsString(required, "line") {
+		t.Fatalf("multi-file read_around required = %#v, want path/line", required)
+	}
+}
+
+func TestConcreteTools_ExposeSharedInterface(t *testing.T) {
+	reader := NewFileReader(writeTempFile(t, "alpha\nbeta\n"))
+	tools := []aitools.Tool{
+		newListFilesTool(reader),
+		newSearchFileTool(reader),
+		newReadLinesTool(reader, false),
+		newReadAroundTool(reader, false),
+	}
+
+	for _, tool := range tools {
+		definition := tool.ToolDefinition()
+		if definition.Function == nil {
+			t.Fatalf("%T.ToolDefinition() returned nil Function", tool)
+		}
+		if definition.Function.Name != tool.Name() {
+			t.Fatalf("%T.ToolDefinition().Function.Name = %q, want %q", tool, definition.Function.Name, tool.Name())
+		}
+	}
+}
+
+func TestConcreteTool_RejectsWrongToolName(t *testing.T) {
+	tool := newSearchFileTool(NewFileReader(writeTempFile(t, "alpha\n")))
+
+	_, err := tool.Execute(context.Background(), toolCall("1", "read_lines", `{"start_line":1,"end_line":1}`))
+	if err == nil {
+		t.Fatal("Execute() error = nil, want unknown_tool")
+	}
+	if got := AsToolError(err).Code; got != "unknown_tool" {
+		t.Fatalf("Code = %q, want unknown_tool", got)
+	}
+}
+
+func TestConcreteTool_CachesDuplicateCalls(t *testing.T) {
+	tool := newSearchFileTool(NewFileReader(writeTempFile(t, "alpha\nbeta\n")))
+
+	first, err := tool.Execute(context.Background(), toolCall("1", "search_file", `{"query":"alpha"}`))
+	if err != nil {
+		t.Fatalf("Execute(first) error = %v", err)
+	}
+	second, err := tool.Execute(context.Background(), toolCall("2", "search_file", `{"query":"alpha"}`))
+	if err != nil {
+		t.Fatalf("Execute(second) error = %v", err)
+	}
+
+	if first.Cached || first.Duplicate {
+		t.Fatalf("first result = %+v, want fresh execution", first)
+	}
+	if !second.Cached || !second.Duplicate {
+		t.Fatalf("second result = %+v, want cached duplicate", second)
+	}
+	if second.Payload != first.Payload {
+		t.Fatalf("cached payload changed:\nfirst=%q\nsecond=%q", first.Payload, second.Payload)
+	}
+}
+
+func TestRegistry_DispatchesCallsAndBuildsDefinitions(t *testing.T) {
+	reader := NewCorpusReader([]CorpusFile{
+		{Path: writeTempFile(t, "alpha\n"), DisplayPath: "a.txt"},
+		{Path: writeTempFile(t, "beta\n"), DisplayPath: "nested/b.txt"},
+	})
+	registry := aitools.NewRegistry(NewTools(reader, ToolOptions{MultiFile: true})...)
+
+	definitions := registry.ToolDefinitions()
+	if len(definitions) != 4 {
+		t.Fatalf("len(definitions) = %d, want 4", len(definitions))
+	}
+	if definitions[0].Function == nil || definitions[0].Function.Name != "list_files" {
+		t.Fatalf("definitions[0] = %#v, want list_files", definitions[0].Function)
+	}
+
+	result, err := registry.Execute(context.Background(), toolCall("1", "search_file", `{"query":"alpha"}`))
+	if err != nil {
+		t.Fatalf("registry.Execute(search_file) error = %v", err)
+	}
+	if result.Payload == "" || len(result.ProgressKeys) == 0 {
+		t.Fatalf("result = %+v, want payload and progress keys", result)
+	}
+
+	_, err = registry.Execute(context.Background(), toolCall("2", "boom", `{}`))
+	if err == nil {
+		t.Fatal("registry.Execute(unknown) error = nil, want unknown_tool")
+	}
+	if got := AsToolError(err).Code; got != "unknown_tool" {
+		t.Fatalf("Code = %q, want unknown_tool", got)
+	}
+}
+
+func TestConcreteTools_ExposeProgressKeysAndHints(t *testing.T) {
+	reader := NewCorpusReader([]CorpusFile{
+		{Path: writeTempFile(t, "alpha\n"), DisplayPath: "a.txt"},
+		{Path: writeTempFile(t, "alpha\n"), DisplayPath: "nested/b.txt"},
+	})
+
+	listTool := newListFilesTool(reader)
+	listResult, err := listTool.Execute(context.Background(), toolCall("1", "list_files", `{"limit":1,"offset":0}`))
+	if err != nil {
+		t.Fatalf("listTool.Execute() error = %v", err)
+	}
+	if len(listResult.ProgressKeys) != 1 || listResult.ProgressKeys[0] != "file:a.txt" {
+		t.Fatalf("listResult.ProgressKeys = %#v, want file:a.txt", listResult.ProgressKeys)
+	}
+	if got := listResult.Hints[HintSuggestedNextOffset]; got != 1 {
+		t.Fatalf("listResult.Hints[%q] = %#v, want 1", HintSuggestedNextOffset, got)
+	}
+
+	searchTool := newSearchFileTool(reader)
+	searchResult, err := searchTool.Execute(context.Background(), toolCall("2", "search_file", `{"query":"alpha","limit":1}`))
+	if err != nil {
+		t.Fatalf("searchTool.Execute() error = %v", err)
+	}
+	if len(searchResult.ProgressKeys) == 0 {
+		t.Fatalf("searchResult.ProgressKeys = %#v, want non-empty", searchResult.ProgressKeys)
+	}
+	if got := searchResult.Hints[HintSuggestedNextOffset]; got != 1 {
+		t.Fatalf("searchResult.Hints[%q] = %#v, want 1", HintSuggestedNextOffset, got)
+	}
+}
+
+func TestCanonicalToolSignature_NormalizesArguments(t *testing.T) {
+	searchA, err := canonicalToolSignature(toolCall("1", "search_file", `{"query":"alpha","limit":50,"offset":-1}`))
+	if err != nil {
+		t.Fatalf("canonicalToolSignature(searchA) error = %v", err)
+	}
+	searchB, err := canonicalToolSignature(toolCall("2", "search_file", `{"query":"alpha","mode":"auto","limit":20,"offset":0}`))
+	if err != nil {
+		t.Fatalf("canonicalToolSignature(searchB) error = %v", err)
+	}
+	if searchA != searchB {
+		t.Fatalf("search signatures differ:\nA=%q\nB=%q", searchA, searchB)
+	}
+
+	readAroundA, err := canonicalToolSignature(toolCall("3", "read_around", `{"path":"a.txt","line":9,"before":-1,"after":-1}`))
+	if err != nil {
+		t.Fatalf("canonicalToolSignature(readAroundA) error = %v", err)
+	}
+	readAroundB, err := canonicalToolSignature(toolCall("4", "read_around", `{"path":"a.txt","line":9,"before":3,"after":3}`))
+	if err != nil {
+		t.Fatalf("canonicalToolSignature(readAroundB) error = %v", err)
+	}
+	if readAroundA != readAroundB {
+		t.Fatalf("read_around signatures differ:\nA=%q\nB=%q", readAroundA, readAroundB)
+	}
+
+	readLinesA, err := canonicalToolSignature(toolCall("5", "read_lines", `{"path":"a.txt","start_line":0,"end_line":5}`))
+	if err != nil {
+		t.Fatalf("canonicalToolSignature(readLinesA) error = %v", err)
+	}
+	readLinesB, err := canonicalToolSignature(toolCall("6", "read_lines", `{"path":"a.txt","start_line":1,"end_line":5}`))
+	if err != nil {
+		t.Fatalf("canonicalToolSignature(readLinesB) error = %v", err)
+	}
+	if readLinesA != readLinesB {
+		t.Fatalf("read_lines signatures differ:\nA=%q\nB=%q", readLinesA, readLinesB)
+	}
+}
+
+func TestCanonicalToolSignature_InvalidArguments(t *testing.T) {
+	_, err := canonicalToolSignature(toolCall("1", "list_files", `{"limit":`))
+	if err == nil {
+		t.Fatal("canonicalToolSignature() error = nil, want invalid_arguments")
+	}
+	if got := AsToolError(err).Code; got != "invalid_arguments" {
+		t.Fatalf("Code = %q, want invalid_arguments", got)
 	}
 }
 
@@ -639,6 +852,109 @@ func TestSummarizeToolResult_DecodeErrorAndUnknownTool(t *testing.T) {
 	}
 	if summary := SummarizeToolResult("custom", "{}"); summary != nil {
 		t.Fatalf("summary = %#v, want nil", summary)
+	}
+}
+
+func TestExtractLineKeys_ByTool(t *testing.T) {
+	listFilesRaw, err := MarshalJSON(ListFilesResult{
+		Files: []string{"a.txt", "nested/b.txt"},
+	})
+	if err != nil {
+		t.Fatalf("MarshalJSON(ListFilesResult) error = %v", err)
+	}
+	listKeys, err := extractLineKeys("list_files", listFilesRaw)
+	if err != nil {
+		t.Fatalf("extractLineKeys(list_files) error = %v", err)
+	}
+	for _, want := range []string{"file:a.txt", "file:nested/b.txt"} {
+		if _, ok := listKeys[want]; !ok {
+			t.Fatalf("list_keys missing %q: %#v", want, listKeys)
+		}
+	}
+
+	searchRaw, err := MarshalJSON(SearchResult{
+		Path: "a.txt",
+		Matches: []SearchMatch{
+			{
+				LineNumber: 10,
+				ContextBefore: []LineSlice{
+					{LineNumber: 9},
+				},
+				ContextAfter: []LineSlice{
+					{LineNumber: 11, Path: "other.txt"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("MarshalJSON(SearchResult) error = %v", err)
+	}
+	searchKeys, err := extractLineKeys("search_file", searchRaw)
+	if err != nil {
+		t.Fatalf("extractLineKeys(search_file) error = %v", err)
+	}
+	for _, want := range []string{"a.txt:9", "a.txt:10", "other.txt:11"} {
+		if _, ok := searchKeys[want]; !ok {
+			t.Fatalf("search_keys missing %q: %#v", want, searchKeys)
+		}
+	}
+
+	readLinesRaw, err := MarshalJSON(ReadLinesResult{
+		Path: "nested/b.txt",
+		Lines: []LineSlice{
+			{LineNumber: 4},
+		},
+	})
+	if err != nil {
+		t.Fatalf("MarshalJSON(ReadLinesResult) error = %v", err)
+	}
+	readLinesKeys, err := extractLineKeys("read_lines", readLinesRaw)
+	if err != nil {
+		t.Fatalf("extractLineKeys(read_lines) error = %v", err)
+	}
+	if _, ok := readLinesKeys["nested/b.txt:4"]; !ok {
+		t.Fatalf("read_lines keys = %#v, want nested/b.txt:4", readLinesKeys)
+	}
+
+	readAroundRaw, err := MarshalJSON(ReadAroundResult{
+		Path: "nested/c.txt",
+		Lines: []LineSlice{
+			{LineNumber: 7},
+		},
+	})
+	if err != nil {
+		t.Fatalf("MarshalJSON(ReadAroundResult) error = %v", err)
+	}
+	readAroundKeys, err := extractLineKeys("read_around", readAroundRaw)
+	if err != nil {
+		t.Fatalf("extractLineKeys(read_around) error = %v", err)
+	}
+	if _, ok := readAroundKeys["nested/c.txt:7"]; !ok {
+		t.Fatalf("read_around keys = %#v, want nested/c.txt:7", readAroundKeys)
+	}
+}
+
+func TestSuggestedNextOffset_Pagination(t *testing.T) {
+	listFilesRaw, err := MarshalJSON(ListFilesResult{
+		HasMore:    true,
+		NextOffset: 5,
+	})
+	if err != nil {
+		t.Fatalf("MarshalJSON(ListFilesResult) error = %v", err)
+	}
+	if got := suggestedNextOffset("list_files", listFilesRaw); got != 5 {
+		t.Fatalf("suggestedNextOffset(list_files) = %d, want 5", got)
+	}
+
+	searchRaw, err := MarshalJSON(SearchResult{
+		HasMore:    false,
+		NextOffset: 9,
+	})
+	if err != nil {
+		t.Fatalf("MarshalJSON(SearchResult) error = %v", err)
+	}
+	if got := suggestedNextOffset("search_file", searchRaw); got != 0 {
+		t.Fatalf("suggestedNextOffset(search_file) = %d, want 0", got)
 	}
 }
 
@@ -856,6 +1172,58 @@ func toolCall(id string, name string, arguments string) openai.ToolCall {
 			Arguments: arguments,
 		},
 	}
+}
+
+func toolByName(tools []openai.Tool, name string) *openai.Tool {
+	for i := range tools {
+		if tools[i].Function != nil && tools[i].Function.Name == name {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+func requiredFields(t *testing.T, tool openai.Tool) []string {
+	t.Helper()
+
+	params, ok := tool.Function.Parameters.(map[string]any)
+	if !ok {
+		t.Fatalf("Parameters type = %T, want map[string]any", tool.Function.Parameters)
+	}
+
+	rawRequired, ok := params["required"]
+	if !ok {
+		return nil
+	}
+
+	required, ok := rawRequired.([]string)
+	if ok {
+		return required
+	}
+
+	rawSlice, ok := rawRequired.([]any)
+	if !ok {
+		t.Fatalf("required type = %T, want []string or []any", rawRequired)
+	}
+
+	required = make([]string, 0, len(rawSlice))
+	for _, value := range rawSlice {
+		field, ok := value.(string)
+		if !ok {
+			t.Fatalf("required element type = %T, want string", value)
+		}
+		required = append(required, field)
+	}
+	return required
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func assertReadLinesResult(t *testing.T, raw string, start int, end int, expectedLines []int) {

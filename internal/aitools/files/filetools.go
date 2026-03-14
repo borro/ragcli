@@ -1,10 +1,9 @@
-package filetools
+package files
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/borro/ragcli/internal/aitools"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -92,12 +92,7 @@ type ListFilesResult struct {
 	Error      string   `json:"error,omitempty"`
 }
 
-type ToolError struct {
-	Code      string         `json:"code"`
-	Message   string         `json:"message"`
-	Retryable bool           `json:"retryable"`
-	Details   map[string]any `json:"details,omitempty"`
-}
+type ToolError = aitools.ToolError
 
 type ListFilesParams struct {
 	Limit  int
@@ -136,6 +131,14 @@ type CorpusFile struct {
 	DisplayPath string
 }
 
+func AsToolError(err error) ToolError {
+	return aitools.AsToolError(err)
+}
+
+func NewToolError(code, message string, retryable bool, details map[string]any) error {
+	return aitools.NewToolError(code, message, retryable, details)
+}
+
 type multiFileReader struct {
 	files     []CorpusFile
 	byPath    map[string]*cachedLineReader
@@ -144,9 +147,17 @@ type multiFileReader struct {
 }
 
 func NewFileReader(path string) *cachedLineReader {
+	return NewNamedFileReader(path, filepath.Base(path))
+}
+
+func NewNamedFileReader(path string, displayPath string) *cachedLineReader {
+	trimmedDisplayPath := strings.TrimSpace(displayPath)
+	if trimmedDisplayPath == "" {
+		trimmedDisplayPath = filepath.Base(path)
+	}
 	return &cachedLineReader{
 		sourceName:  path,
-		displayPath: filepath.Base(path),
+		displayPath: trimmedDisplayPath,
 		sourceKind:  "file",
 		open: func() (io.ReadCloser, error) {
 			return os.Open(path)
@@ -817,6 +828,10 @@ func StdinReadAround(line, before, after int) (string, error) {
 }
 
 func ExecuteTool(call openai.ToolCall, reader LineReader) (string, error) {
+	return executeToolRaw(call, reader)
+}
+
+func executeToolRaw(call openai.ToolCall, reader LineReader) (string, error) {
 	switch call.Function.Name {
 	case "list_files":
 		var params struct {
@@ -901,43 +916,15 @@ func ExecuteTool(call openai.ToolCall, reader LineReader) (string, error) {
 }
 
 func LogToolCallStarted(call openai.ToolCall, args map[string]any) {
-	logArgs := []any{
-		"tool_name", call.Function.Name,
-		"tool_call_id", call.ID,
-	}
-	if args != nil {
-		logArgs = append(logArgs, "arguments", args)
-	}
-	slog.Debug("tool call started", logArgs...)
+	aitools.LogToolCallStarted(call, args)
 }
 
 func LogToolCallFinished(call openai.ToolCall, duration time.Duration, status string, summary map[string]any) {
-	logArgs := []any{
-		"tool_name", call.Function.Name,
-		"tool_call_id", call.ID,
-		"status", status,
-		"duration", float64(duration.Round(time.Millisecond)) / float64(time.Second),
-	}
-	for key, value := range summary {
-		logArgs = append(logArgs, key, value)
-	}
-	slog.Debug("tool call finished", logArgs...)
+	aitools.LogToolCallFinished(call, duration, status, summary)
 }
 
 func LogToolCallError(call openai.ToolCall, duration time.Duration, err error) {
-	toolErr := AsToolError(err)
-	logArgs := []any{
-		"tool_name", call.Function.Name,
-		"tool_call_id", call.ID,
-		"duration", float64(duration.Round(time.Millisecond)) / float64(time.Second),
-		"error_code", toolErr.Code,
-		"retryable", toolErr.Retryable,
-		"error", toolErr.Message,
-	}
-	if len(toolErr.Details) > 0 {
-		logArgs = append(logArgs, "details", toolErr.Details)
-	}
-	slog.Debug("tool call failed", logArgs...)
+	aitools.LogToolCallError(call, duration, err)
 }
 
 func SummarizeToolArguments(call openai.ToolCall) map[string]any {
@@ -1133,34 +1120,4 @@ func ExecuteToolCalls(ctx context.Context, toolCalls []openai.ToolCall, path str
 	}
 
 	return results, nil
-}
-
-func AsToolError(err error) ToolError {
-	var toolErr ToolError
-	if ok := errorsAs(err, &toolErr); ok {
-		return toolErr
-	}
-
-	return ToolError{
-		Code:      "tool_execution_failed",
-		Message:   err.Error(),
-		Retryable: false,
-	}
-}
-
-func NewToolError(code, message string, retryable bool, details map[string]any) error {
-	return ToolError{
-		Code:      code,
-		Message:   message,
-		Retryable: retryable,
-		Details:   details,
-	}
-}
-
-func (e ToolError) Error() string {
-	return e.Message
-}
-
-func errorsAs(err error, target *ToolError) bool {
-	return errors.As(err, target)
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/borro/ragcli/internal/localize"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
+	toolsmode "github.com/borro/ragcli/internal/tools"
 	"github.com/borro/ragcli/internal/verbose"
 	"github.com/urfave/cli/v3"
 )
@@ -145,104 +146,7 @@ func commandSpecs() []*commandSpec {
 			name:        "rag",
 			usage:       localize.T("cli.command.rag.usage"),
 			description: ragCommandDescription(),
-			flagSpecs: []flagSpec{
-				{
-					names:      []string{"--embedding-model"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.StringFlag{
-							Name:    "embedding-model",
-							Usage:   localize.T("cli.flag.rag.embedding_model.usage"),
-							Value:   defaultLLMOptions().EmbeddingModel,
-							Sources: cli.EnvVars("EMBEDDING_MODEL"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-top-k"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.IntFlag{
-							Name:    "rag-top-k",
-							Usage:   localize.T("cli.flag.rag.top_k.usage"),
-							Value:   8,
-							Sources: cli.EnvVars("RAG_TOP_K"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-final-k"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.IntFlag{
-							Name:    "rag-final-k",
-							Usage:   localize.T("cli.flag.rag.final_k.usage"),
-							Value:   4,
-							Sources: cli.EnvVars("RAG_FINAL_K"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-chunk-size"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.IntFlag{
-							Name:    "rag-chunk-size",
-							Usage:   localize.T("cli.flag.rag.chunk_size.usage"),
-							Value:   1800,
-							Sources: cli.EnvVars("RAG_CHUNK_SIZE"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-chunk-overlap"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.IntFlag{
-							Name:    "rag-chunk-overlap",
-							Usage:   localize.T("cli.flag.rag.chunk_overlap.usage"),
-							Value:   200,
-							Sources: cli.EnvVars("RAG_CHUNK_OVERLAP"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-index-ttl"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.DurationFlag{
-							Name:    "rag-index-ttl",
-							Usage:   localize.T("cli.flag.rag.index_ttl.usage"),
-							Value:   24 * time.Hour,
-							Sources: cli.EnvVars("RAG_INDEX_TTL"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-index-dir"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.StringFlag{
-							Name:    "rag-index-dir",
-							Usage:   localize.T("cli.flag.rag.index_dir.usage"),
-							Value:   defaultRAGIndexDir(),
-							Sources: cli.EnvVars("RAG_INDEX_DIR"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-rerank"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.StringFlag{
-							Name:    "rag-rerank",
-							Usage:   localize.T("cli.flag.rag.rerank.usage"),
-							Value:   "heuristic",
-							Sources: cli.EnvVars("RAG_RERANK"),
-						}
-					},
-				},
-			},
+			flagSpecs:   ragFlagSpecs(true),
 			template: progressTemplate("progress.mode.rag",
 				stageTemplate("prepare", "progress.stage.prepare", 2),
 				stageTemplate("index", "progress.stage.index", 8),
@@ -253,155 +157,35 @@ func commandSpecs() []*commandSpec {
 			execute: executeRAGCommand,
 		},
 		{
-			name:        "hybrid",
-			usage:       localize.T("cli.command.hybrid.usage"),
-			description: hybridCommandDescription(),
-			flagSpecs: []flagSpec{
-				{
-					names:      []string{"--embedding-model"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.StringFlag{
-							Name:    "embedding-model",
-							Usage:   localize.T("cli.flag.hybrid.embedding_model.usage"),
-							Value:   defaultLLMOptions().EmbeddingModel,
-							Sources: cli.EnvVars("EMBEDDING_MODEL"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-chunk-size"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.IntFlag{
-							Name:    "rag-chunk-size",
-							Usage:   localize.T("cli.flag.hybrid.chunk_size.usage"),
-							Value:   1800,
-							Sources: cli.EnvVars("RAG_CHUNK_SIZE"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-chunk-overlap"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.IntFlag{
-							Name:    "rag-chunk-overlap",
-							Usage:   localize.T("cli.flag.hybrid.chunk_overlap.usage"),
-							Value:   200,
-							Sources: cli.EnvVars("RAG_CHUNK_OVERLAP"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-index-ttl"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.DurationFlag{
-							Name:    "rag-index-ttl",
-							Usage:   localize.T("cli.flag.hybrid.index_ttl.usage"),
-							Value:   24 * time.Hour,
-							Sources: cli.EnvVars("RAG_INDEX_TTL"),
-						}
-					},
-				},
-				{
-					names:      []string{"--rag-index-dir"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.StringFlag{
-							Name:    "rag-index-dir",
-							Usage:   localize.T("cli.flag.hybrid.index_dir.usage"),
-							Value:   defaultRAGIndexDir(),
-							Sources: cli.EnvVars("RAG_INDEX_DIR"),
-						}
-					},
-				},
-				{
-					names:      []string{"--hybrid-top-k"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.IntFlag{
-							Name:    "hybrid-top-k",
-							Usage:   localize.T("cli.flag.hybrid.top_k.usage"),
-							Value:   8,
-							Sources: cli.EnvVars("HYBRID_TOP_K"),
-						}
-					},
-				},
-				{
-					names:      []string{"--hybrid-final-k"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.IntFlag{
-							Name:    "hybrid-final-k",
-							Usage:   localize.T("cli.flag.hybrid.final_k.usage"),
-							Value:   4,
-							Sources: cli.EnvVars("HYBRID_FINAL_K"),
-						}
-					},
-				},
-				{
-					names:      []string{"--hybrid-map-k"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.IntFlag{
-							Name:    "hybrid-map-k",
-							Usage:   localize.T("cli.flag.hybrid.map_k.usage"),
-							Value:   4,
-							Sources: cli.EnvVars("HYBRID_MAP_K"),
-						}
-					},
-				},
-				{
-					names:      []string{"--hybrid-read-window"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.IntFlag{
-							Name:    "hybrid-read-window",
-							Usage:   localize.T("cli.flag.hybrid.read_window.usage"),
-							Value:   3,
-							Sources: cli.EnvVars("HYBRID_READ_WINDOW"),
-						}
-					},
-				},
-				{
-					names:      []string{"--hybrid-fallback"},
-					takesValue: true,
-					build: func() cli.Flag {
-						return &cli.StringFlag{
-							Name:    "hybrid-fallback",
-							Usage:   localize.T("cli.flag.hybrid.fallback.usage"),
-							Value:   "map",
-							Sources: cli.EnvVars("HYBRID_FALLBACK"),
-						}
-					},
-				},
-			},
-			template: progressTemplate("progress.mode.hybrid",
-				stageTemplate("prepare", "progress.stage.prepare", 2),
-				stageTemplate("segments", "progress.stage.segments", 2),
-				stageTemplate("retrieval", "progress.stage.retrieval", 9),
-				stageTemplate("grounding", "progress.stage.grounding", 4),
-				stageTemplate("facts", "progress.stage.facts", 3),
-				stageTemplate("coverage", "progress.stage.coverage", 2),
-				stageTemplate("final", "progress.stage.final", 2),
-			),
-			bind:    bindHybridInvocation,
-			execute: executeHybridCommand,
-		},
-		{
 			name:        "tools",
 			usage:       localize.T("cli.command.tools.usage"),
 			description: toolsCommandDescription(),
+			flagSpecs:   append([]flagSpec{toolsRAGFlagSpec()}, ragFlagSpecs(false)...),
 			template: progressTemplate("progress.mode.tools",
 				stageTemplate("prepare", "progress.stage.prepare", 2),
+				stageTemplate("index", "progress.stage.index", 8),
 				stageTemplate("init", "progress.stage.init", 2),
-				stageTemplate("loop", "progress.stage.loop", 18),
+				stageTemplate("loop", "progress.stage.loop", 10),
 				stageTemplate("final", "progress.stage.final", 2),
 			),
 			bind:    bindToolsInvocation,
 			execute: executeToolsCommand,
+		},
+		{
+			name:        "hybrid",
+			usage:       localize.T("cli.command.hybrid.usage"),
+			description: hybridCommandDescription(),
+			flagSpecs:   ragFlagSpecs(false),
+			template: progressTemplate("progress.mode.hybrid",
+				stageTemplate("prepare", "progress.stage.prepare", 2),
+				stageTemplate("index", "progress.stage.index", 8),
+				stageTemplate("retrieval", "progress.stage.retrieval", 4),
+				stageTemplate("init", "progress.stage.init", 2),
+				stageTemplate("loop", "progress.stage.loop", 10),
+				stageTemplate("final", "progress.stage.final", 2),
+			),
+			bind:    bindHybridInvocation,
+			execute: executeHybridCommand,
 		},
 	}
 }
@@ -670,6 +454,28 @@ func bindRAGInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocation, 
 	return inv, nil
 }
 
+func bindToolsInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocation, error) {
+	inv, err := bindCommandBase(cmd, spec)
+	if err != nil {
+		return commandInvocation{}, err
+	}
+
+	inv.LLM.EmbeddingModel = normalizeEmbeddingModel(cmd.String("embedding-model"))
+	inv.payload = normalizeToolsOptions(toolsmode.Options{
+		EnableRAG: cmd.Bool("rag"),
+		RAG: rag.SearchOptions{
+			TopK:           cmd.Int("rag-top-k"),
+			ChunkSize:      cmd.Int("rag-chunk-size"),
+			ChunkOverlap:   cmd.Int("rag-chunk-overlap"),
+			IndexTTL:       cmd.Duration("rag-index-ttl"),
+			IndexDir:       cmd.String("rag-index-dir"),
+			Rerank:         cmd.String("rag-rerank"),
+			EmbeddingModel: inv.LLM.EmbeddingModel,
+		},
+	})
+	return inv, nil
+}
+
 func bindHybridInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocation, error) {
 	inv, err := bindCommandBase(cmd, spec)
 	if err != nil {
@@ -678,22 +484,17 @@ func bindHybridInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocatio
 
 	inv.LLM.EmbeddingModel = normalizeEmbeddingModel(cmd.String("embedding-model"))
 	inv.payload = normalizeHybridOptions(hybrid.Options{
-		TopK:           cmd.Int("hybrid-top-k"),
-		FinalK:         cmd.Int("hybrid-final-k"),
-		MapK:           cmd.Int("hybrid-map-k"),
-		ReadWindow:     cmd.Int("hybrid-read-window"),
-		Fallback:       cmd.String("hybrid-fallback"),
-		ChunkSize:      cmd.Int("rag-chunk-size"),
-		ChunkOverlap:   cmd.Int("rag-chunk-overlap"),
-		IndexTTL:       cmd.Duration("rag-index-ttl"),
-		IndexDir:       cmd.String("rag-index-dir"),
-		EmbeddingModel: inv.LLM.EmbeddingModel,
+		Search: rag.SearchOptions{
+			TopK:           cmd.Int("rag-top-k"),
+			ChunkSize:      cmd.Int("rag-chunk-size"),
+			ChunkOverlap:   cmd.Int("rag-chunk-overlap"),
+			IndexTTL:       cmd.Duration("rag-index-ttl"),
+			IndexDir:       cmd.String("rag-index-dir"),
+			Rerank:         cmd.String("rag-rerank"),
+			EmbeddingModel: inv.LLM.EmbeddingModel,
+		},
 	})
 	return inv, nil
-}
-
-func bindToolsInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocation, error) {
-	return bindCommandBase(cmd, spec)
 }
 
 func bindCommandBase(cmd *cli.Command, spec *commandSpec) (commandInvocation, error) {
@@ -740,11 +541,31 @@ func normalizeEmbeddingModel(value string) string {
 }
 
 func normalizeRAGOptions(options rag.Options) rag.Options {
-	options.TopK = maxInt(options.TopK, 1)
+	shared := normalizeRAGSearchOptions(rag.SearchOptions{
+		TopK:           options.TopK,
+		ChunkSize:      options.ChunkSize,
+		ChunkOverlap:   options.ChunkOverlap,
+		IndexTTL:       options.IndexTTL,
+		IndexDir:       options.IndexDir,
+		Rerank:         options.Rerank,
+		EmbeddingModel: options.EmbeddingModel,
+	})
+	options.TopK = shared.TopK
+	options.ChunkSize = shared.ChunkSize
+	options.ChunkOverlap = shared.ChunkOverlap
+	options.IndexTTL = shared.IndexTTL
+	options.IndexDir = shared.IndexDir
+	options.Rerank = shared.Rerank
+	options.EmbeddingModel = shared.EmbeddingModel
 	options.FinalK = maxInt(options.FinalK, 1)
 	if options.FinalK > options.TopK {
 		options.FinalK = options.TopK
 	}
+	return options
+}
+
+func normalizeRAGSearchOptions(options rag.SearchOptions) rag.SearchOptions {
+	options.TopK = maxInt(options.TopK, 1)
 	options.ChunkSize = maxInt(options.ChunkSize, 1000)
 	options.ChunkOverlap = maxInt(options.ChunkOverlap, 0)
 	if options.ChunkOverlap >= options.ChunkSize {
@@ -758,27 +579,13 @@ func normalizeRAGOptions(options rag.Options) rag.Options {
 	return options
 }
 
+func normalizeToolsOptions(options toolsmode.Options) toolsmode.Options {
+	options.RAG = normalizeRAGSearchOptions(options.RAG)
+	return options
+}
+
 func normalizeHybridOptions(options hybrid.Options) hybrid.Options {
-	options.TopK = maxInt(options.TopK, 1)
-	options.FinalK = maxInt(options.FinalK, 1)
-	if options.FinalK > options.TopK {
-		options.FinalK = options.TopK
-	}
-	options.MapK = maxInt(options.MapK, 1)
-	if options.MapK > options.TopK {
-		options.MapK = options.TopK
-	}
-	options.ReadWindow = maxInt(options.ReadWindow, 1)
-	options.ChunkSize = maxInt(options.ChunkSize, 1000)
-	options.ChunkOverlap = maxInt(options.ChunkOverlap, 0)
-	if options.ChunkOverlap >= options.ChunkSize {
-		options.ChunkOverlap = options.ChunkSize / 4
-	}
-	if strings.TrimSpace(options.IndexDir) == "" {
-		options.IndexDir = defaultRAGIndexDir()
-	}
-	options.EmbeddingModel = normalizeEmbeddingModel(options.EmbeddingModel)
-	options.Fallback = normalizeHybridFallback(options.Fallback)
+	options.Search = normalizeRAGSearchOptions(options.Search)
 	return options
 }
 
@@ -792,19 +599,6 @@ func normalizeRAGRerank(value string) string {
 		return "model"
 	default:
 		return "heuristic"
-	}
-}
-
-func normalizeHybridFallback(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "map":
-		return "map"
-	case "rag-only":
-		return "rag-only"
-	case "fail":
-		return "fail"
-	default:
-		return "map"
 	}
 }
 
@@ -833,4 +627,123 @@ func toolsCommandDescription() string {
 
 func hybridCommandDescription() string {
 	return strings.TrimSpace(localize.T("cli.description.hybrid"))
+}
+
+func toolsRAGFlagSpec() flagSpec {
+	return flagSpec{
+		names: []string{"--rag"},
+		build: func() cli.Flag {
+			return &cli.BoolFlag{
+				Name:    "rag",
+				Usage:   localize.T("cli.flag.tools.rag.usage"),
+				Sources: cli.EnvVars("TOOLS_RAG"),
+			}
+		},
+	}
+}
+
+func ragFlagSpecs(includeFinalK bool) []flagSpec {
+	specs := []flagSpec{
+		{
+			names:      []string{"--embedding-model"},
+			takesValue: true,
+			build: func() cli.Flag {
+				return &cli.StringFlag{
+					Name:    "embedding-model",
+					Usage:   localize.T("cli.flag.rag.embedding_model.usage"),
+					Value:   defaultLLMOptions().EmbeddingModel,
+					Sources: cli.EnvVars("EMBEDDING_MODEL"),
+				}
+			},
+		},
+		{
+			names:      []string{"--rag-top-k"},
+			takesValue: true,
+			build: func() cli.Flag {
+				return &cli.IntFlag{
+					Name:    "rag-top-k",
+					Usage:   localize.T("cli.flag.rag.top_k.usage"),
+					Value:   8,
+					Sources: cli.EnvVars("RAG_TOP_K"),
+				}
+			},
+		},
+	}
+	if includeFinalK {
+		specs = append(specs, flagSpec{
+			names:      []string{"--rag-final-k"},
+			takesValue: true,
+			build: func() cli.Flag {
+				return &cli.IntFlag{
+					Name:    "rag-final-k",
+					Usage:   localize.T("cli.flag.rag.final_k.usage"),
+					Value:   4,
+					Sources: cli.EnvVars("RAG_FINAL_K"),
+				}
+			},
+		})
+	}
+	specs = append(specs,
+		flagSpec{
+			names:      []string{"--rag-chunk-size"},
+			takesValue: true,
+			build: func() cli.Flag {
+				return &cli.IntFlag{
+					Name:    "rag-chunk-size",
+					Usage:   localize.T("cli.flag.rag.chunk_size.usage"),
+					Value:   1800,
+					Sources: cli.EnvVars("RAG_CHUNK_SIZE"),
+				}
+			},
+		},
+		flagSpec{
+			names:      []string{"--rag-chunk-overlap"},
+			takesValue: true,
+			build: func() cli.Flag {
+				return &cli.IntFlag{
+					Name:    "rag-chunk-overlap",
+					Usage:   localize.T("cli.flag.rag.chunk_overlap.usage"),
+					Value:   200,
+					Sources: cli.EnvVars("RAG_CHUNK_OVERLAP"),
+				}
+			},
+		},
+		flagSpec{
+			names:      []string{"--rag-index-ttl"},
+			takesValue: true,
+			build: func() cli.Flag {
+				return &cli.DurationFlag{
+					Name:    "rag-index-ttl",
+					Usage:   localize.T("cli.flag.rag.index_ttl.usage"),
+					Value:   24 * time.Hour,
+					Sources: cli.EnvVars("RAG_INDEX_TTL"),
+				}
+			},
+		},
+		flagSpec{
+			names:      []string{"--rag-index-dir"},
+			takesValue: true,
+			build: func() cli.Flag {
+				return &cli.StringFlag{
+					Name:    "rag-index-dir",
+					Usage:   localize.T("cli.flag.rag.index_dir.usage"),
+					Value:   defaultRAGIndexDir(),
+					Sources: cli.EnvVars("RAG_INDEX_DIR"),
+				}
+			},
+		},
+		flagSpec{
+			names:      []string{"--rag-rerank"},
+			takesValue: true,
+			build: func() cli.Flag {
+				return &cli.StringFlag{
+					Name:    "rag-rerank",
+					Usage:   localize.T("cli.flag.rag.rerank.usage"),
+					Value:   "heuristic",
+					Sources: cli.EnvVars("RAG_RERANK"),
+				}
+			},
+		},
+	)
+	return specs
 }

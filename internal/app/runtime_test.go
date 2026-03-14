@@ -13,6 +13,7 @@ import (
 	"github.com/borro/ragcli/internal/llm"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
+	toolsmode "github.com/borro/ragcli/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -139,7 +140,7 @@ func TestRuntimeExecuteToolsDoesNotCreateEmbedder(t *testing.T) {
 
 	err := runtime.execute(context.Background(), testInvocation("tools", CommonOptions{
 		Prompt: "Что в файле?",
-	}, defaultLLMOptions(), nil))
+	}, defaultLLMOptions(), toolsmode.Options{}))
 	if err != nil {
 		t.Fatalf("runtime.execute(tools) error = %v", err)
 	}
@@ -148,6 +149,43 @@ func TestRuntimeExecuteToolsDoesNotCreateEmbedder(t *testing.T) {
 	}
 	if got := stdout.String(); got != "Готовый ответ\n" {
 		t.Fatalf("stdout = %q, want tools answer", got)
+	}
+}
+
+func TestRuntimeExecuteToolsWithRAGCreatesEmbedder(t *testing.T) {
+	runtime, _, _ := newTestRuntime("retry policy enabled\n")
+	chat := &runtimeChatClient{}
+	wantErr := errors.New("embedder sentinel")
+	embedderCalls := 0
+	runtime.newChatClient = func(llm.Config) (llm.ChatAutoContextRequester, error) { return chat, nil }
+	runtime.newEmbedder = func(llm.Config) (llm.EmbeddingRequester, error) {
+		embedderCalls++
+		return nil, wantErr
+	}
+
+	err := runtime.execute(context.Background(), testInvocation("tools", CommonOptions{
+		Prompt: "Что в файле?",
+	}, func() LLMOptions {
+		opts := defaultLLMOptions()
+		opts.EmbeddingModel = "embed"
+		return opts
+	}(), toolsmode.Options{
+		EnableRAG: true,
+		RAG: rag.SearchOptions{
+			TopK:           8,
+			ChunkSize:      1000,
+			ChunkOverlap:   200,
+			IndexTTL:       time.Hour,
+			IndexDir:       t.TempDir(),
+			Rerank:         "heuristic",
+			EmbeddingModel: "embed",
+		},
+	}))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runtime.execute(tools --rag) error = %v, want embedder error", err)
+	}
+	if embedderCalls != 1 {
+		t.Fatalf("embedderCalls = %d, want 1", embedderCalls)
 	}
 }
 
@@ -194,7 +232,9 @@ func TestRuntimeExecuteHybridCreatesEmbedder(t *testing.T) {
 		opts := defaultLLMOptions()
 		opts.EmbeddingModel = "embed"
 		return opts
-	}(), hybrid.Options{}))
+	}(), hybrid.Options{
+		Search: rag.SearchOptions{},
+	}))
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runtime.execute(hybrid) error = %v, want embedder error", err)
 	}

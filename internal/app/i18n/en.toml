@@ -2,7 +2,7 @@
 usage = "print the version"
 
 [cli.root]
-usage = "Work with local text through map, RAG, and tool-based retrieval"
+usage = "Work with local text through map, RAG, tool-based retrieval, and hybrid verification"
 
 [cli.command.map]
 usage = "Process large text in chunks with map-reduce"
@@ -10,11 +10,11 @@ usage = "Process large text in chunks with map-reduce"
 [cli.command.rag]
 usage = "Build a local retrieval index and answer from evidence chunks"
 
-[cli.command.hybrid]
-usage = "Combine retrieval, local reading, and map aggregation"
-
 [cli.command.tools]
 usage = "Give the model tools for targeted file investigation"
+
+[cli.command.hybrid]
+usage = "Seed semantic retrieval, then verify and refine through tools"
 
 [cli.command.version]
 usage = "Print ragcli version"
@@ -49,35 +49,8 @@ usage = "Directory for the local index."
 [cli.flag.rag.rerank]
 usage = "Rerank strategy: heuristic, off, model."
 
-[cli.flag.hybrid.embedding_model]
-usage = "Embedding model for semantic retrieval."
-
-[cli.flag.hybrid.chunk_size]
-usage = "Target meso-segment size for semantic retrieval."
-
-[cli.flag.hybrid.chunk_overlap]
-usage = "Overlap between neighboring meso-segments."
-
-[cli.flag.hybrid.index_ttl]
-usage = "Time to live for the local semantic index."
-
-[cli.flag.hybrid.index_dir]
-usage = "Directory for the local semantic index."
-
-[cli.flag.hybrid.top_k]
-usage = "How many fusion candidates to keep after retrieval."
-
-[cli.flag.hybrid.final_k]
-usage = "How many regions to keep for final synthesis."
-
-[cli.flag.hybrid.map_k]
-usage = "How many regions to send through map-style fact extraction."
-
-[cli.flag.hybrid.read_window]
-usage = "How many lines to read around a strong match."
-
-[cli.flag.hybrid.fallback]
-usage = "Fallback when retrieval is weak or embeddings are unavailable: map, rag-only, fail."
+[cli.flag.tools.rag]
+usage = "Enable the semantic retrieval tool search_rag with pre-indexing of the input."
 
 [cli.flag.path]
 usage = "Path to the input file or directory. If omitted, the command reads stdin."
@@ -95,7 +68,7 @@ usage = "Explicit proxy URL for all LLM HTTP requests."
 usage = "Disable all proxies for ragcli requests, including environment-based proxies."
 
 [cli.flag.model]
-usage = "Chat model for map/tools/rag answer generation."
+usage = "Chat model for map/tools/rag/hybrid answer generation."
 
 [cli.flag.retry]
 usage = "Retry count for the LLM HTTP client."
@@ -131,23 +104,22 @@ Examples:
 
 """
 tools = """
-Gives the model list_files, search_file, read_lines, and read_around tools so it can investigate the file or directory on its own.
+Gives the model list_files, search_file, read_lines, and read_around tools so it can investigate the file or directory on its own. With `--rag`, it also enables the semantic retrieval tool search_rag and prebuilds a local index.
 
 Examples:
   ragcli tools --path file.txt "What are the key points in the architecture section?"
+  ragcli tools --rag --path file.txt --embedding-model text-embedding-3-small "What does it say about the retry policy?"
   ragcli tools --path app.log --debug "Where do the logs show the causes of 5xx?"
 
 """
 hybrid = """
-Combines lexical and semantic retrieval, reads exact lines locally, and aggregates facts only from the selected regions.
+Preloads an initial search_rag result for the original question, then lets the model verify, refine, and cross-check the answer through file tools and repeated semantic retrieval.
 
 Examples:
-  ragcli hybrid --path file.txt "What does the document say about retry policy and limitations?"
-  ragcli hybrid --path app.log --hybrid-fallback rag-only "Where is the 5xx root cause and what happens nearby?"
-  cat handbook.md | ragcli hybrid --hybrid-top-k 10 --hybrid-map-k 5 "What are the release process and rollback steps?"
+  ragcli hybrid --path file.txt --embedding-model text-embedding-3-small "What does it say about the retry policy?"
+  ragcli hybrid --path app.log --rag-top-k 10 "Which lines explain the 5xx spikes?"
 
 """
-
 [error.prompt]
 required = "missing required argument: prompt"
 
@@ -164,8 +136,8 @@ render_markdown = "render markdown: {{.Error}}"
 [progress.mode]
 map = "map"
 tools = "tools"
-hybrid = "hybrid"
 rag = "rag"
+hybrid = "hybrid"
 
 [progress.detail.prepare]
 open_input = "opening input data"

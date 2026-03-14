@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Пакет реализует retrieval-режим по локальному индексу: строит или переиспользует embeddings index, ищет релевантные чанки и синтезирует ответ с `Sources:`.
+Пакет реализует retrieval-режим по локальному индексу: строит или переиспользует embeddings index, ищет релевантные чанки и синтезирует ответ с `Sources:`. Тот же пакет отдаёт переиспользуемые helper-ы для `hybrid` и `tools --rag`.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
@@ -17,7 +17,10 @@
 ## Ключевые entrypoints/types
 
 - `Options`
+- `SearchOptions`
+- `PreparedSearch`
 - `Run(ctx, chat, embedder, source, opts, question, plan)`
+- `PrepareSearch(ctx, embedder, source, opts, meter)`
 - `Chunk`
 - `Index`
 - `Manifest` alias на `retrieval.Manifest`
@@ -27,6 +30,8 @@
 Входящие:
 
 - `internal/app`
+- `internal/aitools/rag`
+- `internal/hybrid`
 
 Исходящие:
 
@@ -46,9 +51,16 @@
 6. Лучшие чанки попадают в финальный prompt.
 7. Ответ возвращается вместе с секцией `Sources:`.
 
+Shared helper path для `hybrid` и `tools --rag`:
+
+1. `PrepareSearch` заранее строит или загружает индекс.
+2. `PreparedSearch.Search(...)` выполняет semantic retrieval по тому же индексу.
+3. Concrete tool сам решает, как сериализовать hits в JSON и как ими пользоваться в orchestration loop.
+
 ## Инварианты и ошибки
 
 - `rag` отвечает только по найденным evidence chunks.
+- Shared helper-ы должны делить с `Run` те же chunking, hash, TTL и scoring semantics.
 - Для directory input line numbers и `Sources:` остаются file-local и используют relative paths.
 - При слабом retrieval возвращается honest insufficient answer, а не произвольная галлюцинация.
 - Индексные файлы должны быть приватными и атомарно опубликованными.

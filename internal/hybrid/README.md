@@ -2,30 +2,21 @@
 
 ## TL;DR
 
-Пакет реализует режим `hybrid`: profile document, segment, выполнить lexical+semantic retrieval, дочитать контекст, извлечь факты, проверить coverage и при необходимости fallback-нуться в `map`.
+Пакет реализует режим `hybrid`: сначала он предзагружает результат `search_rag` по исходному вопросу, затем передаёт управление общему tool-calling loop, чтобы модель проверила релевантность, дочитала локальный контекст и при необходимости повторила retrieval.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
 ## Зона ответственности
 
-- profiling документа или каждого файла корпуса как `markdown` / `logs` / `plain` / `unknown`;
-- сегментация документа или нескольких файлов в регионы;
-- lexical и semantic retrieval;
-- fusion hits в regions;
-- line-grounding и дочитывание вокруг лучших мест;
-- map-style extraction фактов;
-- coverage check и targeted reread;
-- fallback semantics.
+- orchestration нового CLI-режима `hybrid`;
+- подготовка seeded `search_rag` до первого LLM turn;
+- добавление hybrid-specific prompt instructions поверх общего tool session;
+- финализация ответа с `Sources:` по всем подтверждённым evidence results сессии.
 
 ## Ключевые entrypoints/types
 
 - `Options`
-- `Run(ctx, chat, embedder, source, opts, question, plan)`
-- `DocumentProfile`
-- `Segment`
-- `Region`
-- `EvidenceBlock`
-- `CoverageReport`
+- `Run(ctx, chat, embedder, source, opts, prompt, plan)`
 
 ## Входящие/исходящие зависимости
 
@@ -35,45 +26,22 @@
 
 Исходящие:
 
-- `internal/input`
-- `internal/llm`
+- `internal/tools`
+- `internal/rag`
+- `internal/aitools/rag`
 - `internal/retrieval`
-- `internal/tools/filetools`
-- `internal/map`
-- `internal/verbose`
 - `internal/localize`
 
 ## Основной поток
 
-1. Single-file input открывается через `input.SnapshotSource.Open()` и спулится во временный snapshot; directory input читается по списку файлов из `input.FileBackedSource.BackingFiles()`.
-2. Документ или corpus сегментируется в meso-segments с file-aware metadata.
-3. Выполняются lexical и semantic retrieval.
-4. Хиты сливаются в regions и расширяются.
-5. По лучшим regions дочитывается локальный контекст.
-6. LLM извлекает факты по top regions.
-7. Coverage check определяет, хватает ли evidence и нет ли конфликтов.
-8. При необходимости строится follow-up query и запускается targeted reread.
-9. Финальный ответ синтезируется по фактам и evidence либо выполняется fallback.
+1. Пакет подготавливает tools session с включённым `search_rag`.
+2. До первого model turn выполняется synthetic `search_rag` по исходному вопросу.
+3. Seeded tool call и его JSON-результат добавляются в историю как assistant/tool pair.
+4. Общий orchestration loop из `internal/tools` продолжает исследование через file tools и повторные `search_rag`.
+5. Финальный текст дополняется секцией `Sources:` по всем успешным evidence results, показанным модели.
 
-## Инварианты и ошибки
+## Инварианты
 
-- Это единственный режим, который одновременно использует retrieval, line-based reread и map-style extraction.
-- Для directory input регионы, evidence и citations не переходят через границы файлов.
-- Fallback управляется только нормализованным `Options.Fallback`.
-- Пустой input и отсутствие сегментов обрабатываются как корректные user-facing ответы.
-- `hybrid` зависит от `map` только как от fallback pipeline, а не как от обязательной фазы.
-
-## Что подтверждают тесты
-
-- document profiling и segmentation для markdown/plain/logs;
-- fallback на `map` при ошибках embeddings;
-- schema/TTL validation индексного кэша;
-- targeted reread и coverage-driven follow-up;
-- наличие секции `Sources:` в финальном ответе.
-
-## Куда вносить изменения
-
-- Profiling/segmentation/fusion: `hybrid.go`.
-- Общие retrieval инварианты: `internal/retrieval`.
-- Если меняется fallback semantics, обязательно обновляйте `doc/requirements.md`.
-- Локализованные prompts, progress и user-facing ответы режима: `i18n/{en,ru}.toml`.
+- режим не останавливается только из-за слабого стартового retrieval; после seed всегда может идти tool loop;
+- `tools --rag` остаётся отдельным режимом и не меняет своё поведение;
+- seed `search_rag` выполняется тем же session state, что потом используется в общем loop, чтобы сохранить cache/progress semantics.
