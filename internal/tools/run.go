@@ -323,8 +323,6 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 		)
 		if len(choice.Message.ToolCalls) > 0 {
 			turnMeter.Note(localize.T("progress.tools.calls_requested", localize.Data{"Count": len(choice.Message.ToolCalls)}))
-		} else {
-			finalMeter.Start(localize.T("progress.tools.text_answer", localize.Data{"Turn": turn}))
 		}
 
 		if s.warnOnFirstDirectAnswer && turn == 1 && s.readerPath != "" && len(choice.Message.ToolCalls) == 0 && strings.TrimSpace(choice.Message.Content) != "" {
@@ -396,6 +394,7 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 			logStop("empty_final_answer", turn)
 			return SessionResult{}, fmt.Errorf("received final response without content")
 		}
+		finalMeter.Start(localize.T("progress.tools.text_answer", localize.Data{"Turn": turn}))
 		finalMeter.Done(localize.T("progress.tools.final_done", localize.Data{"Turn": turn}))
 		logStop("final_answer", turn)
 		return SessionResult{
@@ -460,8 +459,8 @@ func newToolLoopState(ctx context.Context, source input.FileBackedSource, embedd
 	}, nil
 }
 
-func summarizeToolMeta(name string, meta toolExecutionMeta, index int, total int) string {
-	base := fmt.Sprintf("%s (%d/%d)", strings.TrimSpace(name), index, total)
+func summarizeToolMeta(label string, meta toolExecutionMeta, index int, total int) string {
+	base := fmt.Sprintf("%s (%d/%d)", normalizeToolCallLabel(label), index, total)
 	switch {
 	case meta.NovelLines > 0:
 		return localize.T("progress.tools.meta_novel", localize.Data{"Base": base, "Count": meta.NovelLines})
@@ -482,6 +481,8 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 	turnAllDuplicates := len(toolCalls) > 0
 
 	for index, call := range toolCalls {
+		callDesc := s.registry.DescribeCall(call)
+
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -497,7 +498,9 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 			}
 			results = append(results, toolErr)
 			turnAllDuplicates = false
-			meter.Report(index+1, len(toolCalls), fmt.Sprintf("%s (%d/%d): ошибка", strings.TrimSpace(call.Function.Name), index+1, len(toolCalls)))
+			meter.Report(index+1, len(toolCalls), localize.T("progress.tools.meta_error", localize.Data{
+				"Base": fmt.Sprintf("%s (%d/%d)", normalizeToolCallLabel(callDesc.VerboseLabel), index+1, len(toolCalls)),
+			}))
 			continue
 		}
 
@@ -508,7 +511,7 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 			turnAllDuplicates = false
 		}
 
-		meter.Report(index+1, len(toolCalls), summarizeToolMeta(call.Function.Name, meta, index+1, len(toolCalls)))
+		meter.Report(index+1, len(toolCalls), summarizeToolMeta(callDesc.VerboseLabel, meta, index+1, len(toolCalls)))
 		results = append(results, result)
 	}
 
@@ -542,6 +545,14 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 	}
 
 	return results, nil
+}
+
+func normalizeToolCallLabel(label string) string {
+	trimmed := strings.TrimSpace(label)
+	if trimmed == "" {
+		return "tool"
+	}
+	return trimmed
 }
 
 func (s *toolLoopState) executeToolCall(ctx context.Context, call openai.ToolCall) (string, toolExecutionMeta, error) {

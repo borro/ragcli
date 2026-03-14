@@ -43,6 +43,13 @@ func newBaseTool(reader LineReader) baseTool {
 	}
 }
 
+func (b baseTool) DescribeCall(call openai.ToolCall) aitools.CallDescription {
+	return aitools.CallDescription{
+		Arguments:    aitools.CloneSummary(SummarizeToolArguments(call)),
+		VerboseLabel: compactToolCallLabel(call),
+	}
+}
+
 func canonicalToolSignature(call openai.ToolCall) (string, error) {
 	switch call.Function.Name {
 	case "list_files":

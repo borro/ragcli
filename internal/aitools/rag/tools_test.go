@@ -150,6 +150,27 @@ func TestSearchRAGExecuteRejectsUnknownPathAndCachesDuplicates(t *testing.T) {
 	}
 }
 
+func TestSearchRAGDescribeCall_UsesCompactVerboseLabel(t *testing.T) {
+	tool := newPreparedTool(t)
+
+	desc := tool.DescribeCall(toolCall("1", "search_rag", `{"query":"retry","path":"c.txt","limit":1,"offset":2}`))
+	if desc.VerboseLabel != `search_rag(query="retry", path="c.txt", limit=1, offset=2)` {
+		t.Fatalf("VerboseLabel = %q, want compact label", desc.VerboseLabel)
+	}
+	if got := desc.Arguments["query"]; got != "retry" {
+		t.Fatalf("query = %#v, want retry", got)
+	}
+	if got := desc.Arguments["path"]; got != "c.txt" {
+		t.Fatalf("path = %#v, want c.txt", got)
+	}
+	if got := desc.Arguments["limit"]; got != 1 {
+		t.Fatalf("limit = %#v, want 1", got)
+	}
+	if got := desc.Arguments["offset"]; got != 2 {
+		t.Fatalf("offset = %#v, want 2", got)
+	}
+}
+
 func TestSearchRAGExecuteReportsEmbedderErrors(t *testing.T) {
 	searcher, err := preparedSearch(t, embeddingRequesterFunc(func(_ context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
 		vectors := make([][]float32, 0, len(inputs))

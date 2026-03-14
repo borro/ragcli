@@ -13,6 +13,7 @@ meta_cached = "{{.Base}}: using cached result"
 meta_seen = "{{.Base}}: no new context, these lines were already found earlier"
 meta_duplicate = "{{.Base}}: repeated call without new context"
 meta_done = "{{.Base}}: result received"
+meta_error = "{{.Base}}: error"
 
 [tools.prompt]
 system = """

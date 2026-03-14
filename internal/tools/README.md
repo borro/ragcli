@@ -50,9 +50,10 @@
 3. `Session.Run` в каждом turn отправляет chat request с доступными инструментами.
 4. Запрошенные tool calls выполняются локально через registry из `aitools`.
 5. Результаты сериализуются в JSON и возвращаются модели как `role=tool`.
-6. Loop отслеживает cache hits, duplicate calls, отсутствие прогресса и накапливает evidence citations по успешным tool results.
-7. При зацикливании применяются stop/retry/forced-finalization guards.
-8. `tools.Run` возвращает финальный текстовый ответ; `internal/hybrid` использует те же citations для `Sources:`.
+6. Verbose progress использует compact label вызова (`search_file(query="...")` и т.п.), а debug-логи получают нормализованный summary аргументов из того же shared описания вызова.
+7. Loop отслеживает cache hits, duplicate calls, отсутствие прогресса и накапливает evidence citations по успешным tool results.
+8. При зацикливании применяются stop/retry/forced-finalization guards.
+9. `tools.Run` возвращает финальный текстовый ответ; `internal/hybrid` использует те же citations для `Sources:`.
 
 ## Инварианты и ошибки
 
@@ -62,6 +63,7 @@
 - Для directory input `search_file` может искать по всему corpus, а `read_lines`/`read_around` требуют `path`.
 - При `--rag` semantic retrieval идёт через `search_rag`, но финальный ответ всё равно собирает orchestration loop, а не сам tool.
 - Повторные вызовы тех же инструментов не должны бесконечно расширять context без новых строк.
+- Verbose status для tool calls должен показывать ключевые параметры вызова, но скрывать пустые и дефолтные значения.
 - Tracking прогресса должен различать одинаковые номера строк в разных файлах.
 - Citation tracking должен собирать evidence из `search_rag`, `search_file`, `read_lines` и `read_around`, но не из `list_files`.
 - Пустой финальный ответ после лимитов превращается в orchestration error.

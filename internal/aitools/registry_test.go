@@ -2,6 +2,7 @@ package aitools
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -23,6 +24,15 @@ func (t *fakeTool) ToolDefinition() openai.Tool {
 		Function: &openai.FunctionDefinition{
 			Name: t.name,
 		},
+	}
+}
+
+func (t *fakeTool) DescribeCall(call openai.ToolCall) CallDescription {
+	return CallDescription{
+		Arguments: map[string]any{
+			"raw_arguments": call.Function.Arguments,
+		},
+		VerboseLabel: fmt.Sprintf("%s(args=%q)", t.name, call.Function.Arguments),
 	}
 }
 
@@ -119,5 +129,25 @@ func TestRegistry_UnknownToolReturnsToolError(t *testing.T) {
 	}
 	if got := AsToolError(err).Code; got != "unknown_tool" {
 		t.Fatalf("Code = %q, want unknown_tool", got)
+	}
+}
+
+func TestRegistry_DescribeCallFallsBackForUnknownTool(t *testing.T) {
+	registry := NewRegistry(&fakeTool{name: "search_file"})
+
+	desc := registry.DescribeCall(openai.ToolCall{
+		ID:   "1",
+		Type: "function",
+		Function: openai.FunctionCall{
+			Name:      "boom",
+			Arguments: `{"query":"alpha"}`,
+		},
+	})
+
+	if desc.VerboseLabel != `boom(args="{\"query\":\"alpha\"}")` {
+		t.Fatalf("VerboseLabel = %q, want fallback with raw args", desc.VerboseLabel)
+	}
+	if got := desc.Arguments["raw_arguments"]; got != `{"query":"alpha"}` {
+		t.Fatalf("raw_arguments = %#v, want original raw arguments", got)
 	}
 }

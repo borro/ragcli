@@ -374,6 +374,79 @@ func TestRunTools_VerboseEmitsSingleFinalCompletionLine(t *testing.T) {
 	}
 }
 
+func TestRunTools_VerboseIncludesCompactToolCallLabel(t *testing.T) {
+	setRussianLocale(t)
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-1", "search_file", `{"query":"alpha"}`),
+			})),
+			chatResponse(message("assistant", "alpha найдена", nil)),
+		},
+	}
+	var stderr bytes.Buffer
+
+	result, err := runTools(context.Background(), client, writeTempFile(t, "alpha\nbeta\n"), "Где alpha?", newVerbosePlan(&stderr, false))
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "alpha найдена" {
+		t.Fatalf("RunTools() result = %q, want final answer", result)
+	}
+
+	output := stderr.String()
+	if !strings.Contains(output, `search_file(query="alpha") (1/1): получил 1 новых строк`) {
+		t.Fatalf("stderr = %q, want compact tool label in verbose progress", output)
+	}
+}
+
+func TestRunTools_VerboseIncludesParametersOnToolError(t *testing.T) {
+	setRussianLocale(t)
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("bad-call", "read_lines", `{"start_line":"bad","end_line":2}`),
+			})),
+			chatResponse(message("assistant", "Ошибка аргументов замечена", nil)),
+		},
+	}
+	var stderr bytes.Buffer
+
+	_, err := runTools(context.Background(), client, writeTempFile(t, "one\ntwo\n"), "test", newVerbosePlan(&stderr, false))
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+
+	output := stderr.String()
+	if !strings.Contains(output, `read_lines(args=`) {
+		t.Fatalf("stderr = %q, want tool label with raw arguments on error", output)
+	}
+	if !strings.Contains(output, ": ошибка") {
+		t.Fatalf("stderr = %q, want localized error status", output)
+	}
+}
+
+func TestRunTools_DebugReporterKeepsVerboseSilent(t *testing.T) {
+	setRussianLocale(t)
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "Готовый ответ", nil)),
+		},
+	}
+	var stderr bytes.Buffer
+
+	result, err := runTools(context.Background(), client, "/tmp/file.txt", "Что в файле?", newVerbosePlan(&stderr, true))
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "Готовый ответ" {
+		t.Fatalf("RunTools() result = %q, want %q", result, "Готовый ответ")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no verbose output when debug reporter is requested", stderr.String())
+	}
+}
+
 func TestRunTools_ProgressFromPlanDoesNotRequirePrepareStage(t *testing.T) {
 	setRussianLocale(t)
 	client := &scriptedRequester{
@@ -432,6 +505,38 @@ func TestRunTools_EmptyFinalAnswerRetriesWithoutTools(t *testing.T) {
 	lastMessage := client.requests[1].Messages[len(client.requests[1].Messages)-1]
 	if !strings.Contains(lastMessage.Content, "Сформулируй финальный ответ") {
 		t.Fatalf("retry message = %q, want fallback instruction", lastMessage.Content)
+	}
+}
+
+func TestRunTools_EmptyFinalAnswerRetryKeepsProgressMonotonic(t *testing.T) {
+	setRussianLocale(t)
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "", nil)),
+			chatResponse(message("assistant", "Итоговый ответ после retry", nil)),
+		},
+	}
+
+	template := newToolsPlan(nil)
+	recorder := testutil.NewProgressRecorder(template.Total())
+	plan := newToolsPlan(recorder)
+
+	result, err := runTools(context.Background(), client, "/tmp/file.txt", "Что в файле?", plan)
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "Итоговый ответ после retry" {
+		t.Fatalf("RunTools() result = %q, want retry answer", result)
+	}
+
+	_, currents, _ := recorder.Snapshot()
+	if len(currents) == 0 {
+		t.Fatal("progress recorder saw no updates")
+	}
+	for i := 1; i < len(currents); i++ {
+		if currents[i] < currents[i-1] {
+			t.Fatalf("progress rolled back at step %d: %v", i, currents)
+		}
 	}
 }
 
@@ -1117,5 +1222,18 @@ func planWithoutPrepare(reporter verbose.Reporter) *verbose.Plan {
 		verbose.StageDef{Key: "init", Label: "init", Slots: 2},
 		verbose.StageDef{Key: "loop", Label: "loop", Slots: 18},
 		verbose.StageDef{Key: "final", Label: "final", Slots: 2},
+	)
+}
+
+func newVerbosePlan(stderr *bytes.Buffer, debug bool) *verbose.Plan {
+	return newToolsPlan(verbose.New(stderr, true, debug))
+}
+
+func newToolsPlan(reporter verbose.Reporter) *verbose.Plan {
+	return verbose.NewPlan(reporter, "tools",
+		verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+		verbose.StageDef{Key: "init", Label: "инициализация", Slots: 2},
+		verbose.StageDef{Key: "loop", Label: "LLM turn", Slots: 18},
+		verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
 	)
 }

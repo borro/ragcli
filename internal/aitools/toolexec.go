@@ -22,19 +22,21 @@ func ExecuteCachedTool(ctx context.Context, call openai.ToolCall, spec CachedExe
 	default:
 	}
 
+	args := maybeSummarizeArguments(spec.SummarizeArguments, call)
+
 	if call.Function.Name != spec.Name {
 		err := NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
 			"tool": call.Function.Name,
 		})
-		LogToolCallError(call, 0, err)
+		LogToolCallError(call, 0, args, err)
 		return ExecuteResult{}, err
 	}
 
-	LogToolCallStarted(call, maybeSummarizeArguments(spec.SummarizeArguments, call))
+	LogToolCallStarted(call, args)
 
 	signature, err := spec.CanonicalSignature(call)
 	if err != nil {
-		LogToolCallError(call, 0, err)
+		LogToolCallError(call, 0, args, err)
 		return ExecuteResult{}, err
 	}
 
@@ -56,7 +58,7 @@ func ExecuteCachedTool(ctx context.Context, call openai.ToolCall, spec CachedExe
 	startedAt := time.Now()
 	result, err := spec.Execute(ctx, call)
 	if err != nil {
-		LogToolCallError(call, time.Since(startedAt), err)
+		LogToolCallError(call, time.Since(startedAt), args, err)
 		return ExecuteResult{}, err
 	}
 

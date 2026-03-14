@@ -763,6 +763,74 @@ func TestSummarizeToolArguments_OtherToolsAndErrors(t *testing.T) {
 	}
 }
 
+func TestRegistryDescribeCall_UsesCompactVerboseLabel(t *testing.T) {
+	registry := aitools.NewRegistry(NewTools(nil, ToolOptions{MultiFile: true})...)
+
+	tests := []struct {
+		name      string
+		call      openai.ToolCall
+		wantLabel string
+		wantArgs  map[string]any
+	}{
+		{
+			name:      "list_files hides default offset",
+			call:      toolCall("1", "list_files", `{"limit":500,"offset":0}`),
+			wantLabel: "list_files(limit=200)",
+			wantArgs: map[string]any{
+				"limit":  maxListFilesLimit,
+				"offset": 0,
+			},
+		},
+		{
+			name:      "search_file keeps key params",
+			call:      toolCall("2", "search_file", `{"query":"alpha","path":"a.go","mode":"regex","offset":2}`),
+			wantLabel: `search_file(query="alpha", path="a.go", mode="regex", offset=2)`,
+			wantArgs: map[string]any{
+				"query":  "alpha",
+				"path":   "a.go",
+				"mode":   "regex",
+				"limit":  defaultSearchLimit,
+				"offset": 2,
+			},
+		},
+		{
+			name:      "read_lines uses range",
+			call:      toolCall("3", "read_lines", `{"path":"a.go","start_line":3,"end_line":7}`),
+			wantLabel: `read_lines(path="a.go", start_line=3, end_line=7)`,
+			wantArgs: map[string]any{
+				"path":       "a.go",
+				"start_line": 3,
+				"end_line":   7,
+			},
+		},
+		{
+			name:      "read_around hides default before",
+			call:      toolCall("4", "read_around", `{"path":"a.go","line":10,"before":3,"after":1}`),
+			wantLabel: `read_around(path="a.go", line=10, after=1)`,
+			wantArgs: map[string]any{
+				"path":   "a.go",
+				"line":   10,
+				"before": 3,
+				"after":  1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc := registry.DescribeCall(tt.call)
+			if desc.VerboseLabel != tt.wantLabel {
+				t.Fatalf("VerboseLabel = %q, want %q", desc.VerboseLabel, tt.wantLabel)
+			}
+			for key, want := range tt.wantArgs {
+				if got := desc.Arguments[key]; got != want {
+					t.Fatalf("Arguments[%q] = %#v, want %#v", key, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestSummarizeToolResult_SearchPagination(t *testing.T) {
 	raw, err := MarshalJSON(SearchResult{
 		Mode:         "literal",
@@ -1118,13 +1186,25 @@ func TestToolErrorHelpersAndLogging(t *testing.T) {
 	call := toolCall("1", "search_file", `{"query":"alpha"}`)
 	LogToolCallStarted(call, map[string]any{"query": "alpha"})
 	LogToolCallFinished(call, 1500000000, "ok", map[string]any{"match_count": 1})
-	LogToolCallError(call, 200000000, toolErr)
+	LogToolCallError(call, 200000000, map[string]any{"query": "alpha"}, toolErr)
 
-	logs := buf.String()
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("log lines = %d, want 3\nlogs=%q", len(lines), buf.String())
+	}
 	for _, want := range []string{"tool call started", "tool call finished", "tool call failed", "tool_name=search_file"} {
-		if !strings.Contains(logs, want) {
-			t.Fatalf("logs = %q, want substring %q", logs, want)
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("logs = %q, want substring %q", buf.String(), want)
 		}
+	}
+	if !strings.Contains(lines[0], "arguments.query=alpha") {
+		t.Fatalf("started log = %q, want structured arguments", lines[0])
+	}
+	if strings.Contains(lines[1], "arguments.query=alpha") {
+		t.Fatalf("finished log = %q, want no duplicated arguments", lines[1])
+	}
+	if !strings.Contains(lines[2], "arguments.query=alpha") {
+		t.Fatalf("failed log = %q, want structured arguments", lines[2])
 	}
 }
 

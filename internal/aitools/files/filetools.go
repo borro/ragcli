@@ -923,8 +923,8 @@ func LogToolCallFinished(call openai.ToolCall, duration time.Duration, status st
 	aitools.LogToolCallFinished(call, duration, status, summary)
 }
 
-func LogToolCallError(call openai.ToolCall, duration time.Duration, err error) {
-	aitools.LogToolCallError(call, duration, err)
+func LogToolCallError(call openai.ToolCall, duration time.Duration, args map[string]any, err error) {
+	aitools.LogToolCallError(call, duration, args, err)
 }
 
 func SummarizeToolArguments(call openai.ToolCall) map[string]any {
@@ -1023,6 +1023,157 @@ func SummarizeToolArguments(call openai.ToolCall) map[string]any {
 			"raw_arguments": call.Function.Arguments,
 		}
 	}
+}
+
+func compactToolCallLabel(call openai.ToolCall) string {
+	label := strings.TrimSpace(call.Function.Name)
+	if label == "" {
+		label = "tool"
+	}
+
+	raw := strings.TrimSpace(call.Function.Arguments)
+	if raw == "" {
+		return label
+	}
+
+	switch call.Function.Name {
+	case "list_files":
+		var params struct {
+			Limit  int `json:"limit"`
+			Offset int `json:"offset"`
+		}
+		if err := json.Unmarshal([]byte(raw), &params); err != nil {
+			return compactRawToolCallLabel(label, raw)
+		}
+		normalized := NormalizeListFilesParams(ListFilesParams{
+			Limit:  params.Limit,
+			Offset: params.Offset,
+		})
+
+		parts := make([]string, 0, 2)
+		if normalized.Limit != defaultListFilesLimit {
+			parts = append(parts, formatIntToolParam("limit", normalized.Limit))
+		}
+		if normalized.Offset != 0 {
+			parts = append(parts, formatIntToolParam("offset", normalized.Offset))
+		}
+		return formatToolCallLabel(label, parts)
+	case "search_file":
+		var params struct {
+			Path         string `json:"path"`
+			Query        string `json:"query"`
+			Mode         string `json:"mode"`
+			Limit        int    `json:"limit"`
+			Offset       int    `json:"offset"`
+			ContextLines int    `json:"context_lines"`
+		}
+		if err := json.Unmarshal([]byte(raw), &params); err != nil {
+			return compactRawToolCallLabel(label, raw)
+		}
+		normalized := NormalizeSearchParams(SearchParams{
+			Path:         params.Path,
+			Query:        params.Query,
+			Mode:         params.Mode,
+			Limit:        params.Limit,
+			Offset:       params.Offset,
+			ContextLines: params.ContextLines,
+		})
+
+		parts := make([]string, 0, 6)
+		if normalized.Query != "" {
+			parts = append(parts, formatStringToolParam("query", normalized.Query))
+		}
+		if normalized.Path != "" {
+			parts = append(parts, formatStringToolParam("path", normalized.Path))
+		}
+		if normalized.Mode != "auto" {
+			parts = append(parts, formatStringToolParam("mode", normalized.Mode))
+		}
+		if normalized.Limit != defaultSearchLimit {
+			parts = append(parts, formatIntToolParam("limit", normalized.Limit))
+		}
+		if normalized.Offset != 0 {
+			parts = append(parts, formatIntToolParam("offset", normalized.Offset))
+		}
+		if normalized.ContextLines != 0 {
+			parts = append(parts, formatIntToolParam("context_lines", normalized.ContextLines))
+		}
+		return formatToolCallLabel(label, parts)
+	case "read_lines":
+		var params struct {
+			Path      string `json:"path"`
+			StartLine int    `json:"start_line"`
+			EndLine   int    `json:"end_line"`
+		}
+		if err := json.Unmarshal([]byte(raw), &params); err != nil {
+			return compactRawToolCallLabel(label, raw)
+		}
+
+		parts := make([]string, 0, 3)
+		if path := strings.TrimSpace(params.Path); path != "" {
+			parts = append(parts, formatStringToolParam("path", path))
+		}
+		if params.StartLine != 0 {
+			parts = append(parts, formatIntToolParam("start_line", params.StartLine))
+		}
+		if params.EndLine != 0 {
+			parts = append(parts, formatIntToolParam("end_line", params.EndLine))
+		}
+		return formatToolCallLabel(label, parts)
+	case "read_around":
+		var params struct {
+			Path   string `json:"path"`
+			Line   int    `json:"line"`
+			Before int    `json:"before"`
+			After  int    `json:"after"`
+		}
+		if err := json.Unmarshal([]byte(raw), &params); err != nil {
+			return compactRawToolCallLabel(label, raw)
+		}
+
+		parts := make([]string, 0, 4)
+		if path := strings.TrimSpace(params.Path); path != "" {
+			parts = append(parts, formatStringToolParam("path", path))
+		}
+		if params.Line != 0 {
+			parts = append(parts, formatIntToolParam("line", params.Line))
+		}
+		if params.Before != 0 && params.Before != DefaultReadAroundBefore {
+			parts = append(parts, formatIntToolParam("before", params.Before))
+		}
+		if params.After != 0 && params.After != DefaultReadAroundAfter {
+			parts = append(parts, formatIntToolParam("after", params.After))
+		}
+		return formatToolCallLabel(label, parts)
+	default:
+		return compactRawToolCallLabel(label, raw)
+	}
+}
+
+func formatToolCallLabel(label string, parts []string) string {
+	if len(parts) == 0 {
+		return label
+	}
+	return fmt.Sprintf("%s(%s)", label, strings.Join(parts, ", "))
+}
+
+func compactRawToolCallLabel(label string, raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return label
+	}
+	if len(trimmed) > 80 {
+		trimmed = trimmed[:77] + "..."
+	}
+	return fmt.Sprintf("%s(args=%q)", label, trimmed)
+}
+
+func formatStringToolParam(name string, value string) string {
+	return fmt.Sprintf("%s=%q", name, value)
+}
+
+func formatIntToolParam(name string, value int) string {
+	return fmt.Sprintf("%s=%d", name, value)
 }
 
 func SummarizeToolResult(toolName string, raw string) map[string]any {

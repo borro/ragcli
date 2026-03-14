@@ -3,15 +3,24 @@ package aitools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 )
 
+type CallDescription struct {
+	Arguments    map[string]any
+	VerboseLabel string
+}
+
 type Tool interface {
 	Name() string
 	ToolDefinition() openai.Tool
+	DescribeCall(call openai.ToolCall) CallDescription
 	Execute(ctx context.Context, call openai.ToolCall) (ExecuteResult, error)
 }
 
@@ -26,6 +35,7 @@ type ExecuteResult struct {
 
 type Registry interface {
 	ToolDefinitions() []openai.Tool
+	DescribeCall(call openai.ToolCall) CallDescription
 	Execute(ctx context.Context, call openai.ToolCall) (ExecuteResult, error)
 }
 
@@ -69,12 +79,29 @@ func (r *toolRegistry) ToolDefinitions() []openai.Tool {
 	return definitions
 }
 
+func (r *toolRegistry) DescribeCall(call openai.ToolCall) CallDescription {
+	tool, ok := r.byName[call.Function.Name]
+	if !ok {
+		return fallbackCallDescription(call)
+	}
+	desc := tool.DescribeCall(call)
+	if strings.TrimSpace(desc.VerboseLabel) == "" {
+		desc.VerboseLabel = fallbackCallDescription(call).VerboseLabel
+	}
+	if desc.Arguments == nil {
+		desc.Arguments = fallbackCallDescription(call).Arguments
+	}
+	return desc
+}
+
 func (r *toolRegistry) Execute(ctx context.Context, call openai.ToolCall) (ExecuteResult, error) {
 	tool, ok := r.byName[call.Function.Name]
 	if !ok {
-		return ExecuteResult{}, NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
+		err := NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
 			"tool": call.Function.Name,
 		})
+		LogToolCallError(call, 0, fallbackCallDescription(call).Arguments, err)
+		return ExecuteResult{}, err
 	}
 	return tool.Execute(ctx, call)
 }
@@ -110,9 +137,7 @@ func LogToolCallStarted(call openai.ToolCall, args map[string]any) {
 		"tool_name", call.Function.Name,
 		"tool_call_id", call.ID,
 	}
-	if args != nil {
-		logArgs = append(logArgs, "arguments", args)
-	}
+	logArgs = appendSummaryGroup(logArgs, "arguments", args)
 	slog.Debug("tool call started", logArgs...)
 }
 
@@ -129,7 +154,7 @@ func LogToolCallFinished(call openai.ToolCall, duration time.Duration, status st
 	slog.Debug("tool call finished", logArgs...)
 }
 
-func LogToolCallError(call openai.ToolCall, duration time.Duration, err error) {
+func LogToolCallError(call openai.ToolCall, duration time.Duration, args map[string]any, err error) {
 	toolErr := AsToolError(err)
 	logArgs := []any{
 		"tool_name", call.Function.Name,
@@ -139,8 +164,62 @@ func LogToolCallError(call openai.ToolCall, duration time.Duration, err error) {
 		"retryable", toolErr.Retryable,
 		"error", toolErr.Message,
 	}
+	logArgs = appendSummaryGroup(logArgs, "arguments", args)
 	if len(toolErr.Details) > 0 {
 		logArgs = append(logArgs, "details", toolErr.Details)
 	}
 	slog.Debug("tool call failed", logArgs...)
+}
+
+func fallbackCallDescription(call openai.ToolCall) CallDescription {
+	label := strings.TrimSpace(call.Function.Name)
+	if label == "" {
+		label = "tool"
+	}
+
+	raw := strings.TrimSpace(call.Function.Arguments)
+	if raw == "" {
+		return CallDescription{VerboseLabel: label}
+	}
+
+	return CallDescription{
+		Arguments: map[string]any{
+			"raw_arguments": raw,
+		},
+		VerboseLabel: labelWithRawArguments(label, raw),
+	}
+}
+
+func labelWithRawArguments(label string, raw string) string {
+	trimmedLabel := strings.TrimSpace(label)
+	if trimmedLabel == "" {
+		trimmedLabel = "tool"
+	}
+	trimmedRaw := strings.TrimSpace(raw)
+	if trimmedRaw == "" {
+		return trimmedLabel
+	}
+	if len(trimmedRaw) > 80 {
+		trimmedRaw = trimmedRaw[:77] + "..."
+	}
+	return fmt.Sprintf("%s(args=%q)", trimmedLabel, trimmedRaw)
+}
+
+func appendSummaryGroup(logArgs []any, key string, summary map[string]any) []any {
+	if len(summary) == 0 {
+		return logArgs
+	}
+
+	keys := make([]string, 0, len(summary))
+	for name := range summary {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+
+	groupArgs := make([]any, 0, len(keys))
+	for _, name := range keys {
+		groupArgs = append(groupArgs, slog.Any(name, summary[name]))
+	}
+
+	return append(logArgs, slog.Group(key, groupArgs...))
 }
