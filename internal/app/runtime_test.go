@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/borro/ragcli/internal/hybrid"
 	"github.com/borro/ragcli/internal/llm"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
@@ -208,6 +209,34 @@ func TestRuntimeExecuteRAGCreatesEmbedder(t *testing.T) {
 	}(), rag.Options{}))
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runtime.execute(rag) error = %v, want embedder error", err)
+	}
+	if embedderCalls != 1 {
+		t.Fatalf("embedderCalls = %d, want 1", embedderCalls)
+	}
+}
+
+func TestRuntimeExecuteHybridCreatesEmbedder(t *testing.T) {
+	runtime, _, _ := newTestRuntime("alpha\n")
+	chat := &runtimeChatClient{}
+	wantErr := errors.New("embedder sentinel")
+	embedderCalls := 0
+	runtime.newChatClient = func(llm.Config) (llm.ChatAutoContextRequester, error) { return chat, nil }
+	runtime.newEmbedder = func(llm.Config) (llm.EmbeddingRequester, error) {
+		embedderCalls++
+		return nil, wantErr
+	}
+
+	err := runtime.execute(context.Background(), testInvocation("hybrid", CommonOptions{
+		Prompt: "Что в файле?",
+	}, func() LLMOptions {
+		opts := defaultLLMOptions()
+		opts.EmbeddingModel = "embed"
+		return opts
+	}(), hybrid.Options{
+		Search: rag.SearchOptions{},
+	}))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runtime.execute(hybrid) error = %v, want embedder error", err)
 	}
 	if embedderCalls != 1 {
 		t.Fatalf("embedderCalls = %d, want 1", embedderCalls)

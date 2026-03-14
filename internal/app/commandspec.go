@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/borro/ragcli/internal/hybrid"
 	"github.com/borro/ragcli/internal/localize"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
@@ -169,6 +170,22 @@ func commandSpecs() []*commandSpec {
 			),
 			bind:    bindToolsInvocation,
 			execute: executeToolsCommand,
+		},
+		{
+			name:        "hybrid",
+			usage:       localize.T("cli.command.hybrid.usage"),
+			description: hybridCommandDescription(),
+			flagSpecs:   ragFlagSpecs(false),
+			template: progressTemplate("progress.mode.hybrid",
+				stageTemplate("prepare", "progress.stage.prepare", 2),
+				stageTemplate("index", "progress.stage.index", 8),
+				stageTemplate("retrieval", "progress.stage.retrieval", 4),
+				stageTemplate("init", "progress.stage.init", 2),
+				stageTemplate("loop", "progress.stage.loop", 10),
+				stageTemplate("final", "progress.stage.final", 2),
+			),
+			bind:    bindHybridInvocation,
+			execute: executeHybridCommand,
 		},
 	}
 }
@@ -459,6 +476,27 @@ func bindToolsInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocation
 	return inv, nil
 }
 
+func bindHybridInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocation, error) {
+	inv, err := bindCommandBase(cmd, spec)
+	if err != nil {
+		return commandInvocation{}, err
+	}
+
+	inv.LLM.EmbeddingModel = normalizeEmbeddingModel(cmd.String("embedding-model"))
+	inv.payload = normalizeHybridOptions(hybrid.Options{
+		Search: rag.SearchOptions{
+			TopK:           cmd.Int("rag-top-k"),
+			ChunkSize:      cmd.Int("rag-chunk-size"),
+			ChunkOverlap:   cmd.Int("rag-chunk-overlap"),
+			IndexTTL:       cmd.Duration("rag-index-ttl"),
+			IndexDir:       cmd.String("rag-index-dir"),
+			Rerank:         cmd.String("rag-rerank"),
+			EmbeddingModel: inv.LLM.EmbeddingModel,
+		},
+	})
+	return inv, nil
+}
+
 func bindCommandBase(cmd *cli.Command, spec *commandSpec) (commandInvocation, error) {
 	inv := commandInvocation{
 		spec:   spec,
@@ -546,6 +584,11 @@ func normalizeToolsOptions(options toolsmode.Options) toolsmode.Options {
 	return options
 }
 
+func normalizeHybridOptions(options hybrid.Options) hybrid.Options {
+	options.Search = normalizeRAGSearchOptions(options.Search)
+	return options
+}
+
 func normalizeRAGRerank(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "heuristic":
@@ -580,6 +623,10 @@ func ragCommandDescription() string {
 
 func toolsCommandDescription() string {
 	return strings.TrimSpace(localize.T("cli.description.tools"))
+}
+
+func hybridCommandDescription() string {
+	return strings.TrimSpace(localize.T("cli.description.hybrid"))
 }
 
 func toolsRAGFlagSpec() flagSpec {

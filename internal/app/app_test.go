@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/borro/ragcli/internal/hybrid"
 	"github.com/borro/ragcli/internal/localize"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
@@ -71,7 +72,7 @@ func TestRunRootHelp(t *testing.T) {
 		t.Fatalf("Run(--help) exit code = %d, want 0", exitCode)
 	}
 	output := stdout.String()
-	for _, needle := range []string{"map", "rag", "tools", "version", "help, h", "--version", "--path", "--file", "--proxy-url", "--no-proxy", "--model", "--raw", "--verbose", "ragcli [global options] [command [command options]]", "v1.2.3"} {
+	for _, needle := range []string{"map", "rag", "tools", "hybrid", "version", "help, h", "--version", "--path", "--file", "--proxy-url", "--no-proxy", "--model", "--raw", "--verbose", "ragcli [global options] [command [command options]]", "v1.2.3"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in help output:\n%s", needle, output)
 		}
@@ -150,6 +151,27 @@ func TestRunToolsHelpIncludesRAGFlags(t *testing.T) {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in tools help:\n%s", needle, output)
 		}
+	}
+}
+
+func TestRunHybridHelpIncludesSearchFlags(t *testing.T) {
+	var stdout bytes.Buffer
+
+	exitCode := Run([]string{"hybrid", "--help"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
+	if exitCode != 0 {
+		t.Fatalf("Run(hybrid --help) exit code = %d, want 0", exitCode)
+	}
+	output := stdout.String()
+	for _, needle := range []string{"--embedding-model", "--rag-top-k", "--rag-index-dir"} {
+		if !strings.Contains(output, needle) {
+			t.Fatalf("stdout missing %q in hybrid help:\n%s", needle, output)
+		}
+	}
+	if strings.Contains(output, "--rag-final-k") {
+		t.Fatalf("stdout = %q, hybrid help must not include --rag-final-k", output)
+	}
+	if strings.Contains(output, "--rag, ") || strings.Contains(output, "--rag\n") {
+		t.Fatalf("stdout = %q, hybrid help must not include tools-only --rag toggle", output)
 	}
 }
 
@@ -366,6 +388,19 @@ func TestCLIToolsRAGBinding(t *testing.T) {
 	}
 	if mustPayload[toolsmode.Options](t, captured).RAG.TopK != 11 {
 		t.Fatalf("TopK = %d, want 11", mustPayload[toolsmode.Options](t, captured).RAG.TopK)
+	}
+	if captured.LLM.EmbeddingModel != "embed-v2" {
+		t.Fatalf("EmbeddingModel = %q, want embed-v2", captured.LLM.EmbeddingModel)
+	}
+}
+
+func TestCLIHybridBinding(t *testing.T) {
+	captured, _, err := runCLIForTest([]string{"hybrid", "--embedding-model", "embed-v2", "--rag-top-k", "11", "question"})
+	if err != nil {
+		t.Fatalf("runCLIForTest() error = %v", err)
+	}
+	if mustPayload[hybrid.Options](t, captured).Search.TopK != 11 {
+		t.Fatalf("TopK = %d, want 11", mustPayload[hybrid.Options](t, captured).Search.TopK)
 	}
 	if captured.LLM.EmbeddingModel != "embed-v2" {
 		t.Fatalf("EmbeddingModel = %q, want embed-v2", captured.LLM.EmbeddingModel)

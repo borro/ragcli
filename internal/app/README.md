@@ -32,9 +32,10 @@
 
 - `internal/input`
 - `internal/llm`
-- `internal/map`
-- `internal/rag`
+- `internal/hybrid`
 - `internal/tools`
+- `internal/rag`
+- `internal/map`
 - `internal/verbose`
 - `internal/localize`
 - `internal/logging`
@@ -46,7 +47,7 @@
 3. `bind*Invocation` собирают и нормализуют options.
 4. `appRuntime.execute` создаёт signal-aware context и progress plan.
 5. `withInput` открывает файл или материализует `stdin`.
-6. `withChatInput` / `withChatAndEmbeddingInput` создают клиенты и вызывают режим; `tools --rag` идёт через ветку с embedder.
+6. `withChatInput` / `withChatAndEmbeddingInput` создают клиентов и вызывают режим; `hybrid`, `tools --rag` и `rag` идут через ветку с embedder.
 7. `writeResult` рендерит markdown при необходимости и печатает ответ в `stdout`.
 
 ## Инварианты и ошибки
@@ -61,7 +62,7 @@
 
 - help/version и binding флагов;
 - precedence глобальных флагов и prompt compatibility;
-- выбор chat/embedder клиентов по режиму и по `tools --rag`;
+- выбор chat/embedder клиентов по режиму, включая `hybrid` и `tools --rag`;
 - markdown rendering и разделение stdout/stderr;
 - completeness реестра команд.
 

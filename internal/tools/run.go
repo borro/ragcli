@@ -16,6 +16,7 @@ import (
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	ragruntime "github.com/borro/ragcli/internal/rag"
+	"github.com/borro/ragcli/internal/retrieval"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -33,6 +34,26 @@ type toolsConfig struct {
 	tools         []openai.Tool
 	systemMessage openai.ChatCompletionMessage
 	userQuestion  openai.ChatCompletionMessage
+}
+
+type SessionOptions struct {
+	Prompt                  string
+	AdditionalSystemPrompt  string
+	AdditionalUserPrompt    string
+	WarnOnFirstDirectAnswer bool
+}
+
+type Session struct {
+	config                  toolsConfig
+	state                   *toolLoopState
+	inputPath               string
+	readerPath              string
+	warnOnFirstDirectAnswer bool
+}
+
+type SessionResult struct {
+	Answer    string
+	Citations []retrieval.Citation
 }
 
 type orchestratorStats struct {
@@ -62,6 +83,8 @@ func (e orchestrationError) Error() string {
 type toolLoopState struct {
 	registry              aitools.Registry
 	seenLinesByDomain     map[string]map[string]struct{}
+	citations             []retrieval.Citation
+	seenCitations         map[string]struct{}
 	consecutiveNoProgress int
 	consecutiveDuplicates int
 	stats                 orchestratorStats
@@ -76,15 +99,22 @@ type toolExecutionMeta struct {
 	SuggestedNextOffset int    `json:"suggested_next_offset,omitempty"`
 }
 
-func NewToolsConfig(prompt string, source input.FileBackedSource, opts Options, definitions []openai.Tool) toolsConfig {
+func NewToolsConfig(
+	prompt string,
+	source input.FileBackedSource,
+	opts Options,
+	definitions []openai.Tool,
+	additionalSystemPrompt string,
+	additionalUserPrompt string,
+) toolsConfig {
 	systemMessage := openai.ChatCompletionMessage{
 		Role:    "system",
-		Content: buildToolsSystemPrompt(opts),
+		Content: buildToolsSystemPrompt(opts, additionalSystemPrompt),
 	}
 
 	userQuestion := openai.ChatCompletionMessage{
 		Role:    "user",
-		Content: buildToolsUserPrompt(prompt, source, opts),
+		Content: buildToolsUserPrompt(prompt, source, opts, additionalUserPrompt),
 	}
 
 	return toolsConfig{
@@ -94,15 +124,18 @@ func NewToolsConfig(prompt string, source input.FileBackedSource, opts Options, 
 	}
 }
 
-func buildToolsSystemPrompt(opts Options) string {
+func buildToolsSystemPrompt(opts Options, additionalPrompt string) string {
 	lines := []string{strings.TrimSpace(localize.T("tools.prompt.system"))}
 	if opts.EnableRAG {
 		lines = append(lines, strings.TrimSpace(localize.T("tools.prompt.rag_enabled")))
 	}
+	if extra := strings.TrimSpace(additionalPrompt); extra != "" {
+		lines = append(lines, extra)
+	}
 	return strings.Join(lines, "\n\n")
 }
 
-func buildToolsUserPrompt(prompt string, source input.FileBackedSource, opts Options) string {
+func buildToolsUserPrompt(prompt string, source input.FileBackedSource, opts Options, additionalPrompt string) string {
 	lines := []string{
 		localize.T("tools.prompt.user.path_attached"),
 	}
@@ -121,52 +154,123 @@ func buildToolsUserPrompt(prompt string, source input.FileBackedSource, opts Opt
 	if opts.EnableRAG {
 		lines = append(lines, localize.T("tools.prompt.user.rag_hint"))
 	}
+	if extra := strings.TrimSpace(additionalPrompt); extra != "" {
+		lines = append(lines, extra)
+	}
 	lines = append(lines, localize.T("tools.prompt.user.question", localize.Data{"Prompt": prompt}))
 	return strings.Join(lines, "\n")
 }
 
 func Run(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRequester, source input.FileBackedSource, opts Options, prompt string, plan *verbose.Plan) (string, error) {
-	startedAt := time.Now()
 	readerPath := source.SnapshotPath()
 	if readerPath == "" {
 		return "", errors.New("tools source path is required")
 	}
 	slog.Debug("tools processing started", "input_path", source.InputPath(), "reader_path", readerPath, "file_count", source.FileCount())
-	initMeter := plan.Stage("init")
 	indexMeter := plan.Stage("index")
-	loopMeter := plan.Stage("loop")
-	finalMeter := plan.Stage("final")
-	initMeter.Start(localize.T("progress.tools.session_start"))
-
-	loopState, err := newToolLoopState(ctx, source, embedder, opts, indexMeter)
+	session, err := PrepareSession(ctx, source, embedder, opts, SessionOptions{
+		Prompt:                  prompt,
+		WarnOnFirstDirectAnswer: true,
+	}, indexMeter)
 	if err != nil {
 		return "", err
 	}
-	toolsConfig := NewToolsConfig(prompt, source, opts, loopState.registry.ToolDefinitions())
-	messages := make([]openai.ChatCompletionMessage, 0, 2)
-	messages = append(messages, toolsConfig.systemMessage, toolsConfig.userQuestion)
+	result, err := session.Run(ctx, client, nil, plan)
+	if err != nil {
+		return "", err
+	}
+	return result.Answer, nil
+}
+
+func PrepareSession(
+	ctx context.Context,
+	source input.FileBackedSource,
+	embedder llm.EmbeddingRequester,
+	opts Options,
+	sessionOpts SessionOptions,
+	indexMeter verbose.Meter,
+) (*Session, error) {
+	readerPath := source.SnapshotPath()
+	if readerPath == "" {
+		return nil, errors.New("tools source path is required")
+	}
+
+	loopState, err := newToolLoopState(ctx, source, embedder, opts, indexMeter)
+	if err != nil {
+		return nil, err
+	}
+
+	config := NewToolsConfig(
+		sessionOpts.Prompt,
+		source,
+		opts,
+		loopState.registry.ToolDefinitions(),
+		sessionOpts.AdditionalSystemPrompt,
+		sessionOpts.AdditionalUserPrompt,
+	)
+
+	return &Session{
+		config:                  config,
+		state:                   loopState,
+		inputPath:               source.InputPath(),
+		readerPath:              readerPath,
+		warnOnFirstDirectAnswer: sessionOpts.WarnOnFirstDirectAnswer,
+	}, nil
+}
+
+func (s *Session) InitialMessages() []openai.ChatCompletionMessage {
+	return []openai.ChatCompletionMessage{
+		s.config.systemMessage,
+		s.config.userQuestion,
+	}
+}
+
+func (s *Session) ExecuteToolCall(ctx context.Context, call openai.ToolCall) (string, error) {
+	if s == nil || s.state == nil {
+		return "", errors.New("tools session is not prepared")
+	}
+	result, _, err := s.state.executeToolCall(ctx, call)
+	if err != nil {
+		return "", err
+	}
+	return result, nil
+}
+
+func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHistory []openai.ChatCompletionMessage, plan *verbose.Plan) (SessionResult, error) {
+	if s == nil || s.state == nil {
+		return SessionResult{}, errors.New("tools session is not prepared")
+	}
+
+	startedAt := time.Now()
+	initMeter := plan.Stage("init")
+	loopMeter := plan.Stage("loop")
+	finalMeter := plan.Stage("final")
+
+	initMeter.Start(localize.T("progress.tools.session_start"))
+	messages := append(s.InitialMessages(), cloneMessages(initialHistory)...)
 	initMeter.Done(localize.T("progress.tools.session_done"))
+
 	var toolChoiceToSend interface{} = "auto"
 	emptyFinalAnswerRetries := 0
 	stalledToolRetries := 0
-	haveToolResults := false
+	haveToolResults := containsToolResponses(initialHistory)
 
 	logStop := func(reason string, turns int) {
-		slog.Debug("tools processing finished",
+		slog.Debug("tool session finished",
 			"stop_reason", reason,
 			"turns", turns,
 			"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
-			"unique_lists", loopState.stats.uniqueLists,
-			"unique_searches", loopState.stats.uniqueSearches,
-			"unique_rag_searches", loopState.stats.uniqueRAGSearch,
-			"unique_reads", loopState.stats.uniqueReads,
-			"cache_hits", loopState.stats.cacheHits,
-			"duplicate_calls", loopState.stats.duplicateCalls,
-			"no_progress_runs", loopState.stats.noProgressRuns,
-			"llm_calls", loopState.stats.llmCalls,
-			"prompt_tokens", loopState.stats.promptTokens,
-			"completion_tokens", loopState.stats.completionTokens,
-			"total_tokens", loopState.stats.totalTokens,
+			"unique_lists", s.state.stats.uniqueLists,
+			"unique_searches", s.state.stats.uniqueSearches,
+			"unique_rag_searches", s.state.stats.uniqueRAGSearch,
+			"unique_reads", s.state.stats.uniqueReads,
+			"cache_hits", s.state.stats.cacheHits,
+			"duplicate_calls", s.state.stats.duplicateCalls,
+			"no_progress_runs", s.state.stats.noProgressRuns,
+			"llm_calls", s.state.stats.llmCalls,
+			"prompt_tokens", s.state.stats.promptTokens,
+			"completion_tokens", s.state.stats.completionTokens,
+			"total_tokens", s.state.stats.totalTokens,
 		)
 	}
 
@@ -176,14 +280,14 @@ func Run(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRe
 		turnMeter.Start(localize.T("progress.tools.turn_start", localize.Data{"Count": len(messages), "Turn": turn, "Total": toolsMaxTurns}))
 		req := openai.ChatCompletionRequest{
 			Messages:   messages,
-			Tools:      toolsConfig.tools,
+			Tools:      s.config.tools,
 			ToolChoice: toolChoiceToSend,
 		}
 
 		select {
 		case <-ctx.Done():
 			logStop("context_done", turn-1)
-			return "", ctx.Err()
+			return SessionResult{}, ctx.Err()
 		default:
 		}
 
@@ -196,16 +300,16 @@ func Run(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRe
 		resp, metrics, err := client.SendRequestWithMetrics(ctx, req)
 		if err != nil {
 			logStop("request_error", turn)
-			return "", fmt.Errorf("failed to send request: %w", err)
+			return SessionResult{}, fmt.Errorf("failed to send request: %w", err)
 		}
-		loopState.stats.llmCalls++
-		loopState.stats.promptTokens += metrics.PromptTokens
-		loopState.stats.completionTokens += metrics.CompletionTokens
-		loopState.stats.totalTokens += metrics.TotalTokens
+		s.state.stats.llmCalls++
+		s.state.stats.promptTokens += metrics.PromptTokens
+		s.state.stats.completionTokens += metrics.CompletionTokens
+		s.state.stats.totalTokens += metrics.TotalTokens
 
 		if len(resp.Choices) == 0 {
 			logStop("empty_choices", turn)
-			return "", fmt.Errorf("no choices in response")
+			return SessionResult{}, fmt.Errorf("no choices in response")
 		}
 
 		choice := resp.Choices[0]
@@ -223,11 +327,11 @@ func Run(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRe
 			finalMeter.Start(localize.T("progress.tools.text_answer", localize.Data{"Turn": turn}))
 		}
 
-		if turn == 1 && readerPath != "" && len(choice.Message.ToolCalls) == 0 && strings.TrimSpace(choice.Message.Content) != "" {
+		if s.warnOnFirstDirectAnswer && turn == 1 && s.readerPath != "" && len(choice.Message.ToolCalls) == 0 && strings.TrimSpace(choice.Message.Content) != "" {
 			slog.Warn("tools backend returned a direct answer without using file tools",
 				"turn", turn,
-				"file_path", source.InputPath(),
-				"reader_path", readerPath,
+				"file_path", s.inputPath,
+				"reader_path", s.readerPath,
 				"message_role", choice.Message.Role,
 			)
 		}
@@ -237,7 +341,7 @@ func Run(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRe
 			toolMeter := turnMeter.WithStage(localize.T("progress.tools.call_stage"))
 			toolMeter.Start(localize.T("progress.tools.executing_calls", localize.Data{"Count": len(choice.Message.ToolCalls)}))
 
-			results, err := loopState.executeToolCalls(ctx, choice.Message.ToolCalls, toolMeter)
+			results, err := s.state.executeToolCalls(ctx, choice.Message.ToolCalls, toolMeter)
 			slog.Debug("tool calls finished", "turn", turn, "result_count", len(results), "has_error", err != nil)
 			for i, result := range results {
 				messages = append(messages, openai.ChatCompletionMessage{
@@ -269,7 +373,7 @@ func Run(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRe
 				} else {
 					logStop("tool_error", turn)
 				}
-				return "", fmt.Errorf("failed to execute tool calls: %w", err)
+				return SessionResult{}, fmt.Errorf("failed to execute tool calls: %w", err)
 			}
 
 			toolMeter.Done(localize.T("progress.tools.calls_done", localize.Data{"Count": len(results)}))
@@ -290,27 +394,33 @@ func Run(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRe
 				continue
 			}
 			logStop("empty_final_answer", turn)
-			return "", fmt.Errorf("received final response without content")
+			return SessionResult{}, fmt.Errorf("received final response without content")
 		}
 		finalMeter.Done(localize.T("progress.tools.final_done", localize.Data{"Turn": turn}))
 		logStop("final_answer", turn)
-		return choice.Message.Content, nil
+		return SessionResult{
+			Answer:    choice.Message.Content,
+			Citations: s.state.Citations(),
+		}, nil
 	}
 
 	if haveToolResults {
 		finalMeter.Start(localize.T("progress.tools.text_answer", localize.Data{"Turn": toolsMaxTurns + 1}))
-		result, err := requestFinalAnswerWithoutTools(ctx, client, messages, toolsConfig.tools, maxTurnFinalizationRetries)
+		result, err := requestFinalAnswerWithoutTools(ctx, client, messages, s.config.tools, maxTurnFinalizationRetries)
 		if err == nil {
 			finalMeter.Done(localize.T("progress.tools.final_done", localize.Data{"Turn": toolsMaxTurns + 1}))
 			logStop("forced_final_answer", toolsMaxTurns)
-			return result, nil
+			return SessionResult{
+				Answer:    result,
+				Citations: s.state.Citations(),
+			}, nil
 		}
 		logStop("orchestration_limit_finalization_failed", toolsMaxTurns)
-		return "", err
+		return SessionResult{}, err
 	}
 
 	logStop("orchestration_limit", toolsMaxTurns)
-	return "", orchestrationError{
+	return SessionResult{}, orchestrationError{
 		Code:    "orchestration_limit",
 		Message: fmt.Sprintf("tools orchestration exceeded %d turns without final answer", toolsMaxTurns),
 		Details: map[string]any{"max_turns": toolsMaxTurns},
@@ -346,6 +456,7 @@ func newToolLoopState(ctx context.Context, source input.FileBackedSource, embedd
 	return &toolLoopState{
 		registry:          aitools.NewRegistry(toolset...),
 		seenLinesByDomain: make(map[string]map[string]struct{}),
+		seenCitations:     make(map[string]struct{}),
 	}, nil
 }
 
@@ -438,6 +549,7 @@ func (s *toolLoopState) executeToolCall(ctx context.Context, call openai.ToolCal
 	if err != nil {
 		return "", toolExecutionMeta{}, err
 	}
+	s.recordCitations(call.Function.Name, result.Payload)
 
 	if result.Cached {
 		s.stats.cacheHits++
@@ -512,6 +624,13 @@ func (s *toolLoopState) executeToolCall(ctx context.Context, call openai.ToolCal
 	return annotated, meta, nil
 }
 
+func (s *toolLoopState) Citations() []retrieval.Citation {
+	if len(s.citations) == 0 {
+		return nil
+	}
+	return append([]retrieval.Citation(nil), s.citations...)
+}
+
 func coverageDomain(toolName string) string {
 	switch toolName {
 	case "search_rag":
@@ -520,6 +639,94 @@ func coverageDomain(toolName string) string {
 		return "files"
 	default:
 		return "default"
+	}
+}
+
+func (s *toolLoopState) recordCitations(toolName string, raw string) {
+	for _, citation := range citationsFromToolPayload(toolName, raw) {
+		key := fmt.Sprintf("%s:%d-%d", citation.SourcePath, citation.StartLine, citation.EndLine)
+		if _, seen := s.seenCitations[key]; seen {
+			continue
+		}
+		s.seenCitations[key] = struct{}{}
+		s.citations = append(s.citations, citation)
+	}
+}
+
+func citationsFromToolPayload(toolName string, raw string) []retrieval.Citation {
+	switch toolName {
+	case "search_rag":
+		var result ragtools.SearchResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil
+		}
+		citations := make([]retrieval.Citation, 0, len(result.Matches))
+		for _, match := range result.Matches {
+			path := strings.TrimSpace(match.Path)
+			if path == "" {
+				path = strings.TrimSpace(result.Path)
+			}
+			if path == "" || match.StartLine < 1 || match.EndLine < match.StartLine {
+				continue
+			}
+			citations = append(citations, retrieval.Citation{
+				SourcePath: path,
+				StartLine:  match.StartLine,
+				EndLine:    match.EndLine,
+			})
+		}
+		return citations
+	case "search_file":
+		var result files.SearchResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil
+		}
+		citations := make([]retrieval.Citation, 0, len(result.Matches))
+		for _, match := range result.Matches {
+			path := strings.TrimSpace(match.Path)
+			if path == "" {
+				path = strings.TrimSpace(result.Path)
+			}
+			if path == "" || match.LineNumber < 1 {
+				continue
+			}
+			citations = append(citations, retrieval.Citation{
+				SourcePath: path,
+				StartLine:  match.LineNumber,
+				EndLine:    match.LineNumber,
+			})
+		}
+		return citations
+	case "read_lines":
+		var result files.ReadLinesResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil
+		}
+		path := strings.TrimSpace(result.Path)
+		if path == "" || result.StartLine < 1 || result.EndLine < result.StartLine {
+			return nil
+		}
+		return []retrieval.Citation{{
+			SourcePath: path,
+			StartLine:  result.StartLine,
+			EndLine:    result.EndLine,
+		}}
+	case "read_around":
+		var result files.ReadAroundResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil
+		}
+		path := strings.TrimSpace(result.Path)
+		if path == "" || result.StartLine < 1 || result.EndLine < result.StartLine {
+			return nil
+		}
+		return []retrieval.Citation{{
+			SourcePath: path,
+			StartLine:  result.StartLine,
+			EndLine:    result.EndLine,
+		}}
+	default:
+		return nil
 	}
 }
 
@@ -586,6 +793,32 @@ func shouldRetryWithoutTools(err orchestrationError) bool {
 	default:
 		return false
 	}
+}
+
+func cloneMessages(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	if len(messages) == 0 {
+		return nil
+	}
+	cloned := make([]openai.ChatCompletionMessage, 0, len(messages))
+	for _, message := range messages {
+		cloned = append(cloned, openai.ChatCompletionMessage{
+			Role:       message.Role,
+			Content:    message.Content,
+			Name:       message.Name,
+			ToolCallID: message.ToolCallID,
+			ToolCalls:  append([]openai.ToolCall(nil), message.ToolCalls...),
+		})
+	}
+	return cloned
+}
+
+func containsToolResponses(messages []openai.ChatCompletionMessage) bool {
+	for _, message := range messages {
+		if message.Role == "tool" {
+			return true
+		}
+	}
+	return false
 }
 
 func requestFinalAnswerWithoutTools(ctx context.Context, client llm.ChatRequester, messages []openai.ChatCompletionMessage, tools []openai.Tool, retries int) (string, error) {

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/borro/ragcli/internal/hybrid"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
@@ -296,6 +297,18 @@ func executeRAGCommand(session *commandSession) (string, error) {
 	return session.withChatAndEmbeddingInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
 		slog.Info("starting rag processing")
 		return rag.Run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
+	})
+}
+
+func executeHybridCommand(session *commandSession) (string, error) {
+	opts, err := payloadAs[hybrid.Options](session.inv.payload)
+	if err != nil {
+		return "", err
+	}
+
+	return session.withChatAndEmbeddingInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
+		slog.Info("starting hybrid processing")
+		return hybrid.Run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
 	})
 }
 

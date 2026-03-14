@@ -2,7 +2,7 @@
 usage = "print the version"
 
 [cli.root]
-usage = "Work with local text through map, RAG, and tool-based retrieval"
+usage = "Work with local text through map, RAG, tool-based retrieval, and hybrid verification"
 
 [cli.command.map]
 usage = "Process large text in chunks with map-reduce"
@@ -12,6 +12,9 @@ usage = "Build a local retrieval index and answer from evidence chunks"
 
 [cli.command.tools]
 usage = "Give the model tools for targeted file investigation"
+
+[cli.command.hybrid]
+usage = "Seed semantic retrieval, then verify and refine through tools"
 
 [cli.command.version]
 usage = "Print ragcli version"
@@ -65,7 +68,7 @@ usage = "Explicit proxy URL for all LLM HTTP requests."
 usage = "Disable all proxies for ragcli requests, including environment-based proxies."
 
 [cli.flag.model]
-usage = "Chat model for map/tools/rag answer generation."
+usage = "Chat model for map/tools/rag/hybrid answer generation."
 
 [cli.flag.retry]
 usage = "Retry count for the LLM HTTP client."
@@ -109,6 +112,14 @@ Examples:
   ragcli tools --path app.log --debug "Where do the logs show the causes of 5xx?"
 
 """
+hybrid = """
+Preloads an initial search_rag result for the original question, then lets the model verify, refine, and cross-check the answer through file tools and repeated semantic retrieval.
+
+Examples:
+  ragcli hybrid --path file.txt --embedding-model text-embedding-3-small "What does it say about the retry policy?"
+  ragcli hybrid --path app.log --rag-top-k 10 "Which lines explain the 5xx spikes?"
+
+"""
 [error.prompt]
 required = "missing required argument: prompt"
 
@@ -126,6 +137,7 @@ render_markdown = "render markdown: {{.Error}}"
 map = "map"
 tools = "tools"
 rag = "rag"
+hybrid = "hybrid"
 
 [progress.detail.prepare]
 open_input = "opening input data"

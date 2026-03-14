@@ -6,7 +6,7 @@
 
 - тонкую точку входа `cmd/ragcli`;
 - orchestration-слой `internal/app`;
-- mode-пакеты `map`, `rag`, `tools`;
+- mode-пакеты `hybrid`, `tools`, `rag`, `map`;
 - shared infrastructure: `llm`, `input`, `retrieval`, `aitools`, `verbose`, `localize`, `logging`.
 
 Главный принцип: `internal/app` связывает CLI, input lifecycle, создание клиентов и вывод результата, а domain-specific пайплайны живут в отдельных пакетах режимов.
@@ -21,9 +21,12 @@ flowchart LR
     app --> verbose["internal/verbose"]
     app --> localize["internal/localize"]
     app --> logging["internal/logging"]
-    app --> map["internal/map"]
-    app --> rag["internal/rag"]
+    app --> hybrid["internal/hybrid"]
     app --> tools["internal/tools"]
+    app --> rag["internal/rag"]
+    app --> map["internal/map"]
+    hybrid --> tools
+    hybrid --> rag
     rag --> retrieval["internal/retrieval"]
     tools --> aitools["internal/aitools"]
     tools --> aitoolsfiles["internal/aitools/files"]
@@ -34,9 +37,10 @@ flowchart LR
 
 - `cmd/ragcli` не содержит логики кроме вызова `app.Run`.
 - `internal/app` знает про все режимы и shared packages; режимы не знают про CLI.
-- `internal/map` не зависит от retrieval и tool calling.
 - `internal/rag` использует `internal/retrieval` как общее ядро файлового retrieval.
 - `internal/tools` оркестрирует tool calling, а общий registry/API делегирует `internal/aitools`, файловый домен — `internal/aitools/files`.
+- `internal/hybrid` переиспользует shared tool session из `internal/tools`, но seed-ит историю synthetic `search_rag`.
+- `internal/map` не зависит от retrieval и tool calling.
 
 ## 3. Жизненный цикл запуска
 
@@ -69,7 +73,7 @@ sequenceDiagram
 3. `bind*Invocation` собирает `commandInvocation` с нормализованными options.
 4. `appRuntime.execute` создаёт `commandSession`, progress plan и сигнал-совместимый context.
 5. `withInput` открывает файл или материализует `stdin`.
-6. `withChatInput` / `withChatAndEmbeddingInput` создают клиентов и вызывают mode package.
+6. `withChatInput` / `withChatAndEmbeddingInput` создают клиентов и вызывают mode package; `hybrid`, `tools --rag` и `rag` идут через ветку с embedder.
 7. `writeResult` форматирует markdown-ответ и печатает его в `stdout`.
 
 ## 4. Общие абстракции
@@ -117,41 +121,43 @@ sequenceDiagram
 
 ## 5. Пайплайны режимов
 
-### 5.1 `map`
+### 5.1 `hybrid`
 
-```mermaid
-flowchart TD
-    A["input.Source"] --> B["SplitByApproxTokens"]
-    B --> C["parallel map calls"]
-    C --> D["prepare / filter facts"]
-    D --> E["fan-in reduce iterations"]
-    E --> F["final answer generation"]
-    F --> G["self critique"]
-    G --> H["self refine or keep draft"]
-    H --> I["stdout result"]
-```
+`hybrid` строится поверх тех же retrieval и tool-calling кирпичей, что уже есть в `tools --rag` и `rag`, но добавляет обязательный semantic seed до первого model turn.
 
 Реальный pipeline:
 
-1. `resolveChunkLength` берёт явный `--length` или пытается автоопределить контекст модели.
-2. `SplitByApproxTokens` режет текст по строкам с approximate token budget.
-3. `runMapParallel` запускает map-запросы к LLM параллельно.
-4. Пустые/`SKIP` ответы отбрасываются, оставшиеся факты нормализуются.
-5. `fanInReduce` схлопывает результаты батчами до одного блока фактов.
-6. Генерируется финальный draft-answer.
-7. `selfRefine` делает critique и, если нужно, refine проход.
+1. Через `internal/tools.PrepareSession` заранее поднимается тот же tool registry, что и для `tools --rag`.
+2. До первого LLM turn выполняется synthetic `search_rag` по исходному вопросу.
+3. Seeded assistant/tool pair добавляется в историю сообщений.
+4. Общий orchestration loop из `internal/tools` позволяет модели оценить seeded retrieval, дочитать контекст через file-tools и при необходимости повторить `search_rag` с новым запросом.
+5. В финале `internal/hybrid` дописывает `Sources:` по всем evidence-producing tool results текущей сессии.
 
-Сильные стороны:
+Почему `aitools`/`aitools/files`/`aitools/rag` вынесены отдельно:
 
-- независимость от embeddings;
-- хороший fit для summary и broad question по очень длинному тексту.
+- общий AI-tool registry и контракты должны переиспользоваться между режимами;
+- файловый домен удобно развивать отдельно от orchestration loop и отдельно от будущих не-файловых tools;
+- retrieval-domain tools удобно собирать отдельно от file-domain tools, но на том же базовом `aitools.Registry`;
+- каждый concrete tool можно подключать в разных сочетаниях через общий `aitools.Registry`.
 
-Компромиссы:
+### 5.2 `tools`
 
-- между чанками теряется часть глобального контекста;
-- на слабых моделях качество critique/refine может быть неровным.
+По умолчанию `tools` не строит retrieval index и не загружает файл в prompt целиком. Вместо этого режим оркестрирует диалог модели с локальными file-tools: `list_files`, `search_file`, `read_lines`, `read_around`.
 
-### 5.2 `rag`
+Если передан `--rag`, режим до первого LLM turn строит или загружает тот же локальный embeddings index, что использует `rag`, и добавляет semantic retrieval tool `search_rag`.
+
+Реальный pipeline:
+
+1. Создаётся tools session с `system` и `user` сообщениями.
+2. При `--rag` заранее выполняется build/load retrieval index через `internal/rag`.
+3. В каждом turn отправляется chat request с tool definitions.
+4. Если модель запросила tool calls, `toolLoopState` выполняет их локально.
+5. Результаты возвращаются как `role=tool` сообщения в JSON.
+6. Loop отслеживает duplicate calls, already-seen строки и уже перечисленные пути, а также no-progress runs.
+7. При зацикливании включаются защитные ветки: retry without tools, stop-calls prompt, forced finalization.
+8. Режим завершает работу, когда получает содержательный финальный text answer.
+
+### 5.3 `rag`
 
 ```mermaid
 flowchart TD
@@ -185,29 +191,40 @@ flowchart TD
 - `chunks.jsonl`
 - `embeddings.jsonl`
 
-### 5.3 `tools`
+### 5.4 `map`
 
-По умолчанию `tools` не строит retrieval index и не загружает файл в prompt целиком. Вместо этого режим оркестрирует диалог модели с локальными file-tools: `list_files`, `search_file`, `read_lines`, `read_around`.
-
-Если передан `--rag`, режим до первого LLM turn строит или загружает тот же локальный embeddings index, что использует `rag`, и добавляет semantic retrieval tool `search_rag`.
+```mermaid
+flowchart TD
+    A["input.Source"] --> B["SplitByApproxTokens"]
+    B --> C["parallel map calls"]
+    C --> D["prepare / filter facts"]
+    D --> E["fan-in reduce iterations"]
+    E --> F["final answer generation"]
+    F --> G["self critique"]
+    G --> H["self refine or keep draft"]
+    H --> I["stdout result"]
+```
 
 Реальный pipeline:
 
-1. Создаётся tools session с `system` и `user` сообщениями.
-2. При `--rag` заранее выполняется build/load retrieval index через `internal/rag`.
-3. В каждом turn отправляется chat request с tool definitions.
-4. Если модель запросила tool calls, `toolLoopState` выполняет их локально.
-5. Результаты возвращаются как `role=tool` сообщения в JSON.
-6. Loop отслеживает duplicate calls, already-seen строки и уже перечисленные пути, а также no-progress runs.
-7. При зацикливании включаются защитные ветки: retry without tools, stop-calls prompt, forced finalization.
-8. Режим завершает работу, когда получает содержательный финальный text answer.
+1. `resolveChunkLength` берёт явный `--length` или пытается автоопределить контекст модели.
+2. `SplitByApproxTokens` режет текст по строкам с approximate token budget.
+3. `runMapParallel` запускает map-запросы к LLM параллельно.
+4. Пустые/`SKIP` ответы отбрасываются, оставшиеся факты нормализуются.
+5. `fanInReduce` схлопывает результаты батчами до одного блока фактов.
+6. Генерируется финальный draft-answer.
+7. `selfRefine` делает critique и, если нужно, refine проход.
 
-Почему `aitools`/`aitools/files`/`aitools/rag` вынесены отдельно:
+Когда режим полезен:
 
-- общий AI-tool registry и контракты должны переиспользоваться между режимами;
-- файловый домен удобно развивать отдельно от orchestration loop и отдельно от будущих не-файловых tools;
-- retrieval-domain tools удобно собирать отдельно от file-domain tools, но на том же базовом `aitools.Registry`;
-- каждый concrete tool можно подключать в разных сочетаниях через общий `aitools.Registry`.
+- embeddings endpoint или tool calling недоступны;
+- длинный текст всё равно нужно прогнать чанками как fallback-сценарий.
+
+Компромиссы:
+
+- между чанками теряется часть глобального контекста;
+- на слабых моделях качество critique/refine может быть неровным;
+- на больших входах такой прогон легко оказывается самым медленным из доступных вариантов.
 
 ## 6. Файловые и временные артефакты
 
@@ -224,7 +241,7 @@ flowchart TD
 - CLI-команды, флаги, env-переменные и defaults;
 - разделение `stdout`/`stderr`;
 - наличие локализации `ru`/`en`;
-- semantics режимов `map`, `rag`, `tools`;
+- semantics режимов `hybrid`, `tools`, `rag`, `map`;
 - формат источников в ответах `rag`.
 
 Не считаются жёстким public API:

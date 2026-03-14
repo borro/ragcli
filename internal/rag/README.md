@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Пакет реализует retrieval-режим по локальному индексу: строит или переиспользует embeddings index, ищет релевантные чанки и синтезирует ответ с `Sources:`. Тот же пакет отдаёт переиспользуемые helper-ы для `tools --rag`.
+Пакет реализует retrieval-режим по локальному индексу: строит или переиспользует embeddings index, ищет релевантные чанки и синтезирует ответ с `Sources:`. Тот же пакет отдаёт переиспользуемые helper-ы для `hybrid` и `tools --rag`.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
@@ -31,6 +31,7 @@
 
 - `internal/app`
 - `internal/aitools/rag`
+- `internal/hybrid`
 
 Исходящие:
 
@@ -50,7 +51,7 @@
 6. Лучшие чанки попадают в финальный prompt.
 7. Ответ возвращается вместе с секцией `Sources:`.
 
-Shared helper path для `tools --rag`:
+Shared helper path для `hybrid` и `tools --rag`:
 
 1. `PrepareSearch` заранее строит или загружает индекс.
 2. `PreparedSearch.Search(...)` выполняет semantic retrieval по тому же индексу.

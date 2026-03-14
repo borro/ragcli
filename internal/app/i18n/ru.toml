@@ -2,7 +2,7 @@
 usage = "показать версию"
 
 [cli.root]
-usage = "Работать с локальным текстом через map, RAG, and tool-based retrieval"
+usage = "Работать с локальным текстом через map, RAG, tool-based retrieval и hybrid verification"
 
 [cli.command.map]
 usage = "Обработать большой текст чанками через map-reduce"
@@ -12,6 +12,9 @@ usage = "Построить локальный retrieval index и ответит
 
 [cli.command.tools]
 usage = "Дать модели инструменты для точечного исследования файла"
+
+[cli.command.hybrid]
+usage = "Сделать semantic seed и затем проверить ответ через tools"
 
 [cli.command.version]
 usage = "Показать версию ragcli"
@@ -65,7 +68,7 @@ usage = "Явный proxy URL для всех LLM HTTP-запросов."
 usage = "Отключить любой proxy для запросов ragcli, включая proxy из окружения."
 
 [cli.flag.model]
-usage = "Chat-модель для map/tools/rag answer generation."
+usage = "Chat-модель для map/tools/rag/hybrid answer generation."
 
 [cli.flag.retry]
 usage = "Количество retry для LLM HTTP-клиента."
@@ -109,6 +112,14 @@ Examples:
   ragcli tools --path app.log --debug "Где в логах причины 5xx?"
 
 """
+hybrid = """
+Сначала предзагружает результат search_rag по исходному вопросу, а затем даёт модели инструменты для проверки, уточнения и повторного semantic retrieval по мере необходимости.
+
+Examples:
+  ragcli hybrid --path file.txt --embedding-model text-embedding-3-small "Что сказано про retry policy?"
+  ragcli hybrid --path app.log --rag-top-k 10 "Какие строки объясняют всплески 5xx?"
+
+"""
 [error.prompt]
 required = "не указан обязательный аргумент: prompt"
 
@@ -126,6 +137,7 @@ render_markdown = "не удалось отрендерить markdown: {{.Error
 map = "map"
 tools = "tools"
 rag = "rag"
+hybrid = "hybrid"
 
 [progress.detail.prepare]
 open_input = "открываю входные данные"

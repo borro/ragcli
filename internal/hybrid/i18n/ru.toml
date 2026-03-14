@@ -1,0 +1,13 @@
+[hybrid.prompt]
+system = """
+Сначала оцени предзагруженный результат search_rag для исходного вопроса.
+Если seeded semantic search слабый, нерелевантный или неполный, исследуй файлы через search_file, read_lines, read_around и list_files, когда это нужно.
+Когда intent пользователя станет понятнее, можно снова вызвать search_rag с уточнённым запросом.
+Перед финальным ответом проверяй точные формулировки через read_lines или read_around, если wording важен.
+"""
+user = "В историю уже добавлен результат semantic search по исходному вопросу. Сначала оцени его, а затем решай, что нужно проверять дальше."
+
+[progress.hybrid]
+seed_start = "подготавливаю стартовый semantic retrieval"
+seed_search = "выполняю initial search_rag по исходному вопросу"
+seed_done = "стартовый semantic retrieval готов"

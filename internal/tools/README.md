@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Пакет реализует режим `tools`: tool-calling orchestration loop, в котором модель исследует файл или директорию через локальные инструменты и только потом формирует ответ. При `--rag` режим заранее строит retrieval index и добавляет semantic retrieval tool `search_rag`.
+Пакет реализует режим `tools` и общий tool-calling orchestration loop, который также переиспользует `internal/hybrid`. В режиме `tools` модель исследует файл или директорию через локальные инструменты и только потом формирует ответ. При `--rag` режим заранее строит retrieval index и добавляет semantic retrieval tool `search_rag`.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
@@ -16,8 +16,12 @@
 ## Ключевые entrypoints/types
 
 - `Options`
+- `SessionOptions`
+- `Session`
+- `SessionResult`
 - `Run(ctx, client, embedder, source, opts, prompt, plan)`
-- `NewToolsConfig(prompt, source, opts, definitions)`
+- `PrepareSession(ctx, source, embedder, opts, sessionOpts, indexMeter)`
+- `NewToolsConfig(prompt, source, opts, definitions, additionalSystemPrompt, additionalUserPrompt)`
 - `toolLoopState`
 - `orchestrationError`
 
@@ -26,6 +30,7 @@
 Входящие:
 
 - `internal/app`
+- `internal/hybrid`
 
 Исходящие:
 
@@ -40,14 +45,14 @@
 
 ## Основной поток
 
-1. Создаются file-domain tools через `aitools/files`.
+1. `PrepareSession` создаёт file-domain tools через `aitools/files`.
 2. При `opts.EnableRAG` заранее поднимается `internal/rag.PreparedSearch` и добавляется tool `search_rag` из `internal/aitools/rag`.
-3. В каждом turn модель получает chat request с доступными инструментами.
+3. `Session.Run` в каждом turn отправляет chat request с доступными инструментами.
 4. Запрошенные tool calls выполняются локально через registry из `aitools`.
 5. Результаты сериализуются в JSON и возвращаются модели как `role=tool`.
-6. Loop отслеживает cache hits, duplicate calls и отсутствие прогресса.
+6. Loop отслеживает cache hits, duplicate calls, отсутствие прогресса и накапливает evidence citations по успешным tool results.
 7. При зацикливании применяются stop/retry/forced-finalization guards.
-8. Возвращается финальный текстовый ответ.
+8. `tools.Run` возвращает финальный текстовый ответ; `internal/hybrid` использует те же citations для `Sources:`.
 
 ## Инварианты и ошибки
 
@@ -58,12 +63,14 @@
 - При `--rag` semantic retrieval идёт через `search_rag`, но финальный ответ всё равно собирает orchestration loop, а не сам tool.
 - Повторные вызовы тех же инструментов не должны бесконечно расширять context без новых строк.
 - Tracking прогресса должен различать одинаковые номера строк в разных файлах.
+- Citation tracking должен собирать evidence из `search_rag`, `search_file`, `read_lines` и `read_around`, но не из `list_files`.
 - Пустой финальный ответ после лимитов превращается в orchestration error.
 
 ## Что подтверждают тесты
 
 - single-shot и multi-step tool loop;
 - optional `search_rag` и pre-index для `--rag`;
+- shared session path для seeded history из `internal/hybrid`;
 - retry при пустом финальном ответе;
 - guards на duplicate search/read;
 - предупреждение, если backend сразу отвечает без инструментов;

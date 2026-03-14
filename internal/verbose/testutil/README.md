@@ -18,7 +18,7 @@ Test-only helper-пакет для проверки stage-based progress из [`
 
 Входящие:
 
-- тесты `internal/map`, `internal/rag`, `internal/tools`, `internal/verbose`
+- тесты `internal/tools`, `internal/rag`, `internal/map`, `internal/verbose`
 
 Исходящие:
 

@@ -24,9 +24,10 @@ Repo-level инструкции для кодинг-агентов лежат в
 
 ### Режимы обработки
 
-- [`../internal/map/README.md`](../internal/map/README.md)
-- [`../internal/rag/README.md`](../internal/rag/README.md)
+- [`../internal/hybrid/README.md`](../internal/hybrid/README.md)
 - [`../internal/tools/README.md`](../internal/tools/README.md)
+- [`../internal/rag/README.md`](../internal/rag/README.md)
+- [`../internal/map/README.md`](../internal/map/README.md)
 
 ### Общая инфраструктура
 
