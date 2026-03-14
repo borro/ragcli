@@ -64,7 +64,7 @@ Shared helper path для `hybrid` и `tools --rag`:
 - Для directory input line numbers и `Sources:` остаются file-local и используют relative paths.
 - При слабом retrieval возвращается honest insufficient answer, а не произвольная галлюцинация.
 - Индексные файлы должны быть приватными и атомарно опубликованными.
-- Источники в `Sources:` дедуплицируются.
+- Источники в `Sources:` дедуплицируются, сортируются по файлу и строкам и выводятся как grouped-by-file line ranges.
 
 ## Что подтверждают тесты
 

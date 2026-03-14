@@ -771,10 +771,10 @@ func TestSelectionHelpersAndAppendSources(t *testing.T) {
 	}
 
 	answer := appendSources("Answer", []candidate{a0, a0, b0})
-	if strings.Count(answer, "- a.txt:1-2") != 1 {
+	if strings.Count(answer, "- a.txt: 1-2") != 1 {
 		t.Fatalf("appendSources() = %q, want deduped citation", answer)
 	}
-	if !strings.Contains(answer, "- b.txt:1-1") {
+	if !strings.Contains(answer, "- b.txt: 1") {
 		t.Fatalf("appendSources() = %q, want second source", answer)
 	}
 	if got := appendSources("Answer", nil); !strings.Contains(got, "Sources:\n- none") {

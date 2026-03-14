@@ -11,7 +11,7 @@
 - orchestration нового CLI-режима `hybrid`;
 - подготовка seeded `search_rag` до первого LLM turn;
 - добавление hybrid-specific prompt instructions поверх общего tool session;
-- финализация ответа с `Sources:` по всем подтверждённым evidence results сессии.
+- финализация ответа с `Sources:` по всем подтверждённым evidence results сессии, сгруппированным по файлу и line ranges.
 
 ## Ключевые entrypoints/types
 
@@ -38,7 +38,7 @@
 2. До первого model turn выполняется synthetic `search_rag` по исходному вопросу.
 3. Seeded tool call и его JSON-результат добавляются в историю как assistant/tool pair.
 4. Общий orchestration loop из `internal/tools` продолжает исследование через file tools и повторные `search_rag`.
-5. Финальный текст дополняется секцией `Sources:` по всем успешным evidence results, показанным модели.
+5. Финальный текст дополняется секцией `Sources:` по подтверждённым semantic/search/read evidence results, показанным модели.
 
 ## Инварианты
 

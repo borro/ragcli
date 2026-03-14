@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +30,7 @@ const (
 	emptyFinalAnswerRetryLimit    = 1
 	stalledToolRetryLimit         = 1
 	maxTurnFinalizationRetries    = 1
+	textToolCallRetryLimit        = 1
 )
 
 type toolsConfig struct {
@@ -98,6 +101,14 @@ type toolExecutionMeta struct {
 	ProgressHint        string `json:"progress_hint,omitempty"`
 	SuggestedNextOffset int    `json:"suggested_next_offset,omitempty"`
 }
+
+var (
+	textToolCallBlockPattern  = regexp.MustCompile(`(?is)<tool_call>(.*?)</tool_call>`)
+	textToolFunctionPattern   = regexp.MustCompile(`(?is)<function=([a-z0-9_]+)>`)
+	textToolParameterPattern  = regexp.MustCompile(`(?is)<parameter=([a-z0-9_]+)>`)
+	textToolResidualTagPatern = regexp.MustCompile(`(?is)</?tool_call>|<function=[^>]+>|<parameter=[^>]+>`)
+	textToolWhitespacePattern = regexp.MustCompile(`\s+`)
+)
 
 func NewToolsConfig(
 	prompt string,
@@ -253,6 +264,7 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 	var toolChoiceToSend interface{} = "auto"
 	emptyFinalAnswerRetries := 0
 	stalledToolRetries := 0
+	textToolCallRetries := 0
 	haveToolResults := containsToolResponses(initialHistory)
 
 	logStop := func(reason string, turns int) {
@@ -313,6 +325,44 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 		}
 
 		choice := resp.Choices[0]
+		if len(choice.Message.ToolCalls) == 0 {
+			sanitizedContent, parsedToolCalls, detected, parseErr := parseTextToolCalls(choice.Message.Content, turn)
+			toolCallsAllowed := !toolChoiceIsNone(toolChoiceToSend)
+			if detected {
+				if parseErr == nil && len(parsedToolCalls) > 0 && toolCallsAllowed {
+					slog.Warn("backend returned tool calls in assistant text; executing parsed fallback",
+						"turn", turn,
+						"tool_call_count", len(parsedToolCalls),
+					)
+					choice.Message.Content = sanitizedContent
+					choice.Message.ToolCalls = parsedToolCalls
+				} else if textToolCallRetries < textToolCallRetryLimit {
+					textToolCallRetries++
+					slog.Warn("backend returned malformed tool-call text; asking for retry",
+						"turn", turn,
+						"attempt", textToolCallRetries,
+						"error", parseErr,
+					)
+					messages = append(messages, openai.ChatCompletionMessage{
+						Role:    "user",
+						Content: localize.T("tools.prompt.text_tool_call_retry"),
+					})
+					toolChoiceToSend = "auto"
+					continue
+				} else {
+					slog.Warn("backend kept returning malformed tool-call text; requesting plain-text final answer",
+						"turn", turn,
+						"error", parseErr,
+					)
+					messages = append(messages, openai.ChatCompletionMessage{
+						Role:    "user",
+						Content: localize.T("tools.prompt.stop_calls"),
+					})
+					toolChoiceToSend = "none"
+					continue
+				}
+			}
+		}
 		messages = append(messages, choice.Message)
 
 		slog.Debug("tools turn received llm response",
@@ -771,8 +821,113 @@ func annotateToolPayload(raw string, meta toolExecutionMeta) (string, error) {
 	return files.MarshalJSON(payload)
 }
 
+func parseTextToolCalls(content string, turn int) (string, []openai.ToolCall, bool, error) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return trimmed, nil, false, nil
+	}
+	if !strings.Contains(strings.ToLower(trimmed), "<tool_call>") {
+		return trimmed, nil, false, nil
+	}
+
+	blocks := textToolCallBlockPattern.FindAllStringSubmatch(trimmed, -1)
+	if len(blocks) == 0 {
+		return stripTextToolCalls(trimmed), nil, true, errors.New("tool_call markers found but no complete blocks parsed")
+	}
+
+	toolCalls := make([]openai.ToolCall, 0, len(blocks))
+	for index, block := range blocks {
+		call, err := parseTextToolCallBlock(strings.TrimSpace(block[1]), turn, index+1)
+		if err != nil {
+			return stripTextToolCalls(trimmed), nil, true, err
+		}
+		toolCalls = append(toolCalls, call)
+	}
+
+	return stripTextToolCalls(trimmed), toolCalls, true, nil
+}
+
+func parseTextToolCallBlock(block string, turn int, index int) (openai.ToolCall, error) {
+	functionMatch := textToolFunctionPattern.FindStringSubmatch(block)
+	if len(functionMatch) != 2 {
+		return openai.ToolCall{}, errors.New("missing function name in textual tool call")
+	}
+
+	parameters := make(map[string]any)
+	matches := textToolParameterPattern.FindAllStringSubmatchIndex(block, -1)
+	for i, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(block[match[2]:match[3]]))
+		if name == "" {
+			continue
+		}
+		valueStart := match[1]
+		valueEnd := len(block)
+		if i+1 < len(matches) {
+			valueEnd = matches[i+1][0]
+		}
+		value := normalizeTextToolValue(block[valueStart:valueEnd])
+		if value == "" {
+			continue
+		}
+		parameters[name] = coerceTextToolArgument(name, value)
+	}
+
+	arguments, err := json.Marshal(parameters)
+	if err != nil {
+		return openai.ToolCall{}, fmt.Errorf("failed to marshal textual tool call arguments: %w", err)
+	}
+
+	return openai.ToolCall{
+		ID:   fmt.Sprintf("text-tool-call-%d-%d", turn, index),
+		Type: "function",
+		Function: openai.FunctionCall{
+			Name:      strings.TrimSpace(functionMatch[1]),
+			Arguments: string(arguments),
+		},
+	}, nil
+}
+
+func stripTextToolCalls(content string) string {
+	stripped := textToolCallBlockPattern.ReplaceAllString(content, " ")
+	stripped = textToolResidualTagPatern.ReplaceAllString(stripped, " ")
+	stripped = textToolWhitespacePattern.ReplaceAllString(stripped, " ")
+	return strings.TrimSpace(stripped)
+}
+
+func normalizeTextToolValue(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	return textToolWhitespacePattern.ReplaceAllString(trimmed, " ")
+}
+
+func coerceTextToolArgument(name string, value string) any {
+	switch name {
+	case "line", "start_line", "end_line", "before", "after", "limit", "offset", "context_lines":
+		if parsed, err := strconv.Atoi(value); err == nil {
+			return parsed
+		}
+	}
+	switch strings.ToLower(value) {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	return value
+}
+
 func errorsAsOrchestration(err error, target *orchestrationError) bool {
 	return errors.As(err, target)
+}
+
+func toolChoiceIsNone(choice interface{}) bool {
+	typed, ok := choice.(string)
+	return ok && typed == "none"
 }
 
 func intHint(hints map[string]any, key string) int {
@@ -854,6 +1009,15 @@ func requestFinalAnswerWithoutTools(ctx context.Context, client llm.ChatRequeste
 		}
 
 		choice := resp.Choices[0]
+		if len(choice.Message.ToolCalls) == 0 {
+			if _, _, detected, _ := parseTextToolCalls(choice.Message.Content, toolsMaxTurns+attempt+1); detected {
+				attemptMessages = append(attemptMessages, openai.ChatCompletionMessage{
+					Role:    "user",
+					Content: localize.T("tools.prompt.stop_calls"),
+				})
+				continue
+			}
+		}
 		attemptMessages = append(attemptMessages, choice.Message)
 		if strings.TrimSpace(choice.Message.Content) != "" {
 			return choice.Message.Content, nil

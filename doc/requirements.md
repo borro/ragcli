@@ -108,8 +108,8 @@
 - класть seeded `search_rag` call и его JSON-результат в историю как assistant/tool pair;
 - после seeded retrieval запускать тот же orchestration loop и тот же набор инструментов, что и `tools --rag`;
 - позволять модели оценить seeded result, исследовать файлы через file-tools и при необходимости повторно вызывать `search_rag` с уточнённым запросом;
-- всегда дописывать в финал секцию `Sources:` по всем успешным evidence-producing tool results, показанным модели;
-- не считать `list_files` источником для `Sources:`;
+- всегда дописывать в финал секцию `Sources:` по подтверждённым evidence results текущей tool session;
+- считать `list_files` discovery-навигацией, а `search_file` учитывать как line-based evidence по найденным match lines;
 - не останавливаться только из-за слабого seeded retrieval, если индекс успешно подготовлен.
 
 Инструменты `hybrid`:
@@ -269,8 +269,8 @@
 
 ## 6. Формат результата
 
-- `hybrid` всегда дописывает секцию `Sources:` с deduplicated источниками по evidence results текущей tool session.
-- `rag` всегда дописывает секцию `Sources:` с deduplicated источниками.
+- `hybrid` всегда дописывает секцию `Sources:` с deduplicated источниками, сгруппированными по файлу и отсортированными по строкам; пересекающиеся диапазоны схлопываются, одиночная строка выводится как одно число.
+- `rag` всегда дописывает секцию `Sources:` с тем же форматом grouped-by-file line ranges.
 - `map` возвращает чистый ответ модели без секции `Sources`.
 - Если evidence не найдено, `rag` должен возвращать честный insufficient-data ответ и `Sources:\n- none`.
 - Raw output перед печатью обрезается по краям `strings.TrimSpace`.

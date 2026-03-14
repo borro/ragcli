@@ -388,17 +388,20 @@ func TestTokenOverlapRatioMatchesUnicodeNumberTokens(t *testing.T) {
 	}
 }
 
-func TestAppendSourcesDeduplicates(t *testing.T) {
+func TestAppendSourcesFormatsGroupedSortedRanges(t *testing.T) {
 	got := AppendSources("Answer", []Citation{
-		{SourcePath: "a.txt", StartLine: 1, EndLine: 2},
-		{SourcePath: "a.txt", StartLine: 1, EndLine: 2},
 		{SourcePath: "b.txt", StartLine: 3, EndLine: 4},
+		{SourcePath: "a.txt", StartLine: 1, EndLine: 2},
+		{SourcePath: "a.txt", StartLine: 1, EndLine: 2},
+		{SourcePath: "a.txt", StartLine: 2, EndLine: 5},
+		{SourcePath: "a.txt", StartLine: 7, EndLine: 7},
+		{SourcePath: "a.txt", StartLine: 9, EndLine: 10},
+		{SourcePath: "a.txt", StartLine: 11, EndLine: 11},
 	})
-	if strings.Count(got, "- a.txt:1-2") != 1 {
-		t.Fatalf("AppendSources() = %q, want one a.txt citation", got)
-	}
-	if !strings.Contains(got, "- b.txt:3-4") {
-		t.Fatalf("AppendSources() = %q, want b.txt citation", got)
+
+	want := "Answer\n\nSources:\n- a.txt: 1-5, 7, 9-10, 11\n- b.txt: 3-4"
+	if got != want {
+		t.Fatalf("AppendSources() = %q, want %q", got, want)
 	}
 }
 

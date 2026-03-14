@@ -167,12 +167,12 @@ func TestRunHybrid_SeedsSearchRAGBeforeFirstLLMRequest(t *testing.T) {
 	if !strings.Contains(result, "Retry policy is enabled.") {
 		t.Fatalf("result = %q, want final answer", result)
 	}
-	if !strings.Contains(result, "Sources:\n- "+filePath+":1-2") {
+	if !strings.Contains(result, "Sources:\n- "+filePath+": 1-2") {
 		t.Fatalf("result = %q, want sources from seeded search_rag", result)
 	}
 }
 
-func TestRunHybrid_ToolLoopAfterSeedDedupesSourcesAndIgnoresListFiles(t *testing.T) {
+func TestRunHybrid_ToolLoopDedupesSourcesAndIgnoresListFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("retry policy enabled\nbackoff is exponential\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(a.txt) error = %v", err)
@@ -184,7 +184,10 @@ func TestRunHybrid_ToolLoopAfterSeedDedupesSourcesAndIgnoresListFiles(t *testing
 				toolCall("call-1", "list_files", `{"limit":10}`),
 			})),
 			chatResponse(message(openai.ChatMessageRoleAssistant, "", []openai.ToolCall{
-				toolCall("call-2", "read_lines", `{"path":"a.txt","start_line":1,"end_line":2}`),
+				toolCall("call-2", "search_file", `{"path":"a.txt","query":"retry","limit":5}`),
+			})),
+			chatResponse(message(openai.ChatMessageRoleAssistant, "", []openai.ToolCall{
+				toolCall("call-3", "read_lines", `{"path":"a.txt","start_line":1,"end_line":2}`),
 			})),
 			chatResponse(message(openai.ChatMessageRoleAssistant, "Retry policy is enabled and uses exponential backoff.", nil)),
 		},
@@ -195,8 +198,8 @@ func TestRunHybrid_ToolLoopAfterSeedDedupesSourcesAndIgnoresListFiles(t *testing
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if len(client.requests) != 3 {
-		t.Fatalf("requests = %d, want 3", len(client.requests))
+	if len(client.requests) != 4 {
+		t.Fatalf("requests = %d, want 4", len(client.requests))
 	}
 	firstRequest := client.requests[0]
 	if len(firstRequest.Messages) != 4 {
@@ -208,10 +211,10 @@ func TestRunHybrid_ToolLoopAfterSeedDedupesSourcesAndIgnoresListFiles(t *testing
 	if !strings.Contains(result, "Retry policy is enabled and uses exponential backoff.") {
 		t.Fatalf("result = %q, want final answer", result)
 	}
-	if !strings.Contains(result, "Sources:\n- a.txt:1-2") {
+	if !strings.Contains(result, "Sources:\n- a.txt: 1-2") {
 		t.Fatalf("result = %q, want deduped source line range", result)
 	}
-	if strings.Count(result, "a.txt:1-2") != 1 {
+	if strings.Count(result, "a.txt: 1-2") != 1 {
 		t.Fatalf("result = %q, want deduped citation", result)
 	}
 	if strings.Contains(result, "\n- a.txt\n") {

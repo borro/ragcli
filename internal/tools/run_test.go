@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/borro/ragcli/internal/aitools/files"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
@@ -1109,6 +1110,111 @@ func TestToolLoopState_ReadLinesAndSearchRAGTrackCoverageSeparately(t *testing.T
 	}
 	if secondMeta.AlreadySeen || secondMeta.NovelLines == 0 {
 		t.Fatalf("secondMeta = %+v, want rag-domain coverage to stay separate from file coverage", secondMeta)
+	}
+}
+
+func TestCitationsFromToolPayload_SearchFileAddsLineMatches(t *testing.T) {
+	raw, err := files.MarshalJSON(files.SearchResult{
+		Path: "fallback.txt",
+		Matches: []files.SearchMatch{
+			{Path: "a.txt", LineNumber: 1, Content: "retry policy enabled"},
+			{LineNumber: 7, Content: "backoff is exponential"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("MarshalJSON() error = %v", err)
+	}
+
+	citations := citationsFromToolPayload("search_file", raw)
+	if len(citations) != 2 {
+		t.Fatalf("len(citations) = %d, want 2 (%#v)", len(citations), citations)
+	}
+	if citations[0].SourcePath != "a.txt" || citations[0].StartLine != 1 || citations[0].EndLine != 1 {
+		t.Fatalf("citations[0] = %#v, want a.txt:1", citations[0])
+	}
+	if citations[1].SourcePath != "fallback.txt" || citations[1].StartLine != 7 || citations[1].EndLine != 7 {
+		t.Fatalf("citations[1] = %#v, want fallback.txt:7", citations[1])
+	}
+}
+
+func TestParseTextToolCalls_ParsesPlanAndArguments(t *testing.T) {
+	content := "## План поиска: дочитать локальный контекст.\n<tool_call> <function=read_around> <parameter=Path> a.txt <parameter=line> 7 <parameter=before> 2 <parameter=after> 3 </tool_call>"
+
+	sanitized, calls, detected, err := parseTextToolCalls(content, 3)
+	if err != nil {
+		t.Fatalf("parseTextToolCalls() error = %v", err)
+	}
+	if !detected {
+		t.Fatal("parseTextToolCalls() detected = false, want true")
+	}
+	if sanitized != "## План поиска: дочитать локальный контекст." {
+		t.Fatalf("sanitized = %q, want plan without markup", sanitized)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("len(calls) = %d, want 1", len(calls))
+	}
+	if calls[0].ID != "text-tool-call-3-1" || calls[0].Function.Name != "read_around" {
+		t.Fatalf("call = %#v, want parsed synthetic read_around", calls[0])
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal([]byte(calls[0].Function.Arguments), &args); err != nil {
+		t.Fatalf("json.Unmarshal(arguments) error = %v", err)
+	}
+	if args["path"] != "a.txt" || args["line"] != float64(7) || args["before"] != float64(2) || args["after"] != float64(3) {
+		t.Fatalf("arguments = %#v, want normalized path/line/before/after", args)
+	}
+}
+
+func TestRunTools_ExecutesTextualToolCallsFallback(t *testing.T) {
+	filePath := writeTempFile(t, "alpha\nbeta\n")
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "Сначала найду совпадения.\n<tool_call> <function=search_file> <parameter=query> alpha </tool_call>", nil)),
+			chatResponse(message("assistant", "Нашёл совпадение на первой строке.", nil)),
+		},
+	}
+
+	result, err := runTools(context.Background(), client, filePath, "Где упоминается alpha?", nil)
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+
+	if result != "Нашёл совпадение на первой строке." {
+		t.Fatalf("result = %q, want final answer after parsed textual tool call", result)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(client.requests))
+	}
+	assertToolMessage(t, client.requests[1].Messages, "text-tool-call-1-1", "search_file")
+}
+
+func TestRunTools_RetriesMalformedTextualToolCalls(t *testing.T) {
+	filePath := writeTempFile(t, "alpha\nbeta\n")
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "## План поиска.\n<tool_call> <function=read_around> <parameter=Path>\na.txt", nil)),
+			chatResponse(message("assistant", "Не удалось использовать инструменты, поэтому надёжно ответить нельзя.", nil)),
+		},
+	}
+
+	result, err := runTools(context.Background(), client, filePath, "Что здесь важно?", nil)
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+
+	if strings.Contains(result, "<tool_call>") {
+		t.Fatalf("result = %q, want textual tool-call markup to be filtered out", result)
+	}
+	if result != "Не удалось использовать инструменты, поэтому надёжно ответить нельзя." {
+		t.Fatalf("result = %q, want retry final answer", result)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(client.requests))
+	}
+	lastMessage := client.requests[1].Messages[len(client.requests[1].Messages)-1]
+	if lastMessage.Role != "user" || lastMessage.Content != localize.T("tools.prompt.text_tool_call_retry") {
+		t.Fatalf("last retry message = %#v, want textual-tool-call retry prompt", lastMessage)
 	}
 }
 

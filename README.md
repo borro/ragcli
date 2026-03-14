@@ -86,7 +86,7 @@ $env:LLM_PROXY_URL = "http://127.0.0.1:1080"
 
 ## Практические заметки
 
-- `hybrid` сначала делает seeded `search_rag`, а затем позволяет модели проверить и доуточнить ответ через file-tools; итог всегда дополняется `Sources:`.
+- `hybrid` сначала делает seeded `search_rag`, а затем позволяет модели проверить и доуточнить ответ через file-tools; итог всегда дополняется `Sources:` по semantic/search/read evidence. `list_files` остаётся навигационным инструментом и не попадает в источники.
 - `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `list_files`, `search_file`, `read_lines` и `read_around`. С `--rag` режим заранее строит локальный индекс и добавляет semantic retrieval tool `search_rag`.
 - `tools --rag` полезен, когда нужен semantic retrieval без обязательного стартового seed: модель сама решает, когда вызывать `search_rag`, а когда достаточно обычных file-tools.
 - `rag` отвечает только по найденным evidence chunks, поэтому качество зависит от embedding-модели и параметров chunking.
