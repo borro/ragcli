@@ -46,6 +46,9 @@ usage = "Directory for the local index."
 [cli.flag.rag.rerank]
 usage = "Rerank strategy: heuristic, off, model."
 
+[cli.flag.tools.rag]
+usage = "Enable the semantic retrieval tool search_rag with pre-indexing of the input."
+
 [cli.flag.path]
 usage = "Path to the input file or directory. If omitted, the command reads stdin."
 
@@ -98,10 +101,11 @@ Examples:
 
 """
 tools = """
-Gives the model list_files, search_file, read_lines, and read_around tools so it can investigate the file or directory on its own.
+Gives the model list_files, search_file, read_lines, and read_around tools so it can investigate the file or directory on its own. With `--rag`, it also enables the semantic retrieval tool search_rag and prebuilds a local index.
 
 Examples:
   ragcli tools --path file.txt "What are the key points in the architecture section?"
+  ragcli tools --rag --path file.txt --embedding-model text-embedding-3-small "What does it say about the retry policy?"
   ragcli tools --path app.log --debug "Where do the logs show the causes of 5xx?"
 
 """

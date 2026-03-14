@@ -163,6 +163,7 @@
 Режим должен:
 
 - отдавать модели набор локальных инструментов `list_files`, `search_file`, `read_lines`, `read_around`;
+- по флагу `--rag` дополнительно прединдексировать вход и отдавать инструмент `search_rag`;
 - для directory input давать модели способ перечислить доступные relative paths перед file-local reads;
 - для directory input поддерживать corpus-wide search и file-local reads через обязательный `path` у `read_lines`/`read_around`;
 - крутить tool loop до финального ответа, лимита ходов или forced finalization;
@@ -176,8 +177,23 @@
 - `list_files(limit, offset)`
 - `search_file(query, mode, limit, offset, context_lines)`
 - `search_file(path?, query, mode, limit, offset, context_lines)`
+- `search_rag(query, limit, offset)`
+- `search_rag(path?, query, limit, offset)`
 - `read_lines(path?, start_line, end_line)`
 - `read_around(path?, line, before, after)`
+
+Опции `tools`:
+
+| Flag | Env | Значение | Default |
+| --- | --- | --- | --- |
+| `--rag` | `TOOLS_RAG` | Включить pre-index + `search_rag` | `false` |
+| `--embedding-model` | `EMBEDDING_MODEL` | Embedding-модель для `search_rag` | `text-embedding-nomic-embed-text-v1.5` |
+| `--rag-top-k` | `RAG_TOP_K` | Максимум semantic candidates для `search_rag` | `8` |
+| `--rag-chunk-size` | `RAG_CHUNK_SIZE` | Размер чанка индекса для `tools --rag` | `1800` |
+| `--rag-chunk-overlap` | `RAG_CHUNK_OVERLAP` | Overlap соседних чанков | `200` |
+| `--rag-index-ttl` | `RAG_INDEX_TTL` | TTL локального индекса | `24h` |
+| `--rag-index-dir` | `RAG_INDEX_DIR` | Базовая директория индексов | `os.TempDir()/ragcli-index` |
+| `--rag-rerank` | `RAG_RERANK` | Стратегия rerank для `search_rag` | `heuristic` |
 
 Публичные лимиты текущей реализации:
 
@@ -196,7 +212,7 @@
 ### 5.2 Локальные артефакты и приватность
 
 - `stdin` сохраняется во временный файл только на время обработки и затем удаляется.
-- Индексы `rag` лежат на локальной файловой системе и публикуются атомарно через temp dir + rename.
+- Индексы `rag` и `tools --rag` лежат на локальной файловой системе и публикуются атомарно через temp dir + rename.
 - Права на индексные файлы и временные директории должны быть приватными (`0700` для директорий, `0600` для файлов).
 - Просроченные индексы должны очищаться по TTL.
 

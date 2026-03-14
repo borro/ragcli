@@ -12,6 +12,7 @@ import (
 	"github.com/borro/ragcli/internal/localize"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
+	toolsmode "github.com/borro/ragcli/internal/tools"
 )
 
 func setLangEnv(t *testing.T, value string) {
@@ -133,6 +134,21 @@ func TestRunRAGHelp(t *testing.T) {
 	for _, needle := range []string{"--embedding-model", "--rag-top-k", "--rag-index-ttl"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in rag help:\n%s", needle, output)
+		}
+	}
+}
+
+func TestRunToolsHelpIncludesRAGFlags(t *testing.T) {
+	var stdout bytes.Buffer
+
+	exitCode := Run([]string{"tools", "--help"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
+	if exitCode != 0 {
+		t.Fatalf("Run(tools --help) exit code = %d, want 0", exitCode)
+	}
+	output := stdout.String()
+	for _, needle := range []string{"--rag", "--embedding-model", "--rag-top-k", "--rag-index-dir"} {
+		if !strings.Contains(output, needle) {
+			t.Fatalf("stdout missing %q in tools help:\n%s", needle, output)
 		}
 	}
 }
@@ -334,6 +350,22 @@ func TestCLIRAGCommandBindingFromEnv(t *testing.T) {
 	}
 	if mustPayload[rag.Options](t, captured).TopK != 9 {
 		t.Fatalf("TopK = %d, want 9", mustPayload[rag.Options](t, captured).TopK)
+	}
+	if captured.LLM.EmbeddingModel != "embed-v2" {
+		t.Fatalf("EmbeddingModel = %q, want embed-v2", captured.LLM.EmbeddingModel)
+	}
+}
+
+func TestCLIToolsRAGBinding(t *testing.T) {
+	captured, _, err := runCLIForTest([]string{"tools", "--rag", "--embedding-model", "embed-v2", "--rag-top-k", "11", "question"})
+	if err != nil {
+		t.Fatalf("runCLIForTest() error = %v", err)
+	}
+	if !mustPayload[toolsmode.Options](t, captured).EnableRAG {
+		t.Fatalf("EnableRAG = %v, want true", mustPayload[toolsmode.Options](t, captured).EnableRAG)
+	}
+	if mustPayload[toolsmode.Options](t, captured).RAG.TopK != 11 {
+		t.Fatalf("TopK = %d, want 11", mustPayload[toolsmode.Options](t, captured).RAG.TopK)
 	}
 	if captured.LLM.EmbeddingModel != "embed-v2" {
 		t.Fatalf("EmbeddingModel = %q, want embed-v2", captured.LLM.EmbeddingModel)

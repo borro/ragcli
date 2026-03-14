@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Пакет реализует режим `tools`: tool-calling orchestration loop, в котором модель исследует файл или директорию через локальные инструменты и только потом формирует ответ.
+Пакет реализует режим `tools`: tool-calling orchestration loop, в котором модель исследует файл или директорию через локальные инструменты и только потом формирует ответ. При `--rag` режим заранее строит retrieval index и добавляет semantic retrieval tool `search_rag`.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
@@ -15,8 +15,9 @@
 
 ## Ключевые entrypoints/types
 
-- `Run(ctx, client, source, prompt, plan)`
-- `NewToolsConfig(prompt, source, definitions)`
+- `Options`
+- `Run(ctx, client, embedder, source, opts, prompt, plan)`
+- `NewToolsConfig(prompt, source, opts, definitions)`
 - `toolLoopState`
 - `orchestrationError`
 
@@ -32,18 +33,21 @@
 - `internal/llm`
 - `internal/aitools`
 - `internal/aitools/files`
+- `internal/aitools/rag`
+- `internal/rag`
 - `internal/verbose`
 - `internal/localize`
 
 ## Основной поток
 
-1. Создаются file-domain tools через `aitools/files`, затем из них собирается registry в `aitools`.
-2. В каждом turn модель получает chat request с доступными инструментами.
-3. Запрошенные tool calls выполняются локально через registry из `aitools`.
-4. Результаты сериализуются в JSON и возвращаются модели как `role=tool`.
-5. Loop отслеживает cache hits, duplicate calls и отсутствие прогресса.
-6. При зацикливании применяются stop/retry/forced-finalization guards.
-7. Возвращается финальный текстовый ответ.
+1. Создаются file-domain tools через `aitools/files`.
+2. При `opts.EnableRAG` заранее поднимается `internal/rag.PreparedSearch` и добавляется tool `search_rag` из `internal/aitools/rag`.
+3. В каждом turn модель получает chat request с доступными инструментами.
+4. Запрошенные tool calls выполняются локально через registry из `aitools`.
+5. Результаты сериализуются в JSON и возвращаются модели как `role=tool`.
+6. Loop отслеживает cache hits, duplicate calls и отсутствие прогресса.
+7. При зацикливании применяются stop/retry/forced-finalization guards.
+8. Возвращается финальный текстовый ответ.
 
 ## Инварианты и ошибки
 
@@ -51,6 +55,7 @@
 - JSON — единственный wire-format результатов инструментов.
 - Для directory input `list_files` перечисляет доступные relative paths.
 - Для directory input `search_file` может искать по всему corpus, а `read_lines`/`read_around` требуют `path`.
+- При `--rag` semantic retrieval идёт через `search_rag`, но финальный ответ всё равно собирает orchestration loop, а не сам tool.
 - Повторные вызовы тех же инструментов не должны бесконечно расширять context без новых строк.
 - Tracking прогресса должен различать одинаковые номера строк в разных файлах.
 - Пустой финальный ответ после лимитов превращается в orchestration error.
@@ -58,6 +63,7 @@
 ## Что подтверждают тесты
 
 - single-shot и multi-step tool loop;
+- optional `search_rag` и pre-index для `--rag`;
 - retry при пустом финальном ответе;
 - guards на duplicate search/read;
 - предупреждение, если backend сразу отвечает без инструментов;
@@ -66,6 +72,6 @@
 ## Куда вносить изменения
 
 - Orchestration loop и лимиты: `run.go`.
-- Добавление нового file tool почти всегда требует и изменения constructors в `internal/aitools/files`.
+- Добавление нового tool почти всегда требует и изменения constructors в соответствующем доменном пакете `internal/aitools/*`.
 - При изменении JSON-контрактов обновляйте документацию пакета и общую архитектуру.
 - Локализованные prompts и progress режима: `i18n/{en,ru}.toml`.

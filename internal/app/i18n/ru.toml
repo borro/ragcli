@@ -46,6 +46,9 @@ usage = "Каталог локального индекса."
 [cli.flag.rag.rerank]
 usage = "Стратегия rerank: heuristic, off, model."
 
+[cli.flag.tools.rag]
+usage = "Включить semantic retrieval tool search_rag с предварительной индексацией входа."
+
 [cli.flag.path]
 usage = "Путь к входному файлу или директории. Если не задан, команда читает stdin."
 
@@ -98,10 +101,11 @@ Examples:
 
 """
 tools = """
-Дает модели инструменты list_files, search_file, read_lines и read_around, чтобы она сама исследовала файл или директорию и нашла нужные строки.
+Дает модели инструменты list_files, search_file, read_lines и read_around, чтобы она сама исследовала файл или директорию и нашла нужные строки. С `--rag` дополнительно включает semantic retrieval tool search_rag и заранее строит локальный индекс.
 
 Examples:
   ragcli tools --path file.txt "Какие ключевые моменты обсуждаются в разделе про архитектуру?"
+  ragcli tools --rag --path file.txt --embedding-model text-embedding-3-small "Что сказано про retry policy?"
   ragcli tools --path app.log --debug "Где в логах причины 5xx?"
 
 """

@@ -11,9 +11,11 @@ import (
 
 	"github.com/borro/ragcli/internal/aitools"
 	"github.com/borro/ragcli/internal/aitools/files"
+	ragtools "github.com/borro/ragcli/internal/aitools/rag"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
+	ragruntime "github.com/borro/ragcli/internal/rag"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -36,6 +38,7 @@ type toolsConfig struct {
 type orchestratorStats struct {
 	uniqueLists      int
 	uniqueSearches   int
+	uniqueRAGSearch  int
 	uniqueReads      int
 	cacheHits        int
 	duplicateCalls   int
@@ -58,7 +61,7 @@ func (e orchestrationError) Error() string {
 
 type toolLoopState struct {
 	registry              aitools.Registry
-	seenLines             map[string]struct{}
+	seenLinesByDomain     map[string]map[string]struct{}
 	consecutiveNoProgress int
 	consecutiveDuplicates int
 	stats                 orchestratorStats
@@ -73,15 +76,15 @@ type toolExecutionMeta struct {
 	SuggestedNextOffset int    `json:"suggested_next_offset,omitempty"`
 }
 
-func NewToolsConfig(prompt string, source input.FileBackedSource, definitions []openai.Tool) toolsConfig {
+func NewToolsConfig(prompt string, source input.FileBackedSource, opts Options, definitions []openai.Tool) toolsConfig {
 	systemMessage := openai.ChatCompletionMessage{
 		Role:    "system",
-		Content: localize.T("tools.prompt.system"),
+		Content: buildToolsSystemPrompt(opts),
 	}
 
 	userQuestion := openai.ChatCompletionMessage{
 		Role:    "user",
-		Content: buildToolsUserPrompt(prompt, source),
+		Content: buildToolsUserPrompt(prompt, source, opts),
 	}
 
 	return toolsConfig{
@@ -91,7 +94,15 @@ func NewToolsConfig(prompt string, source input.FileBackedSource, definitions []
 	}
 }
 
-func buildToolsUserPrompt(prompt string, source input.FileBackedSource) string {
+func buildToolsSystemPrompt(opts Options) string {
+	lines := []string{strings.TrimSpace(localize.T("tools.prompt.system"))}
+	if opts.EnableRAG {
+		lines = append(lines, strings.TrimSpace(localize.T("tools.prompt.rag_enabled")))
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func buildToolsUserPrompt(prompt string, source input.FileBackedSource, opts Options) string {
 	lines := []string{
 		localize.T("tools.prompt.user.path_attached"),
 	}
@@ -107,11 +118,14 @@ func buildToolsUserPrompt(prompt string, source input.FileBackedSource) string {
 			lines = append(lines, localize.T("tools.prompt.user.stdin_hint"))
 		}
 	}
+	if opts.EnableRAG {
+		lines = append(lines, localize.T("tools.prompt.user.rag_hint"))
+	}
 	lines = append(lines, localize.T("tools.prompt.user.question", localize.Data{"Prompt": prompt}))
 	return strings.Join(lines, "\n")
 }
 
-func Run(ctx context.Context, client llm.ChatRequester, source input.FileBackedSource, prompt string, plan *verbose.Plan) (string, error) {
+func Run(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRequester, source input.FileBackedSource, opts Options, prompt string, plan *verbose.Plan) (string, error) {
 	startedAt := time.Now()
 	readerPath := source.SnapshotPath()
 	if readerPath == "" {
@@ -119,12 +133,16 @@ func Run(ctx context.Context, client llm.ChatRequester, source input.FileBackedS
 	}
 	slog.Debug("tools processing started", "input_path", source.InputPath(), "reader_path", readerPath, "file_count", source.FileCount())
 	initMeter := plan.Stage("init")
+	indexMeter := plan.Stage("index")
 	loopMeter := plan.Stage("loop")
 	finalMeter := plan.Stage("final")
 	initMeter.Start(localize.T("progress.tools.session_start"))
 
-	loopState := newToolLoopState(source)
-	toolsConfig := NewToolsConfig(prompt, source, loopState.registry.ToolDefinitions())
+	loopState, err := newToolLoopState(ctx, source, embedder, opts, indexMeter)
+	if err != nil {
+		return "", err
+	}
+	toolsConfig := NewToolsConfig(prompt, source, opts, loopState.registry.ToolDefinitions())
 	messages := make([]openai.ChatCompletionMessage, 0, 2)
 	messages = append(messages, toolsConfig.systemMessage, toolsConfig.userQuestion)
 	initMeter.Done(localize.T("progress.tools.session_done"))
@@ -140,6 +158,7 @@ func Run(ctx context.Context, client llm.ChatRequester, source input.FileBackedS
 			"duration", float64(time.Since(startedAt).Round(time.Millisecond))/float64(time.Second),
 			"unique_lists", loopState.stats.uniqueLists,
 			"unique_searches", loopState.stats.uniqueSearches,
+			"unique_rag_searches", loopState.stats.uniqueRAGSearch,
 			"unique_reads", loopState.stats.uniqueReads,
 			"cache_hits", loopState.stats.cacheHits,
 			"duplicate_calls", loopState.stats.duplicateCalls,
@@ -298,7 +317,7 @@ func Run(ctx context.Context, client llm.ChatRequester, source input.FileBackedS
 	}
 }
 
-func newToolLoopState(source input.FileBackedSource) *toolLoopState {
+func newToolLoopState(ctx context.Context, source input.FileBackedSource, embedder llm.EmbeddingRequester, opts Options, indexMeter verbose.Meter) (*toolLoopState, error) {
 	var reader files.LineReader
 	if source.IsMultiFile() {
 		corpusFiles := make([]files.CorpusFile, 0, source.FileCount())
@@ -310,17 +329,24 @@ func newToolLoopState(source input.FileBackedSource) *toolLoopState {
 		}
 		reader = files.NewCorpusReader(corpusFiles)
 	} else {
-		if source.Kind() == input.KindStdin {
-			reader = files.NewNamedFileReader(source.SnapshotPath(), source.DisplayName())
-		} else {
-			reader = files.NewFileReader(source.SnapshotPath())
-		}
+		reader = files.NewNamedFileReader(source.SnapshotPath(), source.DisplayName())
 	}
 	toolset := files.NewTools(reader, files.ToolOptions{MultiFile: source.IsMultiFile()})
-	return &toolLoopState{
-		registry:  aitools.NewRegistry(toolset...),
-		seenLines: make(map[string]struct{}),
+	if opts.EnableRAG {
+		if embedder == nil {
+			return nil, errors.New("tools rag requires embedding client")
+		}
+		indexMeter.Start(localize.T("progress.rag.read_input"))
+		searcher, _, err := ragruntime.PrepareSearch(ctx, embedder, source, opts.RAG, indexMeter)
+		if err != nil {
+			return nil, err
+		}
+		toolset = append(toolset, ragtools.NewTool(searcher, embedder))
 	}
+	return &toolLoopState{
+		registry:          aitools.NewRegistry(toolset...),
+		seenLinesByDomain: make(map[string]map[string]struct{}),
+	}, nil
 }
 
 func summarizeToolMeta(name string, meta toolExecutionMeta, index int, total int) string {
@@ -439,12 +465,18 @@ func (s *toolLoopState) executeToolCall(ctx context.Context, call openai.ToolCal
 	for _, key := range result.ProgressKeys {
 		lineKeys[key] = struct{}{}
 	}
+	domain := coverageDomain(call.Function.Name)
+	seenLines := s.seenLinesByDomain[domain]
+	if seenLines == nil {
+		seenLines = make(map[string]struct{})
+		s.seenLinesByDomain[domain] = seenLines
+	}
 	novelLines := 0
 	for key := range lineKeys {
-		if _, seen := s.seenLines[key]; seen {
+		if _, seen := seenLines[key]; seen {
 			continue
 		}
-		s.seenLines[key] = struct{}{}
+		seenLines[key] = struct{}{}
 		novelLines++
 	}
 
@@ -471,11 +503,24 @@ func (s *toolLoopState) executeToolCall(ctx context.Context, call openai.ToolCal
 		s.stats.uniqueLists++
 	case "search_file":
 		s.stats.uniqueSearches++
+	case "search_rag":
+		s.stats.uniqueRAGSearch++
 	case "read_lines", "read_around":
 		s.stats.uniqueReads++
 	}
 
 	return annotated, meta, nil
+}
+
+func coverageDomain(toolName string) string {
+	switch toolName {
+	case "search_rag":
+		return "rag"
+	case "list_files", "search_file", "read_lines", "read_around":
+		return "files"
+	default:
+		return "default"
+	}
 }
 
 func annotateToolPayload(raw string, meta toolExecutionMeta) (string, error) {

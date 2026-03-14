@@ -503,8 +503,25 @@ func embedQuery(ctx context.Context, embedder llm.EmbeddingRequester, question s
 }
 
 func retrieve(index *Index, query []float32, question string, opts Options) []candidate {
+	return retrieveCandidates(index, query, question, SearchOptionsFromRunOptions(opts), "")
+}
+
+func retrieveSearchHits(index *Index, query []float32, question string, opts SearchOptions, pathFilter string) []SearchHit {
+	ranked := retrieveCandidates(index, query, question, opts, pathFilter)
+	hits := make([]SearchHit, 0, len(ranked))
+	for _, hit := range ranked {
+		hits = append(hits, SearchHit(hit))
+	}
+	return hits
+}
+
+func retrieveCandidates(index *Index, query []float32, question string, opts SearchOptions, pathFilter string) []candidate {
 	ranked := make([]candidate, 0, len(index.Chunks))
+	filter := strings.TrimSpace(pathFilter)
 	for i, chunk := range index.Chunks {
+		if filter != "" && chunk.SourcePath != filter {
+			continue
+		}
 		similarity := retrieval.CosineSimilarity(query, index.Embeddings[i])
 		ranked = append(ranked, candidate{
 			Chunk:      chunk,

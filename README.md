@@ -26,7 +26,7 @@
 | --- | --- | --- | --- |
 | `map` | Нужно разбить большой файл на чанки и агрегировать ответ по ним | Работает с объёмом, который неудобно отправлять одним куском | На больших файлах может быть медленным, а между чанками теряется часть контекста |
 | `rag` | Нужен retrieval по релевантным фрагментам, а не чтение файла целиком | Локальный индекс и ответ по evidence chunks | Нужен совместимый embedding endpoint (`/embeddings`) |
-| `tools` | Нужно найти конкретные строки, секции или причины в файле или директории | Модель умеет вызывать `list_files`, `search_file`, `read_lines`, `read_around` | Требуется корректная поддержка tool calling на backend'е |
+| `tools` | Нужно найти конкретные строки, секции или причины в файле или директории | Модель умеет вызывать `list_files`, `search_file`, `read_lines`, `read_around`, а с `--rag` ещё и `search_rag` | Требуется корректная поддержка tool calling на backend'е |
 
 Короткая эвристика:
 - Для больших логов и summary-задач начинайте с `map`, если файл не помещается в один запрос и вас устраивает более долгий прогон.
@@ -77,6 +77,7 @@ $env:LLM_PROXY_URL = "http://127.0.0.1:1080"
 ./ragcli map --path document.txt "Какие основные выводы?"
 ./ragcli rag --path spec.txt "Что сказано про retry policy?"
 ./ragcli tools --path app.log "Где в логах причины 5xx?"
+./ragcli tools --rag --path spec.txt --embedding-model text-embedding-3-small "Что сказано про retry policy?"
 ./ragcli rag --proxy-url http://127.0.0.1:1080 --path spec.txt "Какие ограничения описаны?"
 ```
 
@@ -85,7 +86,7 @@ $env:LLM_PROXY_URL = "http://127.0.0.1:1080"
 - `map` полезен, когда файл приходится обрабатывать чанками, но на больших файлах такой прогон может занимать заметное время.
 - На локальных моделях и при фактически последовательной обработке `map` обычно не даёт выигрыша по скорости.
 - `rag` отвечает только по найденным evidence chunks, поэтому качество зависит от embedding-модели и параметров chunking.
-- `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `list_files`, `search_file`, `read_lines` и `read_around`.
+- `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `list_files`, `search_file`, `read_lines` и `read_around`. С `--rag` режим заранее строит локальный индекс и добавляет semantic retrieval tool `search_rag`.
 - `--path` может указывать и на директорию: `map` работает по synthetic corpus, а `rag`/`tools` сохраняют file-aware пути и line numbers.
 - Если backend плохо поддерживает tool calling, режим `tools` может работать менее надёжно.
 - В интерактивном терминале `ragcli` рендерит финальный Markdown-ответ через ANSI-стили; если вывод перенаправлен в файл или pipe, остаётся сырой Markdown без ANSI.
@@ -128,6 +129,8 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 
 ```bash
 ./ragcli tools --path app.log "Где начинаются ошибки авторизации?"
+./ragcli tools --rag --path architecture.md --embedding-model text-embedding-3-small \
+  "Что сказано про retry policy?"
 ./ragcli tools --path handbook.md --debug \
   "Что сказано про release process и rollback?"
 ```
@@ -180,6 +183,17 @@ cat spec.txt | ./ragcli rag --rag-top-k 10 --rag-final-k 5 \
 - `--embedding-model` или `EMBEDDING_MODEL`
 - `--rag-top-k` или `RAG_TOP_K`
 - `--rag-final-k` или `RAG_FINAL_K`
+- `--rag-chunk-size` или `RAG_CHUNK_SIZE`
+- `--rag-chunk-overlap` или `RAG_CHUNK_OVERLAP`
+- `--rag-index-ttl` или `RAG_INDEX_TTL`
+- `--rag-index-dir` или `RAG_INDEX_DIR`
+- `--rag-rerank` или `RAG_RERANK`
+
+`tools`:
+
+- `--rag` или `TOOLS_RAG`
+- `--embedding-model` или `EMBEDDING_MODEL`
+- `--rag-top-k` или `RAG_TOP_K`
 - `--rag-chunk-size` или `RAG_CHUNK_SIZE`
 - `--rag-chunk-overlap` или `RAG_CHUNK_OVERLAP`
 - `--rag-index-ttl` или `RAG_INDEX_TTL`

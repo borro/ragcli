@@ -29,6 +29,7 @@
 
 - `internal/tools`
 - `internal/aitools/files`
+- `internal/aitools/rag`
 - будущие доменные пакеты `internal/aitools/<domain>`
 
 Исходящие:

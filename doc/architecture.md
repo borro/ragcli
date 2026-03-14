@@ -187,22 +187,26 @@ flowchart TD
 
 ### 5.3 `tools`
 
-`tools` не строит retrieval index и не загружает файл в prompt целиком. Вместо этого режим оркестрирует диалог модели с локальными file-tools: `list_files`, `search_file`, `read_lines`, `read_around`.
+По умолчанию `tools` не строит retrieval index и не загружает файл в prompt целиком. Вместо этого режим оркестрирует диалог модели с локальными file-tools: `list_files`, `search_file`, `read_lines`, `read_around`.
+
+Если передан `--rag`, режим до первого LLM turn строит или загружает тот же локальный embeddings index, что использует `rag`, и добавляет semantic retrieval tool `search_rag`.
 
 Реальный pipeline:
 
 1. Создаётся tools session с `system` и `user` сообщениями.
-2. В каждом turn отправляется chat request с tool definitions.
-3. Если модель запросила tool calls, `toolLoopState` выполняет их локально.
-4. Результаты возвращаются как `role=tool` сообщения в JSON.
-5. Loop отслеживает duplicate calls, already-seen строки и уже перечисленные пути, а также no-progress runs.
-6. При зацикливании включаются защитные ветки: retry without tools, stop-calls prompt, forced finalization.
-7. Режим завершает работу, когда получает содержательный финальный text answer.
+2. При `--rag` заранее выполняется build/load retrieval index через `internal/rag`.
+3. В каждом turn отправляется chat request с tool definitions.
+4. Если модель запросила tool calls, `toolLoopState` выполняет их локально.
+5. Результаты возвращаются как `role=tool` сообщения в JSON.
+6. Loop отслеживает duplicate calls, already-seen строки и уже перечисленные пути, а также no-progress runs.
+7. При зацикливании включаются защитные ветки: retry without tools, stop-calls prompt, forced finalization.
+8. Режим завершает работу, когда получает содержательный финальный text answer.
 
-Почему `aitools`/`aitools/files` вынесены отдельно:
+Почему `aitools`/`aitools/files`/`aitools/rag` вынесены отдельно:
 
 - общий AI-tool registry и контракты должны переиспользоваться между режимами;
 - файловый домен удобно развивать отдельно от orchestration loop и отдельно от будущих не-файловых tools;
+- retrieval-domain tools удобно собирать отдельно от file-domain tools, но на том же базовом `aitools.Registry`;
 - каждый concrete tool можно подключать в разных сочетаниях через общий `aitools.Registry`.
 
 ## 6. Файловые и временные артефакты

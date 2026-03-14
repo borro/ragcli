@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/borro/ragcli/internal/aitools"
 	"github.com/borro/ragcli/internal/localize"
@@ -150,66 +149,30 @@ func canonicalToolSignature(call openai.ToolCall) (string, error) {
 }
 
 func (b *baseTool) execute(ctx context.Context, name string, call openai.ToolCall) (aitools.ExecuteResult, error) {
-	select {
-	case <-ctx.Done():
-		return aitools.ExecuteResult{}, ctx.Err()
-	default:
-	}
+	return aitools.ExecuteCachedTool(ctx, call, aitools.CachedExecutionSpec{
+		Name:               name,
+		Cache:              b.cache,
+		SummarizeArguments: SummarizeToolArguments,
+		CanonicalSignature: canonicalToolSignature,
+		Execute: func(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
+			raw, err := executeToolRaw(call, b.reader)
+			if err != nil {
+				return aitools.ExecuteResult{}, err
+			}
 
-	if call.Function.Name != name {
-		err := NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
-			"tool": call.Function.Name,
-		})
-		aitools.LogToolCallError(call, 0, err)
-		return aitools.ExecuteResult{}, err
-	}
+			keys, err := progressKeys(call.Function.Name, raw)
+			if err != nil {
+				return aitools.ExecuteResult{}, err
+			}
 
-	aitools.LogToolCallStarted(call, SummarizeToolArguments(call))
-
-	signature, err := canonicalToolSignature(call)
-	if err != nil {
-		aitools.LogToolCallError(call, 0, err)
-		return aitools.ExecuteResult{}, err
-	}
-
-	if cached, ok := b.cache[signature]; ok {
-		result := cloneExecuteResult(cached)
-		result.Cached = true
-		result.Duplicate = true
-
-		summary := cloneSummary(result.Summary)
-		if summary == nil {
-			summary = map[string]any{}
-		}
-		summary["cached"] = true
-		summary["duplicate"] = true
-		aitools.LogToolCallFinished(call, 0, "cached", summary)
-		return result, nil
-	}
-
-	startedAt := time.Now()
-	raw, err := executeToolRaw(call, b.reader)
-	if err != nil {
-		aitools.LogToolCallError(call, time.Since(startedAt), err)
-		return aitools.ExecuteResult{}, err
-	}
-
-	keys, err := progressKeys(call.Function.Name, raw)
-	if err != nil {
-		aitools.LogToolCallError(call, time.Since(startedAt), err)
-		return aitools.ExecuteResult{}, err
-	}
-
-	result := aitools.ExecuteResult{
-		Payload:      raw,
-		Summary:      cloneSummary(SummarizeToolResult(call.Function.Name, raw)),
-		ProgressKeys: cloneStrings(keys),
-		Hints:        cloneHints(toolHints(call.Function.Name, raw)),
-	}
-	b.cache[signature] = cloneExecuteResult(result)
-
-	aitools.LogToolCallFinished(call, time.Since(startedAt), "ok", cloneSummary(result.Summary))
-	return cloneExecuteResult(result), nil
+			return aitools.ExecuteResult{
+				Payload:      raw,
+				Summary:      aitools.CloneSummary(SummarizeToolResult(call.Function.Name, raw)),
+				ProgressKeys: aitools.CloneStrings(keys),
+				Hints:        aitools.CloneHints(toolHints(call.Function.Name, raw)),
+			}, nil
+		},
+	})
 }
 
 type listFilesTool struct {
@@ -519,44 +482,4 @@ func toolHints(toolName, raw string) map[string]any {
 		return map[string]any{HintSuggestedNextOffset: next}
 	}
 	return nil
-}
-
-func cloneExecuteResult(result aitools.ExecuteResult) aitools.ExecuteResult {
-	return aitools.ExecuteResult{
-		Payload:      result.Payload,
-		Summary:      cloneSummary(result.Summary),
-		Cached:       result.Cached,
-		Duplicate:    result.Duplicate,
-		ProgressKeys: cloneStrings(result.ProgressKeys),
-		Hints:        cloneHints(result.Hints),
-	}
-}
-
-func cloneSummary(summary map[string]any) map[string]any {
-	if summary == nil {
-		return nil
-	}
-	cloned := make(map[string]any, len(summary))
-	for key, value := range summary {
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneStrings(values []string) []string {
-	if values == nil {
-		return nil
-	}
-	return append([]string(nil), values...)
-}
-
-func cloneHints(hints map[string]any) map[string]any {
-	if hints == nil {
-		return nil
-	}
-	cloned := make(map[string]any, len(hints))
-	for key, value := range hints {
-		cloned[key] = value
-	}
-	return cloned
 }

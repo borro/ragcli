@@ -10,7 +10,7 @@ calls_done = "done {{.Count}} tool calls"
 final_done = "final answer received on turn {{.Turn}}"
 meta_novel = "{{.Base}}: received {{.Count}} new lines"
 meta_cached = "{{.Base}}: using cached result"
-meta_seen = "{{.Base}}: no new lines, everything was already read"
+meta_seen = "{{.Base}}: no new context, these lines were already found earlier"
 meta_duplicate = "{{.Base}}: repeated call without new context"
 meta_done = "{{.Base}}: result received"
 
@@ -37,6 +37,12 @@ Tool results arrive as JSON. Use the fields total_matches, has_more, next_offset
 Write the final answer in the user's question language unless the user explicitly asks for another language.
 
 """
+rag_enabled = """
+If the search_rag tool is available, use it for semantic or broad retrieval over the prepared index when you do not know the exact wording or need meaning-based matches.
+After search_rag, use read_lines or read_around to verify exact wording and local context when needed.
+search_file remains the exact string and keyword search tool; search_rag does not replace it completely.
+Answer only from the results of search_rag, search_file, read_lines, read_around, and list_files when it was needed.
+"""
 final_retry = "Write the final answer now. Do not ask for the input path again. If the tools were not used or the data is insufficient, say that directly."
 stop_calls = "Stop calling tools and provide the final answer in plain text using the data already found and the tool results. If the data is insufficient, say so directly."
 
@@ -47,4 +53,5 @@ file_count = "Files available for analysis: {{.Count}}."
 list_hint = "If you need to choose a file inside the directory, call list_files first."
 single_file_hint = "Exactly one file is attached. Do not try to enumerate files and do not ask which file to open: list_files is not needed here. Use search_file, read_lines, and read_around directly; path may be omitted."
 stdin_hint = "This single file came from stdin and is already attached to the session. Treat it as one attached file, not as a directory."
+rag_hint = "Semantic retrieval via search_rag is available: use it first for meaning-based search over the index, then verify exact lines with read_lines or read_around when needed."
 question = "Question: {{printf \"%q\" .Prompt}}"

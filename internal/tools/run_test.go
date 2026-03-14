@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,10 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
+	ragruntime "github.com/borro/ragcli/internal/rag"
 	"github.com/borro/ragcli/internal/verbose"
 	"github.com/borro/ragcli/internal/verbose/testutil"
 	openai "github.com/sashabaranov/go-openai"
@@ -45,6 +48,12 @@ type testSource struct {
 	inputPath    string
 	snapshotPath string
 	files        []input.File
+}
+
+type embeddingRequesterFunc func(context.Context, []string) ([][]float32, llm.EmbeddingMetrics, error)
+
+func (f embeddingRequesterFunc) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
+	return f(ctx, inputs)
 }
 
 func (s testSource) Kind() input.Kind {
@@ -139,7 +148,7 @@ func runTools(ctx context.Context, client llm.ChatRequester, filePath string, pr
 }
 
 func runToolsWithSource(ctx context.Context, client llm.ChatRequester, source input.FileBackedSource, prompt string, plan *verbose.Plan) (string, error) {
-	return Run(ctx, client, source, prompt, plan)
+	return Run(ctx, client, nil, source, Options{}, prompt, plan)
 }
 
 func pathExists(path string) bool {
@@ -148,6 +157,52 @@ func pathExists(path string) bool {
 	}
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func fakeToolsEmbedder() llm.EmbeddingRequester {
+	return embeddingRequesterFunc(func(_ context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
+		vectors := make([][]float32, 0, len(inputs))
+		for _, input := range inputs {
+			vectors = append(vectors, vectorFor(input))
+		}
+		return vectors, llm.EmbeddingMetrics{
+			InputCount:   len(inputs),
+			VectorCount:  len(vectors),
+			PromptTokens: len(inputs),
+			TotalTokens:  len(inputs),
+		}, nil
+	})
+}
+
+func vectorFor(input string) []float32 {
+	lower := strings.ToLower(input)
+	switch {
+	case strings.Contains(lower, "retry"):
+		return []float32{1, 0, 0}
+	case strings.Contains(lower, "backoff"):
+		return []float32{0.8, 0.1, 0}
+	case strings.Contains(lower, "database"):
+		return []float32{0, 1, 0}
+	default:
+		return []float32{0, 0, 0}
+	}
+}
+
+func defaultRAGSearchOptions(t *testing.T) ragruntime.SearchOptions {
+	t.Helper()
+	return ragruntime.SearchOptions{
+		TopK:           8,
+		ChunkSize:      1000,
+		ChunkOverlap:   200,
+		IndexTTL:       time.Hour,
+		IndexDir:       t.TempDir(),
+		Rerank:         "heuristic",
+		EmbeddingModel: "embed-v1",
+	}
+}
+
+func runToolsWithOptions(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRequester, source input.FileBackedSource, opts Options, prompt string, plan *verbose.Plan) (string, error) {
+	return Run(ctx, client, embedder, source, opts, prompt, plan)
 }
 
 func writeAnonymousTempFile(content string) string {
@@ -612,8 +667,10 @@ func TestRunTools_NoProgressFinalizesWithoutTools(t *testing.T) {
 
 func TestToolLoopState_DuplicateSearchMarksCachedPayload(t *testing.T) {
 	filePath := writeTempFile(t, "alpha\nbeta\n")
-	state := newToolLoopState(fileSource(filePath, filePath))
-
+	state, err := newToolLoopState(context.Background(), fileSource(filePath, filePath), nil, Options{}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("newToolLoopState() error = %v", err)
+	}
 	first, _, err := state.executeToolCall(context.Background(), toolCall("call-1", "search_file", `{"query":"alpha"}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(first) error = %v", err)
@@ -650,8 +707,10 @@ func TestToolLoopState_StdinAliasPathWorksForSingleFileReader(t *testing.T) {
 			DisplayPath: "stdin",
 		}},
 	}
-	state := newToolLoopState(source)
-
+	state, err := newToolLoopState(context.Background(), source, nil, Options{}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("newToolLoopState() error = %v", err)
+	}
 	result, meta, err := state.executeToolCall(context.Background(), toolCall("call-stdin", "search_file", `{"path":"stdin","query":"go-openai"}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(stdin alias) error = %v", err)
@@ -666,8 +725,10 @@ func TestToolLoopState_StdinAliasPathWorksForSingleFileReader(t *testing.T) {
 
 func TestToolLoopState_ReadAroundSeenLinesMarksNoProgress(t *testing.T) {
 	filePath := writeTempFile(t, "one\ntwo\nthree\nfour\n")
-	state := newToolLoopState(fileSource(filePath, filePath))
-
+	state, err := newToolLoopState(context.Background(), fileSource(filePath, filePath), nil, Options{}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("newToolLoopState() error = %v", err)
+	}
 	_, firstMeta, err := state.executeToolCall(context.Background(), toolCall("call-1", "read_lines", `{"start_line":1,"end_line":3}`))
 	if err != nil {
 		t.Fatalf("executeToolCall(first) error = %v", err)
@@ -688,10 +749,13 @@ func TestToolLoopState_ReadAroundSeenLinesMarksNoProgress(t *testing.T) {
 func TestToolLoopState_MultiFilePathsKeepSeenLinesSeparate(t *testing.T) {
 	firstPath := writeTempFile(t, "alpha\n")
 	secondPath := writeTempFile(t, "alpha\n")
-	state := newToolLoopState(directorySource("/tmp/corpus", "corpus", []input.File{
+	state, err := newToolLoopState(context.Background(), directorySource("/tmp/corpus", "corpus", []input.File{
 		{Path: firstPath, DisplayPath: "a.txt"},
 		{Path: secondPath, DisplayPath: "b.txt"},
-	}))
+	}), nil, Options{}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("newToolLoopState() error = %v", err)
+	}
 
 	_, firstMeta, err := state.executeToolCall(context.Background(), toolCall("call-1", "read_lines", `{"path":"a.txt","start_line":1,"end_line":1}`))
 	if err != nil {
@@ -711,10 +775,13 @@ func TestToolLoopState_MultiFilePathsKeepSeenLinesSeparate(t *testing.T) {
 }
 
 func TestToolLoopState_ListFilesPaginationCountsAsProgress(t *testing.T) {
-	state := newToolLoopState(directorySource("/tmp/corpus", "corpus", []input.File{
+	state, err := newToolLoopState(context.Background(), directorySource("/tmp/corpus", "corpus", []input.File{
 		{Path: writeTempFile(t, "alpha\n"), DisplayPath: "a.txt"},
 		{Path: writeTempFile(t, "beta\n"), DisplayPath: "b.txt"},
-	}))
+	}), nil, Options{}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("newToolLoopState() error = %v", err)
+	}
 
 	_, firstMeta, err := state.executeToolCall(context.Background(), toolCall("call-1", "list_files", `{"limit":1,"offset":0}`))
 	if err != nil {
@@ -784,6 +851,159 @@ func TestRunTools_UserPromptMentionsToolsFileContext(t *testing.T) {
 	}
 	if !strings.Contains(userPrompt, `Вопрос: "Есть ли тут явные критические ошибки?"`) {
 		t.Fatalf("user prompt = %q, want original question", userPrompt)
+	}
+}
+
+func TestRunTools_RAGAddsSearchToolAndPromptHints(t *testing.T) {
+	setRussianLocale(t)
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "ok", nil)),
+		},
+	}
+
+	filePath := writeTempFile(t, "retry policy enabled\nbackoff is exponential\n")
+	source := fileSource(filePath, filePath)
+	_, err := runToolsWithOptions(context.Background(), client, fakeToolsEmbedder(), source, Options{
+		EnableRAG: true,
+		RAG:       defaultRAGSearchOptions(t),
+	}, "Что сказано про retry policy?", nil)
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+
+	if len(client.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(client.requests))
+	}
+	if len(client.requests[0].Tools) != 4 {
+		t.Fatalf("tools sent = %d, want 4", len(client.requests[0].Tools))
+	}
+
+	foundSearchRAG := false
+	for _, tool := range client.requests[0].Tools {
+		if tool.Function != nil && tool.Function.Name == "search_rag" {
+			foundSearchRAG = true
+		}
+	}
+	if !foundSearchRAG {
+		t.Fatalf("tool definitions = %#v, want search_rag", client.requests[0].Tools)
+	}
+
+	systemPrompt := client.requests[0].Messages[0].Content
+	if !strings.Contains(systemPrompt, "search_rag") {
+		t.Fatalf("system prompt = %q, want search_rag guidance", systemPrompt)
+	}
+	userPrompt := client.requests[0].Messages[1].Content
+	if !strings.Contains(userPrompt, "Доступен semantic retrieval") {
+		t.Fatalf("user prompt = %q, want rag hint", userPrompt)
+	}
+}
+
+func TestRunTools_RAGIndexFailureStopsBeforeFirstLLMRequest(t *testing.T) {
+	client := &scriptedRequester{}
+	source := fileSource(writeTempFile(t, "retry policy\n"), "/tmp/retries.txt")
+	badEmbedder := embeddingRequesterFunc(func(_ context.Context, _ []string) ([][]float32, llm.EmbeddingMetrics, error) {
+		return nil, llm.EmbeddingMetrics{}, errors.New("embed failed")
+	})
+
+	_, err := runToolsWithOptions(context.Background(), client, badEmbedder, source, Options{
+		EnableRAG: true,
+		RAG:       defaultRAGSearchOptions(t),
+	}, "Что сказано про retry policy?", nil)
+	if err == nil || !strings.Contains(err.Error(), "embed failed") {
+		t.Fatalf("RunTools() error = %v, want embed failure", err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("requests = %d, want no chat requests before preindexing succeeds", len(client.requests))
+	}
+}
+
+func TestRunTools_SearchRAGToolLoop(t *testing.T) {
+	setRussianLocale(t)
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "Сначала найду релевантный chunk.", []openai.ToolCall{
+				toolCall("call-1", "search_rag", `{"query":"retry policy"}`),
+			})),
+			chatResponse(message("assistant", "Retry policy включён.", nil)),
+		},
+	}
+
+	filePath := writeTempFile(t, "retry policy enabled\nbackoff is exponential\n")
+	source := fileSource(filePath, filePath)
+	result, err := runToolsWithOptions(context.Background(), client, fakeToolsEmbedder(), source, Options{
+		EnableRAG: true,
+		RAG:       defaultRAGSearchOptions(t),
+	}, "Что сказано про retry policy?", nil)
+	if err != nil {
+		t.Fatalf("RunTools() error = %v", err)
+	}
+	if result != "Retry policy включён." {
+		t.Fatalf("RunTools() result = %q, want final answer", result)
+	}
+	assertToolMessage(t, client.requests[1].Messages, "call-1", "search_rag")
+
+	toolMsg := client.requests[1].Messages[len(client.requests[1].Messages)-1]
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(toolMsg.Content), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(tool message) error = %v", err)
+	}
+	if payload["match_count"] == nil || payload["novel_lines"] == nil {
+		t.Fatalf("tool payload = %#v, want search result and orchestration metadata", payload)
+	}
+}
+
+func TestToolLoopState_SearchRAGAndReadLinesTrackCoverageSeparately(t *testing.T) {
+	filePath := writeTempFile(t, "retry policy enabled\nbackoff is exponential\n")
+	state, err := newToolLoopState(context.Background(), fileSource(filePath, filePath), fakeToolsEmbedder(), Options{
+		EnableRAG: true,
+		RAG:       defaultRAGSearchOptions(t),
+	}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("newToolLoopState() error = %v", err)
+	}
+
+	_, firstMeta, err := state.executeToolCall(context.Background(), toolCall("call-1", "search_rag", `{"query":"retry policy"}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(search_rag) error = %v", err)
+	}
+	_, secondMeta, err := state.executeToolCall(context.Background(), toolCall("call-2", "read_lines", `{"start_line":1,"end_line":2}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(read_lines) error = %v", err)
+	}
+
+	if firstMeta.NovelLines == 0 {
+		t.Fatalf("firstMeta = %+v, want semantic hit to count as progress", firstMeta)
+	}
+	if secondMeta.AlreadySeen || secondMeta.NovelLines == 0 {
+		t.Fatalf("secondMeta = %+v, want file-domain coverage to stay separate from rag coverage", secondMeta)
+	}
+}
+
+func TestToolLoopState_ReadLinesAndSearchRAGTrackCoverageSeparately(t *testing.T) {
+	filePath := writeTempFile(t, "retry policy enabled\nbackoff is exponential\n")
+	state, err := newToolLoopState(context.Background(), fileSource(filePath, filePath), fakeToolsEmbedder(), Options{
+		EnableRAG: true,
+		RAG:       defaultRAGSearchOptions(t),
+	}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("newToolLoopState() error = %v", err)
+	}
+
+	_, firstMeta, err := state.executeToolCall(context.Background(), toolCall("call-1", "read_lines", `{"start_line":1,"end_line":2}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(read_lines) error = %v", err)
+	}
+	_, secondMeta, err := state.executeToolCall(context.Background(), toolCall("call-2", "search_rag", `{"query":"retry policy"}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(search_rag) error = %v", err)
+	}
+
+	if firstMeta.NovelLines == 0 {
+		t.Fatalf("firstMeta = %+v, want file-domain hit to count as progress", firstMeta)
+	}
+	if secondMeta.AlreadySeen || secondMeta.NovelLines == 0 {
+		t.Fatalf("secondMeta = %+v, want rag-domain coverage to stay separate from file coverage", secondMeta)
 	}
 }
 
