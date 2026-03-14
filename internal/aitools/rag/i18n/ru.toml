@@ -1,5 +1,5 @@
 [tools.description]
-search_rag = "Семантически искать по заранее проиндексированному подключённому файлу или корпусу директории. Поддерживает необязательное сужение через path и pagination через limit/offset. Возвращает JSON с query, path, match_count, total_matches, has_more, next_offset и matches с полями path, start_line, end_line, score, text, а также служебные поля cached, duplicate, already_seen, novel_lines, progress_hint, suggested_next_offset."
+search_rag = "Семантически искать по заранее проиндексированному подключённому файлу или корпусу директории. Поддерживает необязательное сужение через path и pagination через limit/offset. Возвращает JSON с query, path, match_count, total_matches, has_more, next_offset и matches с полями chunk_id, path, start_line, end_line, similarity, overlap, score, text, а также служебные поля cached, duplicate, already_seen, novel_lines, progress_hint, suggested_next_offset."
 
 [tools.rag.param]
 path = "Relative path внутри подключённого корпуса директории; опускай только когда подключён один файл или нужен corpus-wide semantic search"

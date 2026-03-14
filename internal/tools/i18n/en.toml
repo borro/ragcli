@@ -47,6 +47,7 @@ Answer only from the results of search_rag, search_file, read_lines, read_around
 final_retry = "Write the final answer now. Do not ask for the input path again. If the tools were not used or the data is insufficient, say that directly."
 stop_calls = "Stop calling tools and provide the final answer in plain text using the data already found and the tool results. If the data is insufficient, say so directly."
 text_tool_call_retry = "Do not print pseudo-tool markup like <tool_call> in assistant text. Either send proper structured tool calls through the tool-calling API or reply with the final plain-text answer."
+first_turn_tool_retry = "Do not answer yet. First verify the exact lines with read_lines or read_around, or run a refined search/search_rag request if the current semantic seed is weak. Only after that give the final answer."
 
 [tools.prompt.user]
 path_attached = "The input path is already available through tools; its contents are intentionally not pasted into the chat."

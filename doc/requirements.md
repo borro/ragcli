@@ -104,11 +104,13 @@
 Режим должен:
 
 - заранее строить или переиспользовать тот же локальный индекс, что используют `tools --rag` и `rag`;
-- до первого model turn выполнять synthetic `search_rag` по исходному вопросу;
-- класть seeded `search_rag` call и его JSON-результат в историю как assistant/tool pair;
+- до первого model turn выполнять fused semantic seed: до 5 deterministic `search_rag` запросов по variants исходного вопроса;
+- класть preloaded search phase в историю как assistant/tool batch с несколькими `search_rag` calls и их JSON-результатами;
+- после semantic seed выполнять synthetic `read_lines`/`read_around` по strongest non-overlapping hit'ам и добавлять их второй preloaded phase в историю;
 - после seeded retrieval запускать тот же orchestration loop и тот же набор инструментов, что и `tools --rag`;
-- позволять модели оценить seeded result, исследовать файлы через file-tools и при необходимости повторно вызывать `search_rag` с уточнённым запросом;
-- всегда дописывать в финал секцию `Sources:` по подтверждённым evidence results текущей tool session;
+- позволять модели оценить preloaded seed bundle, исследовать файлы через file-tools и при необходимости повторно вызывать `search_rag` с уточнённым запросом;
+- при слабом fused seed не принимать первый direct text answer без model-driven tool use и один раз требовать exact verification или refined retrieval;
+- всегда дописывать в финал секцию `Sources:` по evidence results текущей tool session, где `Verified` строится из `search_file`/`read_lines`/`read_around`, а `Retrieved` — из `search_rag` после вычитания verified overlaps;
 - считать `list_files` discovery-навигацией, а `search_file` учитывать как line-based evidence по найденным match lines;
 - не останавливаться только из-за слабого seeded retrieval, если индекс успешно подготовлен.
 
@@ -269,7 +271,7 @@
 
 ## 6. Формат результата
 
-- `hybrid` всегда дописывает секцию `Sources:` с deduplicated источниками, сгруппированными по файлу и отсортированными по строкам; пересекающиеся диапазоны схлопываются, одиночная строка выводится как одно число.
+- `hybrid` всегда дописывает секцию `Sources:`; внутри неё секция `Verified:` содержит deduplicated line ranges из exact evidence, а секция `Retrieved:` содержит semantic-only line ranges после вычитания verified overlaps. Пути группируются по файлу, строки сортируются, пересекающиеся диапазоны схлопываются, одиночная строка выводится как одно число.
 - `rag` всегда дописывает секцию `Sources:` с тем же форматом grouped-by-file line ranges.
 - `map` возвращает чистый ответ модели без секции `Sources`.
 - Если evidence не найдено, `rag` должен возвращать честный insufficient-data ответ и `Sources:\n- none`.

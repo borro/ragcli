@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Это общее retrieval-ядро для `rag`: spool source, line walking, vector helpers, файловый индекс и общий формат citations.
+Это общее retrieval-ядро для `rag`: spool source, line walking, vector helpers, файловый индекс и общий формат citations/evidence.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
@@ -11,7 +11,7 @@
 - `WalkLines` и `SpoolSource` для построчной обработки и hash-based snapshots;
 - файловый persistence layer для индексов;
 - vector math и token-overlap helpers;
-- общий тип `Manifest` и формат citation append.
+- общий тип `Manifest`, формат citation append и provenance-aware evidence formatter для `hybrid`.
 
 ## Ключевые entrypoints/types
 
@@ -25,6 +25,8 @@
 - `EmbedQuery(...)`
 - `EmbedTexts(...)`
 - `AppendSources(...)`
+- `AppendEvidenceSources(...)`
+- `AppendEvidenceSources(...)`
 
 ## Входящие/исходящие зависимости
 
@@ -49,7 +51,7 @@
 
 - Schema mismatch, TTL expiry и corruption имеют отдельные sentinel errors.
 - Публикация индекса должна быть атомарной и приватной по правам доступа.
-- `AppendSources` дедуплицирует ссылки на источники.
+- `AppendSources` дедуплицирует ссылки на источники, а `AppendEvidenceSources` дополнительно разделяет `Verified` и `Retrieved`.
 - Vector helpers не знают о конкретном режиме и не содержат prompt logic.
 
 ## Что подтверждают тесты

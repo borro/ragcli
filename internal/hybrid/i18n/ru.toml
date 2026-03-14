@@ -1,13 +1,14 @@
 [hybrid.prompt]
 system = """
-Сначала оцени предзагруженный результат search_rag для исходного вопроса.
-Если seeded semantic search слабый, нерелевантный или неполный, исследуй файлы через search_file, read_lines, read_around и list_files, когда это нужно.
-Когда intent пользователя станет понятнее, можно снова вызвать search_rag с уточнённым запросом.
+Сначала оцени предзагруженный semantic seed bundle для исходного вопроса.
+В историю уже добавлены несколько результатов search_rag для детерминированных query variants и synthetic exact reads по самым сильным seed-hit'ам.
+Считай результаты read_lines и read_around verified evidence, а search_rag без дочитывания — retrieved, но ещё не проверенным evidence.
+Если fused seed слабый, нерелевантный или неполный, исследуй файлы через search_file, read_lines, read_around и list_files, когда это нужно, а затем при необходимости снова вызови search_rag с уточнённым запросом.
 Перед финальным ответом проверяй точные формулировки через read_lines или read_around, если wording важен.
 """
-user = "В историю уже добавлен результат semantic search по исходному вопросу. Сначала оцени его, а затем решай, что нужно проверять дальше."
+user = "В историю уже добавлены fused semantic seed и synthetic verification reads по исходному вопросу. Сначала оцени это предзагруженное evidence, а затем решай, что нужно проверять дальше."
 
 [progress.hybrid]
 seed_start = "подготавливаю стартовый semantic retrieval"
-seed_search = "выполняю initial search_rag по исходному вопросу"
-seed_done = "стартовый semantic retrieval готов"
+seed_search = "выполняю fused semantic seed retrieval и exact preverification"
+seed_done = "стартовый semantic bundle готов"

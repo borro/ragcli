@@ -17,6 +17,8 @@
 
 - `Options`
 - `SessionOptions`
+- `ToolExecutionOptions`
+- `FirstTurnAnswerPolicy`
 - `Session`
 - `SessionResult`
 - `Run(ctx, client, embedder, source, opts, prompt, plan)`
@@ -51,10 +53,10 @@
 4. Запрошенные tool calls выполняются локально через registry из `aitools`.
 5. Результаты сериализуются в JSON и возвращаются модели как `role=tool`.
 6. Verbose progress использует compact label вызова (`search_file(query="...")` и т.п.), а debug-логи получают нормализованный summary аргументов из того же shared описания вызова.
-7. Loop отслеживает cache hits, duplicate calls, отсутствие прогресса и накапливает evidence citations по успешным tool results.
+7. Loop отслеживает cache hits, duplicate calls, отсутствие прогресса и накапливает provenance-aware evidence по успешным tool results.
 8. При зацикливании применяются stop/retry/forced-finalization guards.
 9. Если backend прислал `<tool_call>...</tool_call>` текстом вместо `ToolCalls`, loop пытается распарсить и исполнить такой fallback; битый markup не печатается пользователю как финальный ответ и приводит к retry.
-10. `tools.Run` возвращает финальный текстовый ответ; `internal/hybrid` использует те же citations для `Sources:`.
+10. `tools.Run` возвращает финальный текстовый ответ; `internal/hybrid` использует тот же evidence tracking для `Sources:`.
 
 ## Инварианты и ошибки
 
@@ -66,14 +68,14 @@
 - Повторные вызовы тех же инструментов не должны бесконечно расширять context без новых строк.
 - Verbose status для tool calls должен показывать ключевые параметры вызова, но скрывать пустые и дефолтные значения.
 - Tracking прогресса должен различать одинаковые номера строк в разных файлах.
-- Citation tracking должен собирать evidence из `search_rag`, `search_file`, `read_lines` и `read_around`; `list_files` остаётся discovery-инструментом и не попадает в `Sources:`. Для `search_file` citation строится по `match.line_number`. Финальный formatter группирует citations по файлу, сортирует строки и схлопывает пересекающиеся диапазоны.
+- Evidence tracking должен собирать evidence из `search_rag`, `search_file`, `read_lines` и `read_around`; `list_files` остаётся discovery-инструментом и не попадает в `Sources:`. `search_rag` маркируется как `retrieved`, а `search_file`/`read_lines`/`read_around` как `verified`. Для `search_file` evidence строится по `match.line_number`.
 - Пустой финальный ответ после лимитов превращается в orchestration error.
 
 ## Что подтверждают тесты
 
 - single-shot и multi-step tool loop;
 - optional `search_rag` и pre-index для `--rag`;
-- shared session path для seeded history из `internal/hybrid`;
+- shared session path для preloaded fused seed history из `internal/hybrid`;
 - retry при пустом финальном ответе;
 - guards на duplicate search/read;
 - предупреждение, если backend сразу отвечает без инструментов;

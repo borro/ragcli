@@ -333,7 +333,7 @@ func TestRunReturnsAnswerWithCitations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if !strings.Contains(answer, "Sources:\n- /tmp/retries.txt:") {
+	if !strings.Contains(answer, "Sources:\n\n- /tmp/retries.txt:\n  ") {
 		t.Fatalf("answer = %q, want appended sources block", answer)
 	}
 	if len(chat.requests) != 1 {
@@ -771,13 +771,13 @@ func TestSelectionHelpersAndAppendSources(t *testing.T) {
 	}
 
 	answer := appendSources("Answer", []candidate{a0, a0, b0})
-	if strings.Count(answer, "- a.txt: 1-2") != 1 {
+	if strings.Count(answer, "- a.txt:\n  1-2") != 1 {
 		t.Fatalf("appendSources() = %q, want deduped citation", answer)
 	}
-	if !strings.Contains(answer, "- b.txt: 1") {
+	if !strings.Contains(answer, "- b.txt:\n  1") {
 		t.Fatalf("appendSources() = %q, want second source", answer)
 	}
-	if got := appendSources("Answer", nil); !strings.Contains(got, "Sources:\n- none") {
+	if got := appendSources("Answer", nil); !strings.Contains(got, "Sources:\n\n- none") {
 		t.Fatalf("appendSources(nil) = %q, want none source", got)
 	}
 }

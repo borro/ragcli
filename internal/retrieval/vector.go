@@ -93,3 +93,7 @@ func Tokenize(input string) []string {
 	}
 	return tokens
 }
+
+func SemanticSearchTooWeak(similarity float64, overlap float64) bool {
+	return similarity < 0.18 && overlap < 0.1
+}

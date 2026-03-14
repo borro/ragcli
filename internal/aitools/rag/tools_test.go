@@ -92,6 +92,9 @@ func TestSearchRAGExecuteReturnsPaginatedMatchesAndHints(t *testing.T) {
 	if payload.NextOffset != 1 {
 		t.Fatalf("NextOffset = %d, want 1", payload.NextOffset)
 	}
+	if payload.Matches[0].ChunkID < 0 || payload.Matches[0].Similarity <= 0 || payload.Matches[0].Overlap <= 0 {
+		t.Fatalf("first match = %+v, want chunk_id/similarity/overlap for fused hybrid seed", payload.Matches[0])
+	}
 
 	second, err := tool.Execute(context.Background(), toolCall("2", "search_rag", `{"query":"retry","limit":1,"offset":1}`))
 	if err != nil {

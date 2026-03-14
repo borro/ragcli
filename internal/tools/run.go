@@ -28,6 +28,7 @@ const (
 	toolsMaxConsecutiveNoProgress = 2
 	toolsMaxConsecutiveDuplicates = 2
 	emptyFinalAnswerRetryLimit    = 1
+	firstTurnToolUseRetryLimit    = 1
 	stalledToolRetryLimit         = 1
 	maxTurnFinalizationRetries    = 1
 	textToolCallRetryLimit        = 1
@@ -40,23 +41,35 @@ type toolsConfig struct {
 }
 
 type SessionOptions struct {
-	Prompt                  string
-	AdditionalSystemPrompt  string
-	AdditionalUserPrompt    string
-	WarnOnFirstDirectAnswer bool
+	Prompt                 string
+	AdditionalSystemPrompt string
+	AdditionalUserPrompt   string
+	FirstTurnAnswerPolicy  FirstTurnAnswerPolicy
+}
+
+type FirstTurnAnswerPolicy string
+
+const (
+	FirstTurnAnswerAllow          FirstTurnAnswerPolicy = "allow"
+	FirstTurnAnswerWarn           FirstTurnAnswerPolicy = "warn"
+	FirstTurnAnswerRequireToolUse FirstTurnAnswerPolicy = "require_tool_use"
+)
+
+type ToolExecutionOptions struct {
+	Synthetic bool
 }
 
 type Session struct {
-	config                  toolsConfig
-	state                   *toolLoopState
-	inputPath               string
-	readerPath              string
-	warnOnFirstDirectAnswer bool
+	config                toolsConfig
+	state                 *toolLoopState
+	inputPath             string
+	readerPath            string
+	firstTurnAnswerPolicy FirstTurnAnswerPolicy
 }
 
 type SessionResult struct {
-	Answer    string
-	Citations []retrieval.Citation
+	Answer   string
+	Evidence []retrieval.Evidence
 }
 
 type orchestratorStats struct {
@@ -86,8 +99,8 @@ func (e orchestrationError) Error() string {
 type toolLoopState struct {
 	registry              aitools.Registry
 	seenLinesByDomain     map[string]map[string]struct{}
-	citations             []retrieval.Citation
-	seenCitations         map[string]struct{}
+	evidence              []retrieval.Evidence
+	seenEvidence          map[string]struct{}
 	consecutiveNoProgress int
 	consecutiveDuplicates int
 	stats                 orchestratorStats
@@ -180,8 +193,8 @@ func Run(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRe
 	slog.Debug("tools processing started", "input_path", source.InputPath(), "reader_path", readerPath, "file_count", source.FileCount())
 	indexMeter := plan.Stage("index")
 	session, err := PrepareSession(ctx, source, embedder, opts, SessionOptions{
-		Prompt:                  prompt,
-		WarnOnFirstDirectAnswer: true,
+		Prompt:                prompt,
+		FirstTurnAnswerPolicy: FirstTurnAnswerWarn,
 	}, indexMeter)
 	if err != nil {
 		return "", err
@@ -221,11 +234,11 @@ func PrepareSession(
 	)
 
 	return &Session{
-		config:                  config,
-		state:                   loopState,
-		inputPath:               source.InputPath(),
-		readerPath:              readerPath,
-		warnOnFirstDirectAnswer: sessionOpts.WarnOnFirstDirectAnswer,
+		config:                config,
+		state:                 loopState,
+		inputPath:             source.InputPath(),
+		readerPath:            readerPath,
+		firstTurnAnswerPolicy: normalizeFirstTurnAnswerPolicy(sessionOpts.FirstTurnAnswerPolicy),
 	}, nil
 }
 
@@ -237,14 +250,25 @@ func (s *Session) InitialMessages() []openai.ChatCompletionMessage {
 }
 
 func (s *Session) ExecuteToolCall(ctx context.Context, call openai.ToolCall) (string, error) {
+	return s.ExecuteToolCallWithOptions(ctx, call, ToolExecutionOptions{})
+}
+
+func (s *Session) ExecuteToolCallWithOptions(ctx context.Context, call openai.ToolCall, opts ToolExecutionOptions) (string, error) {
 	if s == nil || s.state == nil {
 		return "", errors.New("tools session is not prepared")
 	}
-	result, _, err := s.state.executeToolCall(ctx, call)
+	result, _, err := s.state.executeToolCallWithOptions(ctx, call, opts)
 	if err != nil {
 		return "", err
 	}
 	return result, nil
+}
+
+func (s *Session) SetFirstTurnAnswerPolicy(policy FirstTurnAnswerPolicy) {
+	if s == nil {
+		return
+	}
+	s.firstTurnAnswerPolicy = normalizeFirstTurnAnswerPolicy(policy)
 }
 
 func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHistory []openai.ChatCompletionMessage, plan *verbose.Plan) (SessionResult, error) {
@@ -263,6 +287,7 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 
 	var toolChoiceToSend interface{} = "auto"
 	emptyFinalAnswerRetries := 0
+	firstTurnToolUseRetries := 0
 	stalledToolRetries := 0
 	textToolCallRetries := 0
 	haveToolResults := containsToolResponses(initialHistory)
@@ -375,13 +400,33 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 			turnMeter.Note(localize.T("progress.tools.calls_requested", localize.Data{"Count": len(choice.Message.ToolCalls)}))
 		}
 
-		if s.warnOnFirstDirectAnswer && turn == 1 && s.readerPath != "" && len(choice.Message.ToolCalls) == 0 && strings.TrimSpace(choice.Message.Content) != "" {
-			slog.Warn("tools backend returned a direct answer without using file tools",
-				"turn", turn,
-				"file_path", s.inputPath,
-				"reader_path", s.readerPath,
-				"message_role", choice.Message.Role,
-			)
+		if turn == 1 && s.readerPath != "" && len(choice.Message.ToolCalls) == 0 && strings.TrimSpace(choice.Message.Content) != "" {
+			switch s.firstTurnAnswerPolicy {
+			case FirstTurnAnswerWarn:
+				slog.Warn("tools backend returned a direct answer without using file tools",
+					"turn", turn,
+					"file_path", s.inputPath,
+					"reader_path", s.readerPath,
+					"message_role", choice.Message.Role,
+				)
+			case FirstTurnAnswerRequireToolUse:
+				if firstTurnToolUseRetries < firstTurnToolUseRetryLimit {
+					firstTurnToolUseRetries++
+					slog.Warn("tools backend returned a direct answer before model-driven tool use; retrying with explicit verification request",
+						"turn", turn,
+						"file_path", s.inputPath,
+						"reader_path", s.readerPath,
+						"message_role", choice.Message.Role,
+						"attempt", firstTurnToolUseRetries,
+					)
+					messages = append(messages, openai.ChatCompletionMessage{
+						Role:    "user",
+						Content: localize.T("tools.prompt.first_turn_tool_retry"),
+					})
+					toolChoiceToSend = "auto"
+					continue
+				}
+			}
 		}
 
 		if len(choice.Message.ToolCalls) > 0 {
@@ -448,8 +493,8 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 		finalMeter.Done(localize.T("progress.tools.final_done", localize.Data{"Turn": turn}))
 		logStop("final_answer", turn)
 		return SessionResult{
-			Answer:    choice.Message.Content,
-			Citations: s.state.Citations(),
+			Answer:   choice.Message.Content,
+			Evidence: s.state.Evidence(),
 		}, nil
 	}
 
@@ -460,8 +505,8 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 			finalMeter.Done(localize.T("progress.tools.final_done", localize.Data{"Turn": toolsMaxTurns + 1}))
 			logStop("forced_final_answer", toolsMaxTurns)
 			return SessionResult{
-				Answer:    result,
-				Citations: s.state.Citations(),
+				Answer:   result,
+				Evidence: s.state.Evidence(),
 			}, nil
 		}
 		logStop("orchestration_limit_finalization_failed", toolsMaxTurns)
@@ -505,7 +550,7 @@ func newToolLoopState(ctx context.Context, source input.FileBackedSource, embedd
 	return &toolLoopState{
 		registry:          aitools.NewRegistry(toolset...),
 		seenLinesByDomain: make(map[string]map[string]struct{}),
-		seenCitations:     make(map[string]struct{}),
+		seenEvidence:      make(map[string]struct{}),
 	}, nil
 }
 
@@ -605,12 +650,28 @@ func normalizeToolCallLabel(label string) string {
 	return trimmed
 }
 
+func normalizeFirstTurnAnswerPolicy(policy FirstTurnAnswerPolicy) FirstTurnAnswerPolicy {
+	switch policy {
+	case FirstTurnAnswerAllow, FirstTurnAnswerWarn, FirstTurnAnswerRequireToolUse:
+		return policy
+	default:
+		return FirstTurnAnswerAllow
+	}
+}
+
 func (s *toolLoopState) executeToolCall(ctx context.Context, call openai.ToolCall) (string, toolExecutionMeta, error) {
+	return s.executeToolCallWithOptions(ctx, call, ToolExecutionOptions{})
+}
+
+func (s *toolLoopState) executeToolCallWithOptions(ctx context.Context, call openai.ToolCall, opts ToolExecutionOptions) (string, toolExecutionMeta, error) {
+	if opts.Synthetic {
+		ctx = aitools.WithoutToolCache(ctx)
+	}
 	result, err := s.registry.Execute(ctx, call)
 	if err != nil {
 		return "", toolExecutionMeta{}, err
 	}
-	s.recordCitations(call.Function.Name, result.Payload)
+	s.recordEvidence(call.Function.Name, result.Payload)
 
 	if result.Cached {
 		s.stats.cacheHits++
@@ -640,7 +701,7 @@ func (s *toolLoopState) executeToolCall(ctx context.Context, call openai.ToolCal
 	}
 	domain := coverageDomain(call.Function.Name)
 	seenLines := s.seenLinesByDomain[domain]
-	if seenLines == nil {
+	if seenLines == nil && !opts.Synthetic {
 		seenLines = make(map[string]struct{})
 		s.seenLinesByDomain[domain] = seenLines
 	}
@@ -649,8 +710,10 @@ func (s *toolLoopState) executeToolCall(ctx context.Context, call openai.ToolCal
 		if _, seen := seenLines[key]; seen {
 			continue
 		}
-		seenLines[key] = struct{}{}
 		novelLines++
+		if !opts.Synthetic {
+			seenLines[key] = struct{}{}
+		}
 	}
 
 	meta := toolExecutionMeta{
@@ -685,11 +748,26 @@ func (s *toolLoopState) executeToolCall(ctx context.Context, call openai.ToolCal
 	return annotated, meta, nil
 }
 
-func (s *toolLoopState) Citations() []retrieval.Citation {
-	if len(s.citations) == 0 {
+func (s *toolLoopState) Evidence() []retrieval.Evidence {
+	if len(s.evidence) == 0 {
 		return nil
 	}
-	return append([]retrieval.Citation(nil), s.citations...)
+	return append([]retrieval.Evidence(nil), s.evidence...)
+}
+
+func (s *toolLoopState) Citations() []retrieval.Citation {
+	if len(s.evidence) == 0 {
+		return nil
+	}
+	citations := make([]retrieval.Citation, 0, len(s.evidence))
+	for _, item := range s.evidence {
+		citations = append(citations, retrieval.Citation{
+			SourcePath: item.SourcePath,
+			StartLine:  item.StartLine,
+			EndLine:    item.EndLine,
+		})
+	}
+	return citations
 }
 
 func coverageDomain(toolName string) string {
@@ -703,14 +781,44 @@ func coverageDomain(toolName string) string {
 	}
 }
 
-func (s *toolLoopState) recordCitations(toolName string, raw string) {
-	for _, citation := range citationsFromToolPayload(toolName, raw) {
-		key := fmt.Sprintf("%s:%d-%d", citation.SourcePath, citation.StartLine, citation.EndLine)
-		if _, seen := s.seenCitations[key]; seen {
+func (s *toolLoopState) recordEvidence(toolName string, raw string) {
+	for _, item := range evidenceFromToolPayload(toolName, raw) {
+		key := fmt.Sprintf("%s:%s:%d-%d", item.Kind, item.SourcePath, item.StartLine, item.EndLine)
+		if _, seen := s.seenEvidence[key]; seen {
 			continue
 		}
-		s.seenCitations[key] = struct{}{}
-		s.citations = append(s.citations, citation)
+		s.seenEvidence[key] = struct{}{}
+		s.evidence = append(s.evidence, item)
+	}
+}
+
+func evidenceFromToolPayload(toolName string, raw string) []retrieval.Evidence {
+	evidenceKind := evidenceKindForTool(toolName)
+	if evidenceKind == "" {
+		return nil
+	}
+
+	citations := citationsFromToolPayload(toolName, raw)
+	evidence := make([]retrieval.Evidence, 0, len(citations))
+	for _, citation := range citations {
+		evidence = append(evidence, retrieval.Evidence{
+			Kind:       evidenceKind,
+			SourcePath: citation.SourcePath,
+			StartLine:  citation.StartLine,
+			EndLine:    citation.EndLine,
+		})
+	}
+	return evidence
+}
+
+func evidenceKindForTool(toolName string) retrieval.EvidenceKind {
+	switch toolName {
+	case "search_rag":
+		return retrieval.EvidenceRetrieved
+	case "search_file", "read_lines", "read_around":
+		return retrieval.EvidenceVerified
+	default:
+		return ""
 	}
 }
 

@@ -24,7 +24,7 @@
 
 | Режим | Когда выбирать | Сильная сторона | Ограничения |
 | --- | --- | --- | --- |
-| `hybrid` | Нужен стартовый semantic retrieval, но ответ надо проверить и доуточнить через tools | Seeded `search_rag` плюс file-tools и итоговый `Sources:` | Нужны embeddings и рабочий tool calling |
+| `hybrid` | Нужен стартовый semantic retrieval, но ответ надо проверить и доуточнить через tools | Fused semantic seed, synthetic exact reads и итоговый `Sources:` с `Verified`/`Retrieved` | Нужны embeddings и рабочий tool calling |
 | `tools` | Нужно найти конкретные строки, секции или причины в файле или директории | Модель умеет вызывать `list_files`, `search_file`, `read_lines`, `read_around`, а с `--rag` ещё и `search_rag` | Требуется корректная поддержка tool calling на backend'е |
 | `rag` | Нужен retrieval по релевантным фрагментам, а не чтение файла целиком | Локальный индекс и ответ по evidence chunks | Нужен совместимый embedding endpoint (`/embeddings`) |
 | `map` | Остальные режимы неприменимы, но длинный текст всё равно нужно прогнать чанками | Не требует embeddings и tool calling | Медленнее, хуже держит глобальный контекст и агрегирует ответ по частям |
@@ -86,7 +86,7 @@ $env:LLM_PROXY_URL = "http://127.0.0.1:1080"
 
 ## Практические заметки
 
-- `hybrid` сначала делает seeded `search_rag`, а затем позволяет модели проверить и доуточнить ответ через file-tools; итог всегда дополняется `Sources:` по semantic/search/read evidence. `list_files` остаётся навигационным инструментом и не попадает в источники.
+- `hybrid` сначала делает fused semantic seed из нескольких deterministic `search_rag` запросов, затем предзагружает synthetic exact reads по лучшим hit'ам и только после этого передаёт управление общему tool loop; итог дополняется `Sources:` с отдельными секциями `Verified` и `Retrieved`. `list_files` остаётся навигационным инструментом и не попадает в источники.
 - `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `list_files`, `search_file`, `read_lines` и `read_around`. С `--rag` режим заранее строит локальный индекс и добавляет semantic retrieval tool `search_rag`.
 - `tools --rag` полезен, когда нужен semantic retrieval без обязательного стартового seed: модель сама решает, когда вызывать `search_rag`, а когда достаточно обычных file-tools.
 - `rag` отвечает только по найденным evidence chunks, поэтому качество зависит от embedding-модели и параметров chunking.

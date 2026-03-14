@@ -570,7 +570,7 @@ func retrieveCandidates(index *Index, query []float32, question string, opts Sea
 
 func retrievalTooWeak(candidates []candidate) bool {
 	best := candidates[0]
-	return best.Similarity < 0.18 && best.Overlap < 0.1
+	return retrieval.SemanticSearchTooWeak(best.Similarity, best.Overlap)
 }
 
 func heuristicScore(question string, c candidate) float64 {

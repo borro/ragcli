@@ -27,11 +27,14 @@ type SearchParams struct {
 }
 
 type SearchMatch struct {
-	Path      string  `json:"path,omitempty"`
-	StartLine int     `json:"start_line"`
-	EndLine   int     `json:"end_line"`
-	Score     float64 `json:"score"`
-	Text      string  `json:"text"`
+	ChunkID    int     `json:"chunk_id,omitempty"`
+	Path       string  `json:"path,omitempty"`
+	StartLine  int     `json:"start_line"`
+	EndLine    int     `json:"end_line"`
+	Similarity float64 `json:"similarity,omitempty"`
+	Overlap    float64 `json:"overlap,omitempty"`
+	Score      float64 `json:"score"`
+	Text       string  `json:"text"`
 }
 
 type SearchResult struct {
@@ -234,11 +237,14 @@ func (t *searchRAGTool) search(ctx context.Context, params SearchParams) (string
 	}
 	for _, hit := range page {
 		result.Matches = append(result.Matches, SearchMatch{
-			Path:      hit.Chunk.SourcePath,
-			StartLine: hit.Chunk.StartLine,
-			EndLine:   hit.Chunk.EndLine,
-			Score:     hit.Score,
-			Text:      hit.Chunk.Text,
+			ChunkID:    hit.Chunk.ChunkID,
+			Path:       hit.Chunk.SourcePath,
+			StartLine:  hit.Chunk.StartLine,
+			EndLine:    hit.Chunk.EndLine,
+			Similarity: hit.Similarity,
+			Overlap:    hit.Overlap,
+			Score:      hit.Score,
+			Text:       hit.Chunk.Text,
 		})
 	}
 

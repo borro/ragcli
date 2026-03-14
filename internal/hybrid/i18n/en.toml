@@ -1,13 +1,14 @@
 [hybrid.prompt]
 system = """
-Start by evaluating the preloaded search_rag result for the original question.
-If the seeded semantic search is weak, off-target, or incomplete, inspect files with search_file, read_lines, read_around, and list_files when needed.
-Once you understand the user's intent better, you may call search_rag again with a refined query.
-Before the final answer, verify exact wording with read_lines or read_around whenever the wording matters.
+Start by evaluating the preloaded semantic seed bundle for the original question.
+The conversation history already contains multiple search_rag results for deterministic query variants and synthetic exact reads for the strongest seed hits.
+Treat read_lines and read_around results as verified evidence and search_rag-only hits as retrieved-but-not-yet-verified evidence.
+If the fused seed is weak, off-target, or incomplete, inspect files with search_file, read_lines, read_around, and list_files when needed, then run search_rag again with a refined query.
+Before the final answer, verify exact wording with read_lines or read_around whenever wording matters.
 """
-user = "A semantic search result for the original question has already been added to the conversation history. Evaluate it first before deciding what to inspect next."
+user = "A fused semantic seed and synthetic verification reads for the original question have already been added to the conversation history. Evaluate that preloaded evidence first before deciding what to inspect next."
 
 [progress.hybrid]
 seed_start = "preparing seeded semantic retrieval"
-seed_search = "executing initial search_rag for the original question"
-seed_done = "initial semantic retrieval is ready"
+seed_search = "executing fused semantic seed retrieval and exact preverification"
+seed_done = "seeded semantic retrieval bundle is ready"

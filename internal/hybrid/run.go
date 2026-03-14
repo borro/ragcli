@@ -2,21 +2,16 @@ package hybrid
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 
-	ragtools "github.com/borro/ragcli/internal/aitools/rag"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/retrieval"
 	"github.com/borro/ragcli/internal/tools"
 	"github.com/borro/ragcli/internal/verbose"
-	openai "github.com/sashabaranov/go-openai"
 )
-
-const seedToolCallID = "hybrid-seed-search-rag"
 
 func Run(
 	ctx context.Context,
@@ -33,10 +28,10 @@ func Run(
 		EnableRAG: true,
 		RAG:       opts.Search,
 	}, tools.SessionOptions{
-		Prompt:                  prompt,
-		AdditionalSystemPrompt:  strings.TrimSpace(localize.T("hybrid.prompt.system")),
-		AdditionalUserPrompt:    strings.TrimSpace(localize.T("hybrid.prompt.user")),
-		WarnOnFirstDirectAnswer: false,
+		Prompt:                 prompt,
+		AdditionalSystemPrompt: strings.TrimSpace(localize.T("hybrid.prompt.system")),
+		AdditionalUserPrompt:   strings.TrimSpace(localize.T("hybrid.prompt.user")),
+		FirstTurnAnswerPolicy:  tools.FirstTurnAnswerAllow,
 	}, plan.Stage("index"))
 	if err != nil {
 		return "", err
@@ -44,53 +39,21 @@ func Run(
 
 	retrievalMeter := plan.Stage("retrieval")
 	retrievalMeter.Start(localize.T("progress.hybrid.seed_start"))
-	seedToolCall, err := seedSearchToolCall(prompt)
+	retrievalMeter.Note(localize.T("progress.hybrid.seed_search"))
+	seedBundle, err := buildSeedBundle(ctx, session, prompt, opts.Search)
 	if err != nil {
 		return "", err
 	}
-	retrievalMeter.Note(localize.T("progress.hybrid.seed_search"))
-	seedResult, err := session.ExecuteToolCall(ctx, seedToolCall)
-	if err != nil {
-		return "", fmt.Errorf("failed to execute hybrid seed search: %w", err)
+	if seedBundle.Weak {
+		session.SetFirstTurnAnswerPolicy(tools.FirstTurnAnswerRequireToolUse)
 	}
 	retrievalMeter.Done(localize.T("progress.hybrid.seed_done"))
 
-	initialHistory := []openai.ChatCompletionMessage{
-		{
-			Role:      openai.ChatMessageRoleAssistant,
-			ToolCalls: []openai.ToolCall{seedToolCall},
-		},
-		{
-			Role:       openai.ChatMessageRoleTool,
-			Name:       seedToolCall.Function.Name,
-			Content:    seedResult,
-			ToolCallID: seedToolCall.ID,
-		},
-	}
-
-	result, err := session.Run(ctx, client, initialHistory, plan)
+	result, err := session.Run(ctx, client, seedBundle.History, plan)
 	if err != nil {
 		return "", err
 	}
 
-	slog.Debug("hybrid processing finished", "citations", len(result.Citations))
-	return retrieval.AppendSources(result.Answer, result.Citations), nil
-}
-
-func seedSearchToolCall(prompt string) (openai.ToolCall, error) {
-	arguments, err := ragtools.MarshalJSON(ragtools.SearchParams{
-		Query: strings.TrimSpace(prompt),
-	})
-	if err != nil {
-		return openai.ToolCall{}, fmt.Errorf("failed to encode hybrid seed search arguments: %w", err)
-	}
-
-	return openai.ToolCall{
-		ID:   seedToolCallID,
-		Type: "function",
-		Function: openai.FunctionCall{
-			Name:      "search_rag",
-			Arguments: arguments,
-		},
-	}, nil
+	slog.Debug("hybrid processing finished", "evidence", len(result.Evidence), "seed_hits", len(seedBundle.Hits), "weak_seed", seedBundle.Weak)
+	return retrieval.AppendEvidenceSources(result.Answer, result.Evidence), nil
 }

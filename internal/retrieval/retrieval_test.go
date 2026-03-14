@@ -399,9 +399,23 @@ func TestAppendSourcesFormatsGroupedSortedRanges(t *testing.T) {
 		{SourcePath: "a.txt", StartLine: 11, EndLine: 11},
 	})
 
-	want := "Answer\n\nSources:\n- a.txt: 1-5, 7, 9-10, 11\n- b.txt: 3-4"
+	want := "Answer\n\nSources:\n\n- a.txt:\n  1-5, 7, 9-10, 11\n- b.txt:\n  3-4"
 	if got != want {
 		t.Fatalf("AppendSources() = %q, want %q", got, want)
+	}
+}
+
+func TestAppendEvidenceSourcesSplitsVerifiedAndRetrieved(t *testing.T) {
+	got := AppendEvidenceSources("Answer", []Evidence{
+		{Kind: EvidenceRetrieved, SourcePath: "a.txt", StartLine: 1, EndLine: 5},
+		{Kind: EvidenceVerified, SourcePath: "a.txt", StartLine: 2, EndLine: 3},
+		{Kind: EvidenceRetrieved, SourcePath: "b.txt", StartLine: 8, EndLine: 9},
+		{Kind: EvidenceVerified, SourcePath: "c.txt", StartLine: 4, EndLine: 4},
+	})
+
+	want := "Answer\n\nSources:\n\nVerified:\n\n- a.txt:\n  2-3\n- c.txt:\n  4\n\nRetrieved:\n\n- a.txt:\n  1, 4-5\n- b.txt:\n  8-9"
+	if got != want {
+		t.Fatalf("AppendEvidenceSources() = %q, want %q", got, want)
 	}
 }
 

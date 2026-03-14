@@ -19,6 +19,7 @@ import (
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	ragruntime "github.com/borro/ragcli/internal/rag"
+	"github.com/borro/ragcli/internal/retrieval"
 	"github.com/borro/ragcli/internal/verbose"
 	"github.com/borro/ragcli/internal/verbose/testutil"
 	openai "github.com/sashabaranov/go-openai"
@@ -1110,6 +1111,69 @@ func TestToolLoopState_ReadLinesAndSearchRAGTrackCoverageSeparately(t *testing.T
 	}
 	if secondMeta.AlreadySeen || secondMeta.NovelLines == 0 {
 		t.Fatalf("secondMeta = %+v, want rag-domain coverage to stay separate from file coverage", secondMeta)
+	}
+}
+
+func TestToolLoopState_SyntheticReadDoesNotMarkCoverageSeen(t *testing.T) {
+	filePath := writeTempFile(t, "one\ntwo\nthree\n")
+	state, err := newToolLoopState(context.Background(), fileSource(filePath, filePath), nil, Options{}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("newToolLoopState() error = %v", err)
+	}
+
+	_, syntheticMeta, err := state.executeToolCallWithOptions(context.Background(), toolCall("seed-read", "read_lines", `{"start_line":1,"end_line":2}`), ToolExecutionOptions{
+		Synthetic: true,
+	})
+	if err != nil {
+		t.Fatalf("executeToolCallWithOptions(seed) error = %v", err)
+	}
+	_, regularMeta, err := state.executeToolCall(context.Background(), toolCall("real-read", "read_lines", `{"start_line":1,"end_line":2}`))
+	if err != nil {
+		t.Fatalf("executeToolCall(real) error = %v", err)
+	}
+
+	if syntheticMeta.NovelLines != 2 || syntheticMeta.AlreadySeen {
+		t.Fatalf("syntheticMeta = %+v, want synthetic read to report novel lines", syntheticMeta)
+	}
+	if regularMeta.NovelLines != 2 || regularMeta.AlreadySeen {
+		t.Fatalf("regularMeta = %+v, want tracked read to remain novel after synthetic preload", regularMeta)
+	}
+}
+
+func TestToolLoopState_EvidenceTracksRetrievedAndVerifiedKinds(t *testing.T) {
+	filePath := writeTempFile(t, "retry policy enabled\nbackoff is exponential\n")
+	state, err := newToolLoopState(context.Background(), fileSource(filePath, filePath), fakeToolsEmbedder(), Options{
+		EnableRAG: true,
+		RAG:       defaultRAGSearchOptions(t),
+	}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("newToolLoopState() error = %v", err)
+	}
+
+	if _, _, err := state.executeToolCall(context.Background(), toolCall("rag-call", "search_rag", `{"query":"retry policy"}`)); err != nil {
+		t.Fatalf("executeToolCall(search_rag) error = %v", err)
+	}
+	if _, _, err := state.executeToolCall(context.Background(), toolCall("read-call", "read_lines", `{"start_line":1,"end_line":2}`)); err != nil {
+		t.Fatalf("executeToolCall(read_lines) error = %v", err)
+	}
+
+	evidence := state.Evidence()
+	if len(evidence) == 0 {
+		t.Fatal("Evidence() = empty, want retrieved and verified entries")
+	}
+
+	foundRetrieved := false
+	foundVerified := false
+	for _, item := range evidence {
+		switch item.Kind {
+		case retrieval.EvidenceRetrieved:
+			foundRetrieved = true
+		case retrieval.EvidenceVerified:
+			foundVerified = true
+		}
+	}
+	if !foundRetrieved || !foundVerified {
+		t.Fatalf("evidence = %#v, want both retrieved and verified kinds", evidence)
 	}
 }
 

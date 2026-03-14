@@ -7,7 +7,7 @@
 ## Зона ответственности
 
 - concrete tool `search_rag`;
-- JSON-контракт semantic retrieval результата;
+- JSON-контракт semantic retrieval результата, включая `chunk_id`, raw `similarity` и `overlap` для fused hybrid seed;
 - локальный tool-level cache и pagination hints;
 - преобразование retrieval hits в progress keys для orchestration loop.
 

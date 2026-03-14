@@ -2,6 +2,7 @@ package hybrid
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,7 +131,7 @@ func toolCall(id string, name string, arguments string) openai.ToolCall {
 	}
 }
 
-func TestRunHybrid_SeedsSearchRAGBeforeFirstLLMRequest(t *testing.T) {
+func TestRunHybrid_PreloadsSearchAndVerificationBeforeFirstLLMRequest(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "retries.txt")
 	if err := os.WriteFile(filePath, []byte("retry policy enabled\nbackoff is exponential\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -150,29 +151,76 @@ func TestRunHybrid_SeedsSearchRAGBeforeFirstLLMRequest(t *testing.T) {
 	if len(client.requests) != 1 {
 		t.Fatalf("requests = %d, want 1", len(client.requests))
 	}
-	if len(client.requests[0].Messages) != 4 {
-		t.Fatalf("message count = %d, want 4", len(client.requests[0].Messages))
+
+	firstRequest := client.requests[0]
+	if len(firstRequest.Messages) < 6 {
+		t.Fatalf("message count = %d, want preloaded search and verification history", len(firstRequest.Messages))
 	}
-	assistantSeed := client.requests[0].Messages[2]
-	if len(assistantSeed.ToolCalls) != 1 || assistantSeed.ToolCalls[0].Function.Name != "search_rag" {
-		t.Fatalf("assistant seed = %#v, want seeded search_rag call", assistantSeed.ToolCalls)
+
+	searchCalls := collectToolCalls(firstRequest.Messages, "search_rag")
+	if len(searchCalls) < 2 {
+		t.Fatalf("searchCalls = %#v, want multiple fused seed search calls", searchCalls)
 	}
-	if assistantSeed.ToolCalls[0].ID != seedToolCallID {
-		t.Fatalf("seed tool call id = %q, want %q", assistantSeed.ToolCalls[0].ID, seedToolCallID)
+	for _, call := range searchCalls {
+		var args struct {
+			Limit int `json:"limit"`
+		}
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+			t.Fatalf("json.Unmarshal(search args) error = %v", err)
+		}
+		if args.Limit != 8 {
+			t.Fatalf("search limit = %d, want TopK=8", args.Limit)
+		}
 	}
-	toolSeed := client.requests[0].Messages[3]
-	if toolSeed.Role != openai.ChatMessageRoleTool || toolSeed.Name != "search_rag" || toolSeed.ToolCallID != seedToolCallID {
-		t.Fatalf("tool seed message = %#v, want tool response for seeded search_rag", toolSeed)
+
+	if len(collectToolCalls(firstRequest.Messages, "read_lines")) == 0 && len(collectToolCalls(firstRequest.Messages, "read_around")) == 0 {
+		t.Fatalf("messages = %#v, want synthetic verification reads in preloaded history", firstRequest.Messages)
 	}
 	if !strings.Contains(result, "Retry policy is enabled.") {
 		t.Fatalf("result = %q, want final answer", result)
 	}
-	if !strings.Contains(result, "Sources:\n- "+filePath+": 1-2") {
-		t.Fatalf("result = %q, want sources from seeded search_rag", result)
+	if !strings.Contains(result, "Sources:\n\nVerified:\n\n- "+filePath+":\n  1-2") {
+		t.Fatalf("result = %q, want verified sources from synthetic reads", result)
+	}
+	if strings.Contains(result, "\n\nRetrieved:\n") {
+		t.Fatalf("result = %q, overlapping retrieved evidence should be removed after verification", result)
 	}
 }
 
-func TestRunHybrid_ToolLoopDedupesSourcesAndIgnoresListFiles(t *testing.T) {
+func TestRunHybrid_WeakSeedRetriesDirectAnswerWithoutToolUse(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(filePath, []byte("retry policy enabled\nbackoff is exponential\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message(openai.ChatMessageRoleAssistant, "Looks fine to me.", nil)),
+			chatResponse(message(openai.ChatMessageRoleAssistant, "I verified the available evidence and still need a better query.", nil)),
+		},
+	}
+
+	result, err := Run(context.Background(), client, fakeEmbedder(), openSource(t, filePath), defaultSearchOptions(t), "What does it say about networking?", nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !strings.Contains(result, "I verified the available evidence and still need a better query.") {
+		t.Fatalf("result = %q, want retry-driven final answer", result)
+	}
+	if !strings.Contains(result, "Sources:\n\nVerified:\n\n- "+filePath+":\n  1-2") {
+		t.Fatalf("result = %q, want preverified seed evidence to remain visible", result)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("requests = %d, want first-turn retry", len(client.requests))
+	}
+	lastMessage := client.requests[1].Messages[len(client.requests[1].Messages)-1]
+	if lastMessage.Role != openai.ChatMessageRoleUser || lastMessage.Content != localize.T("tools.prompt.first_turn_tool_retry") {
+		t.Fatalf("last retry message = %#v, want first-turn verification retry prompt", lastMessage)
+	}
+}
+
+func TestRunHybrid_ToolLoopSplitsVerifiedSourcesAndIgnoresListFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("retry policy enabled\nbackoff is exponential\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(a.txt) error = %v", err)
@@ -202,22 +250,31 @@ func TestRunHybrid_ToolLoopDedupesSourcesAndIgnoresListFiles(t *testing.T) {
 		t.Fatalf("requests = %d, want 4", len(client.requests))
 	}
 	firstRequest := client.requests[0]
-	if len(firstRequest.Messages) != 4 {
-		t.Fatalf("first request messages = %d, want 4 including seeded history", len(firstRequest.Messages))
-	}
-	if len(firstRequest.Messages[2].ToolCalls) != 1 || firstRequest.Messages[2].ToolCalls[0].Function.Name != "search_rag" {
-		t.Fatalf("first request seeded tool calls = %#v, want search_rag", firstRequest.Messages[2].ToolCalls)
+	if len(collectToolCalls(firstRequest.Messages, "search_rag")) == 0 {
+		t.Fatalf("first request messages = %#v, want seeded search history", firstRequest.Messages)
 	}
 	if !strings.Contains(result, "Retry policy is enabled and uses exponential backoff.") {
 		t.Fatalf("result = %q, want final answer", result)
 	}
-	if !strings.Contains(result, "Sources:\n- a.txt: 1-2") {
-		t.Fatalf("result = %q, want deduped source line range", result)
+	if !strings.Contains(result, "Sources:\n\nVerified:\n\n- a.txt:\n  1-2") {
+		t.Fatalf("result = %q, want verified source line range", result)
 	}
-	if strings.Count(result, "a.txt: 1-2") != 1 {
-		t.Fatalf("result = %q, want deduped citation", result)
+	if strings.Contains(result, "\n\nRetrieved:\n") {
+		t.Fatalf("result = %q, retrieved lines should be subtracted when verified lines overlap", result)
 	}
 	if strings.Contains(result, "\n- a.txt\n") {
 		t.Fatalf("result = %q, list_files output must not become a source citation", result)
 	}
+}
+
+func collectToolCalls(messages []openai.ChatCompletionMessage, name string) []openai.ToolCall {
+	calls := make([]openai.ToolCall, 0, len(messages))
+	for _, message := range messages {
+		for _, call := range message.ToolCalls {
+			if call.Function.Name == name {
+				calls = append(calls, call)
+			}
+		}
+	}
+	return calls
 }

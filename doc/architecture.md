@@ -128,10 +128,10 @@ sequenceDiagram
 Реальный pipeline:
 
 1. Через `internal/tools.PrepareSession` заранее поднимается тот же tool registry, что и для `tools --rag`.
-2. До первого LLM turn выполняется synthetic `search_rag` по исходному вопросу.
-3. Seeded assistant/tool pair добавляется в историю сообщений.
-4. Общий orchestration loop из `internal/tools` позволяет модели оценить seeded retrieval, дочитать контекст через file-tools и при необходимости повторить `search_rag` с новым запросом.
-5. В финале `internal/hybrid` дописывает `Sources:` по всем evidence-producing tool results текущей сессии.
+2. До первого LLM turn выполняется fused semantic seed: несколько deterministic `search_rag` вызовов по variants исходного вопроса.
+3. Search phase и synthetic exact reads по strongest hit'ам добавляются в историю как два preloaded assistant/tool batch.
+4. Общий orchestration loop из `internal/tools` позволяет модели оценить preloaded retrieval, дочитать контекст через file-tools и при необходимости повторить `search_rag` с новым запросом.
+5. В финале `internal/hybrid` дописывает `Sources:` с provenance-aware секциями `Verified` и `Retrieved`.
 
 Почему `aitools`/`aitools/files`/`aitools/rag` вынесены отдельно:
 

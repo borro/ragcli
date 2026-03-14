@@ -7,12 +7,21 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+type cacheBypassKey struct{}
+
 type CachedExecutionSpec struct {
 	Name               string
 	Cache              map[string]ExecuteResult
 	SummarizeArguments func(openai.ToolCall) map[string]any
 	CanonicalSignature func(openai.ToolCall) (string, error)
 	Execute            func(context.Context, openai.ToolCall) (ExecuteResult, error)
+}
+
+func WithoutToolCache(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, cacheBypassKey{}, true)
 }
 
 func ExecuteCachedTool(ctx context.Context, call openai.ToolCall, spec CachedExecutionSpec) (ExecuteResult, error) {
@@ -40,19 +49,22 @@ func ExecuteCachedTool(ctx context.Context, call openai.ToolCall, spec CachedExe
 		return ExecuteResult{}, err
 	}
 
-	if cached, ok := spec.Cache[signature]; ok {
-		result := CloneExecuteResult(cached)
-		result.Cached = true
-		result.Duplicate = true
+	bypassCache := ctx != nil && ctx.Value(cacheBypassKey{}) == true
+	if !bypassCache {
+		if cached, ok := spec.Cache[signature]; ok {
+			result := CloneExecuteResult(cached)
+			result.Cached = true
+			result.Duplicate = true
 
-		summary := CloneSummary(result.Summary)
-		if summary == nil {
-			summary = map[string]any{}
+			summary := CloneSummary(result.Summary)
+			if summary == nil {
+				summary = map[string]any{}
+			}
+			summary["cached"] = true
+			summary["duplicate"] = true
+			LogToolCallFinished(call, 0, "cached", summary)
+			return result, nil
 		}
-		summary["cached"] = true
-		summary["duplicate"] = true
-		LogToolCallFinished(call, 0, "cached", summary)
-		return result, nil
 	}
 
 	startedAt := time.Now()
@@ -62,7 +74,9 @@ func ExecuteCachedTool(ctx context.Context, call openai.ToolCall, spec CachedExe
 		return ExecuteResult{}, err
 	}
 
-	spec.Cache[signature] = CloneExecuteResult(result)
+	if !bypassCache {
+		spec.Cache[signature] = CloneExecuteResult(result)
+	}
 	LogToolCallFinished(call, time.Since(startedAt), "ok", CloneSummary(result.Summary))
 	return CloneExecuteResult(result), nil
 }
