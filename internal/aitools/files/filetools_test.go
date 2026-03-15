@@ -60,17 +60,17 @@ policy for retries and backoff`,
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			withStdin(t, tt.input, func() {
-				result, err := SearchFileWithParams("", tt.params)
+				result, err := executeSearch("", tt.params)
 
 				if tt.expectError {
 					if err == nil {
-						t.Fatal("SearchFileWithParams() expected error, got nil")
+						t.Fatal("executeSearch() expected error, got nil")
 					}
 					return
 				}
 
 				if err != nil {
-					t.Fatalf("SearchFileWithParams() error = %v", err)
+					t.Fatalf("executeSearch() error = %v", err)
 				}
 
 				assertSearchResult(t, result, tt.params.Query, tt.params.Mode, tt.expectedMode, tt.expectedLines)
@@ -110,17 +110,17 @@ func TestStdinReadLines(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			withStdin(t, tt.input, func() {
-				result, err := StdinReadLines(tt.startLine, tt.endLine)
+				result, err := executeReadLines("", tt.startLine, tt.endLine)
 
 				if tt.expectError {
 					if err == nil {
-						t.Fatal("StdinReadLines() expected error, got nil")
+						t.Fatal("executeReadLines() expected error, got nil")
 					}
 					return
 				}
 
 				if err != nil {
-					t.Fatalf("StdinReadLines() error = %v", err)
+					t.Fatalf("executeReadLines() error = %v", err)
 				}
 
 				assertReadLinesResult(t, result, max(tt.startLine, 1), tt.endLine, tt.expectedLines)
@@ -131,9 +131,9 @@ func TestStdinReadLines(t *testing.T) {
 
 func TestStdinReadAround(t *testing.T) {
 	withStdin(t, "one\ntwo\nthree\nfour\n", func() {
-		result, err := StdinReadAround(2, 1, 1)
+		result, err := executeReadAround("", 2, 1, 1)
 		if err != nil {
-			t.Fatalf("StdinReadAround() error = %v", err)
+			t.Fatalf("executeReadAround() error = %v", err)
 		}
 
 		var parsed ReadAroundResult
@@ -147,19 +147,19 @@ func TestStdinReadAround(t *testing.T) {
 	})
 }
 
-func TestThinWrappersAndDefaults(t *testing.T) {
+func TestSingleFileReadersAndDefaults(t *testing.T) {
 	filePath := writeTempFile(t, "alpha\nbeta\n")
 
-	searchResult, err := SearchFile(filePath, "alpha")
+	searchResult, err := executeSearch(filePath, SearchParams{Query: "alpha"})
 	if err != nil {
-		t.Fatalf("SearchFile() error = %v", err)
+		t.Fatalf("executeSearch() error = %v", err)
 	}
 	assertSearchResult(t, searchResult, "alpha", "", "literal", []int{1})
 
 	withStdin(t, "gamma\ndelta\n", func() {
-		result, err := StdinSearch("gamma")
+		result, err := executeSearch("", SearchParams{Query: "gamma"})
 		if err != nil {
-			t.Fatalf("StdinSearch() error = %v", err)
+			t.Fatalf("executeSearch() error = %v", err)
 		}
 		assertSearchResult(t, result, "gamma", "", "literal", []int{1})
 	})
@@ -231,11 +231,11 @@ func TestSearchFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := SearchFileWithParams(tt.filePath, tt.params)
+			result, err := executeSearch(tt.filePath, tt.params)
 
 			if tt.expectError {
 				if err == nil {
-					t.Fatal("SearchFileWithParams() expected error, got nil")
+					t.Fatal("executeSearch() expected error, got nil")
 				}
 
 				if tt.errorCode != "" {
@@ -251,7 +251,7 @@ func TestSearchFile(t *testing.T) {
 			}
 
 			if err != nil {
-				t.Fatalf("SearchFileWithParams() error = %v", err)
+				t.Fatalf("executeSearch() error = %v", err)
 			}
 
 			assertSearchResult(t, result, tt.params.Query, tt.params.Mode, tt.expectedMode, tt.expectedLines)
@@ -272,12 +272,12 @@ func TestSearchFile(t *testing.T) {
 func TestSearchFile_ContextLines(t *testing.T) {
 	filePath := writeTempFile(t, "zero\none match\ntwo\n")
 
-	result, err := SearchFileWithParams(filePath, SearchParams{
+	result, err := executeSearch(filePath, SearchParams{
 		Query:        "match",
 		ContextLines: 1,
 	})
 	if err != nil {
-		t.Fatalf("SearchFileWithParams() error = %v", err)
+		t.Fatalf("executeSearch() error = %v", err)
 	}
 
 	var parsed SearchResult
@@ -353,17 +353,17 @@ func TestReadLines(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := ReadLines(tt.filePath, tt.startLine, tt.endLine)
+			result, err := executeReadLines(tt.filePath, tt.startLine, tt.endLine)
 
 			if tt.expectError {
 				if err == nil {
-					t.Fatal("ReadLines() expected error, got nil")
+					t.Fatal("executeReadLines() expected error, got nil")
 				}
 				return
 			}
 
 			if err != nil {
-				t.Fatalf("ReadLines() error = %v", err)
+				t.Fatalf("executeReadLines() error = %v", err)
 			}
 
 			assertReadLinesResult(t, result, max(tt.startLine, 1), tt.endLine, tt.expectedLines)
@@ -375,9 +375,9 @@ func TestReadLines_LongLine(t *testing.T) {
 	longLine := strings.Repeat("a", 200000)
 	filePath := writeTempFile(t, longLine+"\nshort line\n")
 
-	result, err := ReadLines(filePath, 1, 1)
+	result, err := executeReadLines(filePath, 1, 1)
 	if err != nil {
-		t.Fatalf("ReadLines() error = %v", err)
+		t.Fatalf("executeReadLines() error = %v", err)
 	}
 
 	var parsed ReadLinesResult
@@ -396,9 +396,9 @@ func TestReadLines_LongLine(t *testing.T) {
 func TestReadAround_Bounds(t *testing.T) {
 	filePath := writeTempFile(t, "1\n2\n3\n")
 
-	result, err := ReadAround(filePath, 1, 5, 2)
+	result, err := executeReadAround(filePath, 1, 5, 2)
 	if err != nil {
-		t.Fatalf("ReadAround() error = %v", err)
+		t.Fatalf("executeReadAround() error = %v", err)
 	}
 
 	var parsed ReadAroundResult
@@ -414,9 +414,9 @@ func TestReadAround_Bounds(t *testing.T) {
 func TestReadAround_InvalidLine(t *testing.T) {
 	filePath := writeTempFile(t, "1\n2\n")
 
-	_, err := ReadAround(filePath, 0, 1, 1)
+	_, err := executeReadAround(filePath, 0, 1, 1)
 	if err == nil {
-		t.Fatal("ReadAround() expected error, got nil")
+		t.Fatal("executeReadAround() expected error, got nil")
 	}
 
 	var toolErr ToolError
@@ -431,9 +431,9 @@ func TestReadAround_InvalidLine(t *testing.T) {
 func TestReadAround_DefaultsForNegativeWindow(t *testing.T) {
 	filePath := writeTempFile(t, "1\n2\n3\n4\n5\n")
 
-	result, err := ReadAround(filePath, 3, -1, -1)
+	result, err := executeReadAround(filePath, 3, -1, -1)
 	if err != nil {
-		t.Fatalf("ReadAround() error = %v", err)
+		t.Fatalf("executeReadAround() error = %v", err)
 	}
 
 	var parsed ReadAroundResult
@@ -748,6 +748,16 @@ func TestSummarizeToolArguments_OtherToolsAndErrors(t *testing.T) {
 		t.Fatalf("line = %#v, want 10", readAroundSummary["line"])
 	}
 
+	normalizedReadLines := SummarizeToolArguments(toolCall("2a", "read_lines", `{"start_line":0,"end_line":5}`))
+	if normalizedReadLines["start_line"] != 1 {
+		t.Fatalf("start_line = %#v, want normalized value 1", normalizedReadLines["start_line"])
+	}
+
+	normalizedReadAround := SummarizeToolArguments(toolCall("2b", "read_around", `{"line":10,"before":-1,"after":-1}`))
+	if normalizedReadAround["before"] != DefaultReadAroundBefore || normalizedReadAround["after"] != DefaultReadAroundAfter {
+		t.Fatalf("window = %#v, want normalized defaults %d/%d", normalizedReadAround, DefaultReadAroundBefore, DefaultReadAroundAfter)
+	}
+
 	if summary := SummarizeToolArguments(toolCall("3", "search_file", "")); summary != nil {
 		t.Fatalf("summary = %#v, want nil for empty args", summary)
 	}
@@ -812,6 +822,17 @@ func TestRegistryDescribeCall_UsesCompactVerboseLabel(t *testing.T) {
 				"line":   10,
 				"before": 3,
 				"after":  1,
+			},
+		},
+		{
+			name:      "read_around normalizes negative window",
+			call:      toolCall("5", "read_around", `{"path":"a.go","line":10,"before":-1,"after":-1}`),
+			wantLabel: `read_around(path="a.go", line=10)`,
+			wantArgs: map[string]any{
+				"path":   "a.go",
+				"line":   10,
+				"before": DefaultReadAroundBefore,
+				"after":  DefaultReadAroundAfter,
 			},
 		},
 	}
@@ -1075,26 +1096,21 @@ func TestExecuteTool_ErrorPaths(t *testing.T) {
 	}
 }
 
-func TestExecuteToolCalls_ContextDoneAndToolErrorJSON(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+func TestExecuteTool_MarshalToolErrorJSON(t *testing.T) {
+	reader := NewFileReader(writeTempFile(t, "alpha\n"))
 
-	_, err := ExecuteToolCalls(ctx, []openai.ToolCall{toolCall("1", "search_file", `{"query":"x"}`)}, writeTempFile(t, "x\n"))
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want context.Canceled", err)
+	_, err := ExecuteTool(toolCall("2", "search_file", `{"query":""}`), reader)
+	if err == nil {
+		t.Fatal("ExecuteTool() error = nil, want invalid_arguments")
 	}
 
-	results, err := ExecuteToolCalls(context.Background(), []openai.ToolCall{
-		toolCall("2", "search_file", `{"query":""}`),
-	}, writeTempFile(t, "alpha\n"))
-	if err != nil {
-		t.Fatalf("ExecuteToolCalls() error = %v", err)
+	raw, marshalErr := MarshalJSON(AsToolError(err))
+	if marshalErr != nil {
+		t.Fatalf("MarshalJSON() error = %v", marshalErr)
 	}
-	if len(results) != 1 {
-		t.Fatalf("len(results) = %d, want 1", len(results))
-	}
+
 	var toolErr ToolError
-	if err := json.Unmarshal([]byte(results[0]), &toolErr); err != nil {
+	if err := json.Unmarshal([]byte(raw), &toolErr); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 	if toolErr.Code != "invalid_arguments" {
@@ -1184,9 +1200,9 @@ func TestToolErrorHelpersAndLogging(t *testing.T) {
 	})
 
 	call := toolCall("1", "search_file", `{"query":"alpha"}`)
-	LogToolCallStarted(call, map[string]any{"query": "alpha"})
-	LogToolCallFinished(call, 1500000000, "ok", map[string]any{"match_count": 1})
-	LogToolCallError(call, 200000000, map[string]any{"query": "alpha"}, toolErr)
+	aitools.LogToolCallStarted(call, map[string]any{"query": "alpha"})
+	aitools.LogToolCallFinished(call, 1500000000, "ok", map[string]any{"match_count": 1})
+	aitools.LogToolCallError(call, 200000000, map[string]any{"query": "alpha"}, toolErr)
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) != 3 {
@@ -1241,6 +1257,25 @@ func assertSearchResult(t *testing.T, raw string, query string, requestedMode st
 			t.Fatalf("Matches[%d].LineNumber = %d, want %d", i, result.Matches[i].LineNumber, line)
 		}
 	}
+}
+
+func executeSearch(path string, params SearchParams) (string, error) {
+	return newSingleFileReader(path).Search(params)
+}
+
+func executeReadLines(path string, startLine int, endLine int) (string, error) {
+	return newSingleFileReader(path).ReadLines("", startLine, endLine)
+}
+
+func executeReadAround(path string, line int, before int, after int) (string, error) {
+	return newSingleFileReader(path).ReadAround("", line, before, after)
+}
+
+func newSingleFileReader(path string) *cachedLineReader {
+	if path == "" {
+		return NewStdinReader()
+	}
+	return NewFileReader(path)
 }
 
 func toolCall(id string, name string, arguments string) openai.ToolCall {

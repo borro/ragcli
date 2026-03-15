@@ -530,7 +530,7 @@ func defaultLLMOptions() LLMOptions {
 }
 
 func normalizeMapOptions(options mapmode.Options) mapmode.Options {
-	options.Concurrency = maxInt(options.Concurrency, 1)
+	options.Concurrency = max(options.Concurrency, 1)
 	return options
 }
 
@@ -558,7 +558,7 @@ func normalizeRAGOptions(options rag.Options) rag.Options {
 	options.IndexDir = shared.IndexDir
 	options.Rerank = shared.Rerank
 	options.EmbeddingModel = shared.EmbeddingModel
-	options.FinalK = maxInt(options.FinalK, 1)
+	options.FinalK = max(options.FinalK, 1)
 	if options.FinalK > options.TopK {
 		options.FinalK = options.TopK
 	}
@@ -566,9 +566,9 @@ func normalizeRAGOptions(options rag.Options) rag.Options {
 }
 
 func normalizeRAGSearchOptions(options ragcore.SearchOptions) ragcore.SearchOptions {
-	options.TopK = maxInt(options.TopK, 1)
-	options.ChunkSize = maxInt(options.ChunkSize, 1000)
-	options.ChunkOverlap = maxInt(options.ChunkOverlap, 0)
+	options.TopK = max(options.TopK, 1)
+	options.ChunkSize = max(options.ChunkSize, 1000)
+	options.ChunkOverlap = max(options.ChunkOverlap, 0)
 	if options.ChunkOverlap >= options.ChunkSize {
 		options.ChunkOverlap = options.ChunkSize / 4
 	}
@@ -605,13 +605,6 @@ func normalizeRAGRerank(value string) string {
 
 func defaultRAGIndexDir() string {
 	return os.TempDir() + string(os.PathSeparator) + "ragcli-index"
-}
-
-func maxInt(value int, min int) int {
-	if value < min {
-		return min
-	}
-	return value
 }
 
 func mapCommandDescription() string {

@@ -136,7 +136,8 @@ func isAdjacentToSelected(hit ragcore.FusedSeedHit, selected []ragcore.FusedSeed
 		if item.Path != hit.Path {
 			continue
 		}
-		if abs(item.ChunkID-hit.ChunkID) <= 1 {
+		delta := item.ChunkID - hit.ChunkID
+		if delta >= -1 && delta <= 1 {
 			return true
 		}
 	}
@@ -152,7 +153,7 @@ func synthesizeAnswer(ctx context.Context, chat llm.ChatRequester, question stri
 			hit.Path,
 			hit.StartLine,
 			hit.EndLine,
-			sanitizeUntrustedBlock(hit.Text),
+			llm.SanitizeUntrustedBlock(hit.Text),
 		))
 	}
 
@@ -193,35 +194,4 @@ func appendSources(answer string, evidence []ragcore.FusedSeedHit) string {
 		})
 	}
 	return retrieval.AppendSources(answer, citations)
-}
-
-func sanitizeUntrustedBlock(raw string) string {
-	lines := strings.Split(raw, "\n")
-	safeLines := lines[:0]
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		lower := strings.ToLower(trimmed)
-		if strings.HasPrefix(lower, "system:") || strings.HasPrefix(lower, "assistant:") || strings.HasPrefix(lower, "user:") {
-			continue
-		}
-		if strings.Contains(lower, "ignore previous instructions") {
-			continue
-		}
-		safeLines = append(safeLines, line)
-	}
-	return strings.TrimSpace(strings.Join(safeLines, "\n"))
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func abs(v int) int {
-	if v < 0 {
-		return -v
-	}
-	return v
 }

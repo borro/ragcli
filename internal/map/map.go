@@ -137,7 +137,7 @@ func callLLM(ctx context.Context, client llm.ChatRequester, messages []openai.Ch
 
 func mapMessages(question, chunk string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
-	safeChunk := sanitizeUntrustedBlock(chunk)
+	safeChunk := llm.SanitizeUntrustedBlock(chunk)
 	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: mapPrompt()},
 		{
@@ -183,7 +183,7 @@ func finalMessages(question, facts string) []openai.ChatCompletionMessage {
 func critiqueMessages(question, facts, answer string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeFacts := normalizeFactOutput(facts, 10)
-	safeAnswer := sanitizeUntrustedBlock(answer)
+	safeAnswer := llm.SanitizeUntrustedBlock(answer)
 	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: critiquePrompt()},
 		{
@@ -200,8 +200,8 @@ func critiqueMessages(question, facts, answer string) []openai.ChatCompletionMes
 func refineMessages(question, facts, answer, critique string) []openai.ChatCompletionMessage {
 	safeQuestion := strings.TrimSpace(question)
 	safeFacts := normalizeFactOutput(facts, 10)
-	safeAnswer := sanitizeUntrustedBlock(answer)
-	safeCritique := sanitizeUntrustedBlock(critique)
+	safeAnswer := llm.SanitizeUntrustedBlock(answer)
+	safeCritique := llm.SanitizeUntrustedBlock(critique)
 	return []openai.ChatCompletionMessage{
 		{Role: "system", Content: refinePrompt()},
 		{
@@ -228,27 +228,6 @@ func formatUntrustedBlock(label, content string) string {
 		content = "(пусто)"
 	}
 	return fmt.Sprintf("%s:\n```\n%s\n```", label, content)
-}
-
-func sanitizeUntrustedBlock(raw string) string {
-	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
-	cleaned := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			if len(cleaned) == 0 || cleaned[len(cleaned)-1] == "" {
-				continue
-			}
-			cleaned = append(cleaned, "")
-			continue
-		}
-		if isInstructionLikeLine(trimmed) {
-			continue
-		}
-		cleaned = append(cleaned, trimmed)
-	}
-
-	return strings.TrimSpace(strings.Join(cleaned, "\n"))
 }
 
 func normalizeFactOutput(raw string, maxFacts int) string {
@@ -385,7 +364,7 @@ func normalizeFactLine(line string) string {
 
 	trimmed = bulletPrefixPattern.ReplaceAllString(trimmed, "")
 	trimmed = strings.TrimSpace(trimmed)
-	if trimmed == "" || isInstructionLikeLine(trimmed) {
+	if trimmed == "" || llm.IsInstructionLikeLine(trimmed) {
 		return ""
 	}
 
@@ -418,32 +397,6 @@ func countFactLines(raw string) int {
 		return 0
 	}
 	return strings.Count(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") + 1
-}
-
-func isInstructionLikeLine(line string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(line))
-	if normalized == "" {
-		return false
-	}
-
-	prefixes := []string{
-		"ignore previous instructions",
-		"ignore all previous instructions",
-		"disregard previous instructions",
-		"follow these instructions",
-		"system:",
-		"assistant:",
-		"user:",
-		"tool:",
-		"developer:",
-	}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(normalized, prefix) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []textChunk, question string, workers int, stats *pipelineStats, chunkMeter verbose.Meter) ([]string, error) {

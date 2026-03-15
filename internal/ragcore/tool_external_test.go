@@ -164,6 +164,17 @@ func TestSearchRAGDescribeCall_UsesCompactVerboseLabel(t *testing.T) {
 	if got := desc.Arguments["offset"]; got != 2 {
 		t.Fatalf("offset = %#v, want 2", got)
 	}
+
+	normalized := tool.DescribeCall(toolCall("2", "search_rag", `{"query":"retry","limit":0,"offset":-1}`))
+	if normalized.VerboseLabel != `search_rag(query="retry")` {
+		t.Fatalf("VerboseLabel = %q, want normalized compact label", normalized.VerboseLabel)
+	}
+	if got := normalized.Arguments["limit"]; got != 5 {
+		t.Fatalf("limit = %#v, want normalized default 5", got)
+	}
+	if got := normalized.Arguments["offset"]; got != 0 {
+		t.Fatalf("offset = %#v, want normalized default 0", got)
+	}
 }
 
 func TestSearchRAGExecuteReportsEmbedderErrors(t *testing.T) {

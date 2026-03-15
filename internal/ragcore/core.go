@@ -58,12 +58,9 @@ type Index struct {
 }
 
 type pipelineStats struct {
-	EmbeddingCalls      int
-	EmbeddingTokens     int
-	CacheHit            bool
-	ChunkCount          int
-	RetrievedK          int
-	AnswerContextChunks int
+	EmbeddingCalls  int
+	EmbeddingTokens int
+	CacheHit        bool
 }
 
 type candidate struct {

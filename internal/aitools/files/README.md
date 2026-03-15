@@ -13,7 +13,7 @@
 - concrete tools, реализующие `aitools.Tool`;
 - file-specific JSON result/error contracts;
 - file-specific progress keys и pagination hints для orchestration;
-- standalone file helpers для прямого вызова без registry.
+- direct execution через `LineReader` и `ExecuteTool` без registry.
 
 ## Ключевые entrypoints/types
 
@@ -32,7 +32,6 @@
 - `ToolError`
 - `MarshalJSON(v)`
 - `ExecuteTool(call, reader)`
-- `ExecuteToolCalls(ctx, toolCalls, path)`
 
 ## Входящие/исходящие зависимости
 

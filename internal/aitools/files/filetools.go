@@ -2,7 +2,6 @@ package files
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +12,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/borro/ragcli/internal/aitools"
@@ -781,248 +779,32 @@ func buildLineSlices(lines []string, displayPath string, start int, end int) []L
 	return result
 }
 
-func SearchFile(path, query string) (string, error) {
-	return SearchFileWithParams(path, SearchParams{Query: query})
-}
-
-func SearchFileWithParams(path string, params SearchParams) (string, error) {
-	var reader *cachedLineReader
-	if path == "" {
-		reader = NewStdinReader()
-	} else {
-		reader = NewFileReader(path)
-	}
-	return reader.Search(params)
-}
-
-func ReadLines(path string, startLine, endLine int) (string, error) {
-	var reader *cachedLineReader
-	if path == "" {
-		reader = NewStdinReader()
-	} else {
-		reader = NewFileReader(path)
-	}
-	return reader.ReadLines("", startLine, endLine)
-}
-
-func ReadAround(path string, line, before, after int) (string, error) {
-	var reader *cachedLineReader
-	if path == "" {
-		reader = NewStdinReader()
-	} else {
-		reader = NewFileReader(path)
-	}
-	return reader.ReadAround("", line, before, after)
-}
-
-func StdinSearch(query string) (string, error) {
-	return SearchFile("", query)
-}
-
-func StdinReadLines(startLine, endLine int) (string, error) {
-	return ReadLines("", startLine, endLine)
-}
-
-func StdinReadAround(line, before, after int) (string, error) {
-	return ReadAround("", line, before, after)
-}
-
 func ExecuteTool(call openai.ToolCall, reader LineReader) (string, error) {
 	return executeToolRaw(call, reader)
 }
 
 func executeToolRaw(call openai.ToolCall, reader LineReader) (string, error) {
-	switch call.Function.Name {
-	case "list_files":
-		var params struct {
-			Limit  int `json:"limit"`
-			Offset int `json:"offset"`
-		}
-		if strings.TrimSpace(call.Function.Arguments) != "" {
-			if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-				return "", NewToolError("invalid_arguments", "invalid arguments for list_files", false, map[string]any{
-					"tool":  "list_files",
-					"error": err.Error(),
-				})
-			}
-		}
-
-		return reader.ListFiles(ListFilesParams{
-			Limit:  params.Limit,
-			Offset: params.Offset,
-		})
-
-	case "search_file":
-		var params struct {
-			Path         string `json:"path"`
-			Query        string `json:"query"`
-			Mode         string `json:"mode"`
-			Limit        int    `json:"limit"`
-			Offset       int    `json:"offset"`
-			ContextLines int    `json:"context_lines"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", NewToolError("invalid_arguments", "invalid arguments for search_file", false, map[string]any{
-				"tool":  "search_file",
-				"error": err.Error(),
-			})
-		}
-
-		return reader.Search(SearchParams{
-			Path:         params.Path,
-			Query:        params.Query,
-			Mode:         params.Mode,
-			Limit:        params.Limit,
-			Offset:       params.Offset,
-			ContextLines: params.ContextLines,
-		})
-
-	case "read_lines":
-		var params struct {
-			Path      string `json:"path"`
-			StartLine int    `json:"start_line"`
-			EndLine   int    `json:"end_line"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", NewToolError("invalid_arguments", "invalid arguments for read_lines", false, map[string]any{
-				"tool":  "read_lines",
-				"error": err.Error(),
-			})
-		}
-
-		return reader.ReadLines(params.Path, params.StartLine, params.EndLine)
-
-	case "read_around":
-		var params struct {
-			Path   string `json:"path"`
-			Line   int    `json:"line"`
-			Before int    `json:"before"`
-			After  int    `json:"after"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", NewToolError("invalid_arguments", "invalid arguments for read_around", false, map[string]any{
-				"tool":  "read_around",
-				"error": err.Error(),
-			})
-		}
-
-		return reader.ReadAround(params.Path, params.Line, params.Before, params.After)
-
-	default:
-		return "", NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
-			"tool": call.Function.Name,
-		})
+	args, err := decodeToolArgs(call)
+	if err != nil {
+		return "", err
 	}
-}
-
-func LogToolCallStarted(call openai.ToolCall, args map[string]any) {
-	aitools.LogToolCallStarted(call, args)
-}
-
-func LogToolCallFinished(call openai.ToolCall, duration time.Duration, status string, summary map[string]any) {
-	aitools.LogToolCallFinished(call, duration, status, summary)
-}
-
-func LogToolCallError(call openai.ToolCall, duration time.Duration, args map[string]any, err error) {
-	aitools.LogToolCallError(call, duration, args, err)
+	return args.execute(reader)
 }
 
 func SummarizeToolArguments(call openai.ToolCall) map[string]any {
 	if strings.TrimSpace(call.Function.Arguments) == "" {
 		return nil
 	}
-
-	switch call.Function.Name {
-	case "list_files":
-		var params struct {
-			Limit  int `json:"limit"`
-			Offset int `json:"offset"`
-		}
-		if strings.TrimSpace(call.Function.Arguments) != "" {
-			if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-				return map[string]any{"decode_error": err.Error()}
-			}
-		}
-		normalized := NormalizeListFilesParams(ListFilesParams{
-			Limit:  params.Limit,
-			Offset: params.Offset,
-		})
-		return map[string]any{
-			"limit":  normalized.Limit,
-			"offset": normalized.Offset,
-		}
-	case "search_file":
-		var params struct {
-			Path         string `json:"path"`
-			Query        string `json:"query"`
-			Mode         string `json:"mode"`
-			Limit        int    `json:"limit"`
-			Offset       int    `json:"offset"`
-			ContextLines int    `json:"context_lines"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return map[string]any{"decode_error": err.Error()}
-		}
-		normalized := NormalizeSearchParams(SearchParams{
-			Path:         params.Path,
-			Query:        params.Query,
-			Mode:         params.Mode,
-			Limit:        params.Limit,
-			Offset:       params.Offset,
-			ContextLines: params.ContextLines,
-		})
-		summary := map[string]any{
-			"query":         normalized.Query,
-			"mode":          normalized.Mode,
-			"limit":         normalized.Limit,
-			"offset":        normalized.Offset,
-			"context_lines": normalized.ContextLines,
-		}
-		if normalized.Path != "" {
-			summary["path"] = normalized.Path
-		}
-		return summary
-	case "read_lines":
-		var params struct {
-			Path      string `json:"path"`
-			StartLine int    `json:"start_line"`
-			EndLine   int    `json:"end_line"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return map[string]any{"decode_error": err.Error()}
-		}
-		summary := map[string]any{
-			"start_line": params.StartLine,
-			"end_line":   params.EndLine,
-		}
-		if strings.TrimSpace(params.Path) != "" {
-			summary["path"] = strings.TrimSpace(params.Path)
-		}
-		return summary
-	case "read_around":
-		var params struct {
-			Path   string `json:"path"`
-			Line   int    `json:"line"`
-			Before int    `json:"before"`
-			After  int    `json:"after"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return map[string]any{"decode_error": err.Error()}
-		}
-		summary := map[string]any{
-			"line":   params.Line,
-			"before": params.Before,
-			"after":  params.After,
-		}
-		if strings.TrimSpace(params.Path) != "" {
-			summary["path"] = strings.TrimSpace(params.Path)
-		}
-		return summary
-	default:
+	if !isKnownToolName(call.Function.Name) {
 		return map[string]any{
 			"raw_arguments": call.Function.Arguments,
 		}
 	}
+	args, err := decodeToolArgs(call)
+	if err != nil {
+		return map[string]any{"decode_error": AsToolError(err).Message}
+	}
+	return args.summary()
 }
 
 func compactToolCallLabel(call openai.ToolCall) string {
@@ -1035,118 +817,19 @@ func compactToolCallLabel(call openai.ToolCall) string {
 	if raw == "" {
 		return label
 	}
-
-	switch call.Function.Name {
-	case "list_files":
-		var params struct {
-			Limit  int `json:"limit"`
-			Offset int `json:"offset"`
-		}
-		if err := json.Unmarshal([]byte(raw), &params); err != nil {
-			return compactRawToolCallLabel(label, raw)
-		}
-		normalized := NormalizeListFilesParams(ListFilesParams{
-			Limit:  params.Limit,
-			Offset: params.Offset,
-		})
-
-		parts := make([]string, 0, 2)
-		if normalized.Limit != defaultListFilesLimit {
-			parts = append(parts, formatIntToolParam("limit", normalized.Limit))
-		}
-		if normalized.Offset != 0 {
-			parts = append(parts, formatIntToolParam("offset", normalized.Offset))
-		}
-		return formatToolCallLabel(label, parts)
-	case "search_file":
-		var params struct {
-			Path         string `json:"path"`
-			Query        string `json:"query"`
-			Mode         string `json:"mode"`
-			Limit        int    `json:"limit"`
-			Offset       int    `json:"offset"`
-			ContextLines int    `json:"context_lines"`
-		}
-		if err := json.Unmarshal([]byte(raw), &params); err != nil {
-			return compactRawToolCallLabel(label, raw)
-		}
-		normalized := NormalizeSearchParams(SearchParams{
-			Path:         params.Path,
-			Query:        params.Query,
-			Mode:         params.Mode,
-			Limit:        params.Limit,
-			Offset:       params.Offset,
-			ContextLines: params.ContextLines,
-		})
-
-		parts := make([]string, 0, 6)
-		if normalized.Query != "" {
-			parts = append(parts, formatStringToolParam("query", normalized.Query))
-		}
-		if normalized.Path != "" {
-			parts = append(parts, formatStringToolParam("path", normalized.Path))
-		}
-		if normalized.Mode != "auto" {
-			parts = append(parts, formatStringToolParam("mode", normalized.Mode))
-		}
-		if normalized.Limit != defaultSearchLimit {
-			parts = append(parts, formatIntToolParam("limit", normalized.Limit))
-		}
-		if normalized.Offset != 0 {
-			parts = append(parts, formatIntToolParam("offset", normalized.Offset))
-		}
-		if normalized.ContextLines != 0 {
-			parts = append(parts, formatIntToolParam("context_lines", normalized.ContextLines))
-		}
-		return formatToolCallLabel(label, parts)
-	case "read_lines":
-		var params struct {
-			Path      string `json:"path"`
-			StartLine int    `json:"start_line"`
-			EndLine   int    `json:"end_line"`
-		}
-		if err := json.Unmarshal([]byte(raw), &params); err != nil {
-			return compactRawToolCallLabel(label, raw)
-		}
-
-		parts := make([]string, 0, 3)
-		if path := strings.TrimSpace(params.Path); path != "" {
-			parts = append(parts, formatStringToolParam("path", path))
-		}
-		if params.StartLine != 0 {
-			parts = append(parts, formatIntToolParam("start_line", params.StartLine))
-		}
-		if params.EndLine != 0 {
-			parts = append(parts, formatIntToolParam("end_line", params.EndLine))
-		}
-		return formatToolCallLabel(label, parts)
-	case "read_around":
-		var params struct {
-			Path   string `json:"path"`
-			Line   int    `json:"line"`
-			Before int    `json:"before"`
-			After  int    `json:"after"`
-		}
-		if err := json.Unmarshal([]byte(raw), &params); err != nil {
-			return compactRawToolCallLabel(label, raw)
-		}
-
-		parts := make([]string, 0, 4)
-		if path := strings.TrimSpace(params.Path); path != "" {
-			parts = append(parts, formatStringToolParam("path", path))
-		}
-		if params.Line != 0 {
-			parts = append(parts, formatIntToolParam("line", params.Line))
-		}
-		if params.Before != 0 && params.Before != DefaultReadAroundBefore {
-			parts = append(parts, formatIntToolParam("before", params.Before))
-		}
-		if params.After != 0 && params.After != DefaultReadAroundAfter {
-			parts = append(parts, formatIntToolParam("after", params.After))
-		}
-		return formatToolCallLabel(label, parts)
-	default:
+	args, err := decodeToolArgs(call)
+	if err != nil {
 		return compactRawToolCallLabel(label, raw)
+	}
+	return args.compactLabel(label)
+}
+
+func isKnownToolName(name string) bool {
+	switch name {
+	case "list_files", "search_file", "read_lines", "read_around":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1242,33 +925,4 @@ func SummarizeToolResult(toolName string, raw string) map[string]any {
 	default:
 		return nil
 	}
-}
-
-func ExecuteToolCalls(ctx context.Context, toolCalls []openai.ToolCall, path string) ([]string, error) {
-	slog.Debug("ExecuteToolCalls called", "path_length", len(path), "path_is_empty", path == "", "tool_calls_count", len(toolCalls))
-
-	reader := NewFileReader(path)
-
-	var results []string
-	for _, call := range toolCalls {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		result, err := ExecuteTool(call, reader)
-		if err != nil {
-			slog.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
-			toolErr, marshalErr := MarshalJSON(AsToolError(err))
-			if marshalErr != nil {
-				return nil, marshalErr
-			}
-			results = append(results, toolErr)
-			continue
-		}
-		results = append(results, result)
-	}
-
-	return results, nil
 }

@@ -13,7 +13,8 @@
 - retry wrapper с exponential backoff;
 - request/embedding metrics;
 - proxy/no-proxy transport behavior;
-- auto context length resolve для режима `map`.
+- auto context length resolve для режима `map`;
+- sanitization helpers для untrusted retrieved/generated text blocks.
 
 ## Ключевые entrypoints/types
 
@@ -25,6 +26,8 @@
 - `EmbeddingRequester`
 - `RequestMetrics`
 - `EmbeddingMetrics`
+- `SanitizeUntrustedBlock(raw)`
+- `IsInstructionLikeLine(line)`
 
 ## Входящие/исходящие зависимости
 

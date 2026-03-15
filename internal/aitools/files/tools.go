@@ -51,108 +51,11 @@ func (b baseTool) DescribeCall(call openai.ToolCall) aitools.CallDescription {
 }
 
 func canonicalToolSignature(call openai.ToolCall) (string, error) {
-	switch call.Function.Name {
-	case "list_files":
-		var params struct {
-			Limit  int `json:"limit"`
-			Offset int `json:"offset"`
-		}
-		if strings.TrimSpace(call.Function.Arguments) != "" {
-			if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-				return "", NewToolError("invalid_arguments", "invalid arguments for list_files", false, map[string]any{
-					"tool":  "list_files",
-					"error": err.Error(),
-				})
-			}
-		}
-		normalized := NormalizeListFilesParams(ListFilesParams{
-			Limit:  params.Limit,
-			Offset: params.Offset,
-		})
-		body, err := MarshalJSON(normalized)
-		if err != nil {
-			return "", err
-		}
-		return call.Function.Name + ":" + body, nil
-	case "search_file":
-		var params struct {
-			Path         string `json:"path"`
-			Query        string `json:"query"`
-			Mode         string `json:"mode"`
-			Limit        int    `json:"limit"`
-			Offset       int    `json:"offset"`
-			ContextLines int    `json:"context_lines"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", NewToolError("invalid_arguments", "invalid arguments for search_file", false, map[string]any{
-				"tool":  "search_file",
-				"error": err.Error(),
-			})
-		}
-		normalized := NormalizeSearchParams(SearchParams{
-			Path:         params.Path,
-			Query:        params.Query,
-			Mode:         params.Mode,
-			Limit:        params.Limit,
-			Offset:       params.Offset,
-			ContextLines: params.ContextLines,
-		})
-		body, err := MarshalJSON(normalized)
-		if err != nil {
-			return "", err
-		}
-		return call.Function.Name + ":" + body, nil
-	case "read_lines":
-		var params struct {
-			Path      string `json:"path"`
-			StartLine int    `json:"start_line"`
-			EndLine   int    `json:"end_line"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", NewToolError("invalid_arguments", "invalid arguments for read_lines", false, map[string]any{
-				"tool":  "read_lines",
-				"error": err.Error(),
-			})
-		}
-		if params.StartLine < 1 {
-			params.StartLine = 1
-		}
-		params.Path = strings.TrimSpace(params.Path)
-		body, err := MarshalJSON(params)
-		if err != nil {
-			return "", err
-		}
-		return call.Function.Name + ":" + body, nil
-	case "read_around":
-		var params struct {
-			Path   string `json:"path"`
-			Line   int    `json:"line"`
-			Before int    `json:"before"`
-			After  int    `json:"after"`
-		}
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-			return "", NewToolError("invalid_arguments", "invalid arguments for read_around", false, map[string]any{
-				"tool":  "read_around",
-				"error": err.Error(),
-			})
-		}
-		if params.Before < 0 {
-			params.Before = DefaultReadAroundBefore
-		}
-		if params.After < 0 {
-			params.After = DefaultReadAroundAfter
-		}
-		params.Path = strings.TrimSpace(params.Path)
-		body, err := MarshalJSON(params)
-		if err != nil {
-			return "", err
-		}
-		return call.Function.Name + ":" + body, nil
-	default:
-		return "", NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
-			"tool": call.Function.Name,
-		})
+	args, err := decodeToolArgs(call)
+	if err != nil {
+		return "", err
 	}
+	return args.canonicalSignature(call.Function.Name)
 }
 
 func (b *baseTool) execute(ctx context.Context, name string, call openai.ToolCall) (aitools.ExecuteResult, error) {

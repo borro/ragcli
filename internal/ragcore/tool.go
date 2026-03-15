@@ -130,7 +130,7 @@ func (t *searchRAGTool) DescribeCall(call openai.ToolCall) aitools.CallDescripti
 }
 
 func (t *searchRAGTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
-	var params SearchParams
+	var params searchToolArgs
 	return aitools.ExecuteCachedTool(ctx, call, aitools.CachedExecutionSpec{
 		Name:               t.Name(),
 		Cache:              t.cache,
@@ -143,7 +143,7 @@ func (t *searchRAGTool) Execute(ctx context.Context, call openai.ToolCall) (aito
 			return signature, err
 		},
 		Execute: func(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
-			raw, err := t.search(ctx, params)
+			raw, err := t.search(ctx, params.SearchParams)
 			if err != nil {
 				return aitools.ExecuteResult{}, err
 			}
@@ -157,31 +157,16 @@ func (t *searchRAGTool) Execute(ctx context.Context, call openai.ToolCall) (aito
 	})
 }
 
-func canonicalToolSignature(call openai.ToolCall) (string, SearchParams, error) {
-	var params struct {
-		Path   string `json:"path"`
-		Query  string `json:"query"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
-	}
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-		return "", SearchParams{}, aitools.NewToolError("invalid_arguments", "invalid arguments for search_rag", false, map[string]any{
-			"tool":  "search_rag",
-			"error": err.Error(),
-		})
-	}
-
-	normalized := NormalizeSearchParams(SearchParams{
-		Path:   params.Path,
-		Query:  params.Query,
-		Limit:  params.Limit,
-		Offset: params.Offset,
-	})
-	body, err := MarshalJSON(normalized)
+func canonicalToolSignature(call openai.ToolCall) (string, searchToolArgs, error) {
+	params, err := parseSearchToolArgs(call)
 	if err != nil {
-		return "", SearchParams{}, err
+		return "", searchToolArgs{}, err
 	}
-	return call.Function.Name + ":" + body, normalized, nil
+	signature, err := params.canonicalSignature(call.Function.Name)
+	if err != nil {
+		return "", searchToolArgs{}, err
+	}
+	return signature, params, nil
 }
 
 func (t *searchRAGTool) search(ctx context.Context, params SearchParams) (string, error) {
@@ -264,32 +249,11 @@ func SummarizeToolArguments(call openai.ToolCall) map[string]any {
 	if strings.TrimSpace(call.Function.Arguments) == "" {
 		return nil
 	}
-
-	var params struct {
-		Path   string `json:"path"`
-		Query  string `json:"query"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+	params, err := parseSearchToolArgs(call)
+	if err != nil {
+		return map[string]any{"decode_error": aitools.AsToolError(err).Message}
 	}
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &params); err != nil {
-		return map[string]any{"decode_error": err.Error()}
-	}
-	normalized := NormalizeSearchParams(SearchParams{
-		Path:   params.Path,
-		Query:  params.Query,
-		Limit:  params.Limit,
-		Offset: params.Offset,
-	})
-
-	summary := map[string]any{
-		"query":  normalized.Query,
-		"limit":  normalized.Limit,
-		"offset": normalized.Offset,
-	}
-	if normalized.Path != "" {
-		summary["path"] = normalized.Path
-	}
-	return summary
+	return params.summary()
 }
 
 func compactToolCallLabel(call openai.ToolCall) string {
@@ -302,45 +266,11 @@ func compactToolCallLabel(call openai.ToolCall) string {
 	if raw == "" {
 		return label
 	}
-
-	var params struct {
-		Path   string `json:"path"`
-		Query  string `json:"query"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+	params, err := parseSearchToolArgs(call)
+	if err != nil {
+		return compactRawToolCallLabel(label, raw)
 	}
-	if err := json.Unmarshal([]byte(raw), &params); err != nil {
-		if len(raw) > 80 {
-			raw = raw[:77] + "..."
-		}
-		return fmt.Sprintf("%s(args=%q)", label, raw)
-	}
-
-	normalized := NormalizeSearchParams(SearchParams{
-		Path:   params.Path,
-		Query:  params.Query,
-		Limit:  params.Limit,
-		Offset: params.Offset,
-	})
-
-	parts := make([]string, 0, 4)
-	if normalized.Query != "" {
-		parts = append(parts, fmt.Sprintf("query=%q", normalized.Query))
-	}
-	if normalized.Path != "" {
-		parts = append(parts, fmt.Sprintf("path=%q", normalized.Path))
-	}
-	if normalized.Limit != defaultSearchLimit {
-		parts = append(parts, fmt.Sprintf("limit=%d", normalized.Limit))
-	}
-	if normalized.Offset != 0 {
-		parts = append(parts, fmt.Sprintf("offset=%d", normalized.Offset))
-	}
-
-	if len(parts) == 0 {
-		return label
-	}
-	return fmt.Sprintf("%s(%s)", label, strings.Join(parts, ", "))
+	return params.compactLabel(label)
 }
 
 func SummarizeToolResult(raw string) map[string]any {
@@ -391,11 +321,4 @@ func toolHints(raw string) map[string]any {
 		return map[string]any{HintSuggestedNextOffset: result.NextOffset}
 	}
 	return nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
