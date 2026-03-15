@@ -13,4 +13,5 @@ pre-push:
   parallel: false
   commands:
     live-e2e-smoke:
+      interactive: true
       run: ./scripts/e2e_live_smoke.sh

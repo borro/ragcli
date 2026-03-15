@@ -103,6 +103,8 @@
 
 Режим должен:
 
+- для `single file` и `stdin` сначала проверять, помещается ли весь текст в safe budget окна chat-модели;
+- если помещается, сразу передавать весь текст в prompt как untrusted data и отвечать без индекса, seeded retrieval и tool loop;
 - заранее строить или переиспользовать тот же локальный индекс, что используют `tools --rag` и `rag`;
 - до первого model turn выполнять fused semantic seed: до 5 deterministic `search_rag` запросов по variants исходного вопроса;
 - класть preloaded search phase в историю как assistant/tool batch с несколькими `search_rag` calls и их JSON-результатами;
@@ -113,6 +115,7 @@
 - всегда дописывать в финал секцию `Sources:` по evidence results текущей tool session, где `Verified` строится из `search_file`/`read_lines`/`read_around`, а `Retrieved` — из `search_rag` после вычитания verified overlaps;
 - считать `list_files` discovery-навигацией, а `search_file` учитывать как line-based evidence по найденным match lines;
 - не останавливаться только из-за слабого seeded retrieval, если индекс успешно подготовлен.
+- для directory input никогда не использовать direct-context fast path, даже если synthetic corpus короткий.
 
 Инструменты `hybrid`:
 
@@ -121,6 +124,11 @@
 - `search_rag(path?, query, limit, offset)`
 - `read_lines(path?, start_line, end_line)`
 - `read_around(path?, line, before, after)`
+
+Примечание по `Sources:`:
+
+- в direct-context fast path секция `Sources:` тоже обязательна; она содержит одну citation на весь диапазон строк single-file/`stdin` input;
+- в retrieval/tool path секция `Sources:` обязательна и строится как описано выше.
 
 Опции `hybrid`:
 
@@ -273,7 +281,7 @@
 
 ## 6. Формат результата
 
-- `hybrid` всегда дописывает секцию `Sources:`; внутри неё секция `Verified:` содержит deduplicated line ranges из exact evidence, а секция `Retrieved:` содержит semantic-only line ranges после вычитания verified overlaps. Пути группируются по файлу, строки сортируются, пересекающиеся диапазоны схлопываются, одиночная строка выводится как одно число.
+- `hybrid` всегда дописывает секцию `Sources:`; на retrieval/tool path внутри неё секции `Verified:` и `Retrieved:` строятся по evidence, а на direct-context fast path выводится одна citation на весь приложенный single-file/`stdin` диапазон строк. Пути группируются по файлу, строки сортируются, пересекающиеся диапазоны схлопываются, одиночная строка выводится как одно число.
 - `rag` всегда дописывает секцию `Sources:` с тем же форматом grouped-by-file line ranges.
 - `map` возвращает чистый ответ модели без секции `Sources`.
 - Если evidence не найдено, `rag` должен возвращать честный insufficient-data ответ и `Sources:\n- none`.
