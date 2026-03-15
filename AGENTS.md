@@ -29,7 +29,7 @@
 - Линт как в CI: `golangci-lint run --timeout=5m`
 - Базовая проверка: `go test ./...`
 - Полная CI-like проверка локально: `go test -v -race -coverprofile=coverage.out ./...`
-- Smoke script с реальными CLI-сценариями: `./test.sh`
+- Live smoke script с реальными CLI-сценариями: `./scripts/e2e_live_smoke.sh`
 
 ## Non-Negotiable Invariants
 

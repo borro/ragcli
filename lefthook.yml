@@ -9,3 +9,8 @@ pre-commit:
       run: golangci-lint run --timeout=5m ./cmd/... ./internal/...
     go-test:
       run: go test ./...
+pre-push:
+  parallel: false
+  commands:
+    live-e2e-smoke:
+      run: ./scripts/e2e_live_smoke.sh

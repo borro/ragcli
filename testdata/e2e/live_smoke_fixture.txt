@@ -1,0 +1,8 @@
+Smoke test fixture for ragcli live integration checks.
+
+Project code: RAGCLI-SMOKE-742
+Owner: Integration Test Team
+Retry policy: exactly 3 attempts
+Release window: Tuesday 10:00 UTC
+
+If a smoke test asks for the project code, the expected answer is RAGCLI-SMOKE-742.
