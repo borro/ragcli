@@ -10,6 +10,7 @@ import (
 	"github.com/borro/ragcli/internal/localize"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
+	"github.com/borro/ragcli/internal/ragcore"
 	toolsmode "github.com/borro/ragcli/internal/tools"
 	"github.com/borro/ragcli/internal/verbose"
 	"github.com/urfave/cli/v3"
@@ -463,7 +464,7 @@ func bindToolsInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocation
 	inv.LLM.EmbeddingModel = normalizeEmbeddingModel(cmd.String("embedding-model"))
 	inv.payload = normalizeToolsOptions(toolsmode.Options{
 		EnableRAG: cmd.Bool("rag"),
-		RAG: rag.SearchOptions{
+		RAG: ragcore.SearchOptions{
 			TopK:           cmd.Int("rag-top-k"),
 			ChunkSize:      cmd.Int("rag-chunk-size"),
 			ChunkOverlap:   cmd.Int("rag-chunk-overlap"),
@@ -484,7 +485,7 @@ func bindHybridInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocatio
 
 	inv.LLM.EmbeddingModel = normalizeEmbeddingModel(cmd.String("embedding-model"))
 	inv.payload = normalizeHybridOptions(hybrid.Options{
-		Search: rag.SearchOptions{
+		Search: ragcore.SearchOptions{
 			TopK:           cmd.Int("rag-top-k"),
 			ChunkSize:      cmd.Int("rag-chunk-size"),
 			ChunkOverlap:   cmd.Int("rag-chunk-overlap"),
@@ -541,7 +542,7 @@ func normalizeEmbeddingModel(value string) string {
 }
 
 func normalizeRAGOptions(options rag.Options) rag.Options {
-	shared := normalizeRAGSearchOptions(rag.SearchOptions{
+	shared := normalizeRAGSearchOptions(ragcore.SearchOptions{
 		TopK:           options.TopK,
 		ChunkSize:      options.ChunkSize,
 		ChunkOverlap:   options.ChunkOverlap,
@@ -564,7 +565,7 @@ func normalizeRAGOptions(options rag.Options) rag.Options {
 	return options
 }
 
-func normalizeRAGSearchOptions(options rag.SearchOptions) rag.SearchOptions {
+func normalizeRAGSearchOptions(options ragcore.SearchOptions) ragcore.SearchOptions {
 	options.TopK = maxInt(options.TopK, 1)
 	options.ChunkSize = maxInt(options.ChunkSize, 1000)
 	options.ChunkOverlap = maxInt(options.ChunkOverlap, 0)

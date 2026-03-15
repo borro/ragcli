@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Это общее retrieval-ядро для `rag`: spool source, line walking, vector helpers, файловый индекс и общий формат citations/evidence.
+Это общее retrieval-ядро для `ragcore`: spool source, line walking, vector helpers, файловый индекс и общий формат citations/evidence.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
@@ -32,7 +32,7 @@
 
 Входящие:
 
-- `internal/rag`
+- `internal/ragcore`
 
 Исходящие:
 

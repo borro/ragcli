@@ -1,4 +1,4 @@
-package ragtools
+package ragcore_test
 
 import (
 	"context"
@@ -13,8 +13,7 @@ import (
 	"github.com/borro/ragcli/internal/aitools"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
-	"github.com/borro/ragcli/internal/localize"
-	ragruntime "github.com/borro/ragcli/internal/rag"
+	"github.com/borro/ragcli/internal/ragcore"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -41,15 +40,8 @@ func (f embeddingRequesterFunc) CreateEmbeddingsWithMetrics(ctx context.Context,
 	return f(ctx, inputs)
 }
 
-func TestMain(m *testing.M) {
-	if err := localize.SetCurrent(localize.EN); err != nil {
-		panic(err)
-	}
-	os.Exit(m.Run())
-}
-
 func TestToolDefinitionRequiresQuery(t *testing.T) {
-	tool := NewTool(&ragruntime.PreparedSearch{}, embeddingRequesterFunc(func(context.Context, []string) ([][]float32, llm.EmbeddingMetrics, error) {
+	tool := ragcore.NewSearchTool(&ragcore.PreparedSearch{}, embeddingRequesterFunc(func(context.Context, []string) ([][]float32, llm.EmbeddingMetrics, error) {
 		return nil, llm.EmbeddingMetrics{}, nil
 	}))
 
@@ -75,14 +67,14 @@ func TestSearchRAGExecuteReturnsPaginatedMatchesAndHints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute(first) error = %v", err)
 	}
-	if next := first.Hints[HintSuggestedNextOffset]; next != 1 {
+	if next := first.Hints[ragcore.HintSuggestedNextOffset]; next != 1 {
 		t.Fatalf("next offset = %#v, want 1", next)
 	}
 	if len(first.ProgressKeys) == 0 {
 		t.Fatal("ProgressKeys = empty, want expanded line keys")
 	}
 
-	var payload SearchResult
+	var payload ragcore.SearchResult
 	if err := json.Unmarshal([]byte(first.Payload), &payload); err != nil {
 		t.Fatalf("json.Unmarshal(first.Payload) error = %v", err)
 	}
@@ -100,7 +92,7 @@ func TestSearchRAGExecuteReturnsPaginatedMatchesAndHints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute(second) error = %v", err)
 	}
-	var secondPayload SearchResult
+	var secondPayload ragcore.SearchResult
 	if err := json.Unmarshal([]byte(second.Payload), &secondPayload); err != nil {
 		t.Fatalf("json.Unmarshal(second.Payload) error = %v", err)
 	}
@@ -116,7 +108,7 @@ func TestSearchRAGExecuteSupportsPathFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute(path filter) error = %v", err)
 	}
-	var payload SearchResult
+	var payload ragcore.SearchResult
 	if err := json.Unmarshal([]byte(result.Payload), &payload); err != nil {
 		t.Fatalf("json.Unmarshal(result.Payload) error = %v", err)
 	}
@@ -185,7 +177,7 @@ func TestSearchRAGExecuteReportsEmbedderErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("preparedSearch() error = %v", err)
 	}
-	tool := NewTool(searcher, embeddingRequesterFunc(func(_ context.Context, _ []string) ([][]float32, llm.EmbeddingMetrics, error) {
+	tool := ragcore.NewSearchTool(searcher, embeddingRequesterFunc(func(_ context.Context, _ []string) ([][]float32, llm.EmbeddingMetrics, error) {
 		return nil, llm.EmbeddingMetrics{}, errors.New("embed failed")
 	}))
 
@@ -195,7 +187,7 @@ func TestSearchRAGExecuteReportsEmbedderErrors(t *testing.T) {
 	}
 }
 
-func newPreparedTool(t *testing.T) *searchRAGTool {
+func newPreparedTool(t *testing.T) aitools.Tool {
 	t.Helper()
 
 	embedder := embeddingRequesterFunc(func(_ context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
@@ -216,14 +208,14 @@ func newPreparedTool(t *testing.T) *searchRAGTool {
 		t.Fatalf("preparedSearch() error = %v", err)
 	}
 
-	return NewTool(searcher, embedder).(*searchRAGTool)
+	return ragcore.NewSearchTool(searcher, embedder)
 }
 
-func preparedSearch(t *testing.T, embedder llm.EmbeddingRequester) (*ragruntime.PreparedSearch, error) {
+func preparedSearch(t *testing.T, embedder llm.EmbeddingRequester) (*ragcore.PreparedSearch, error) {
 	t.Helper()
 
 	source := corpusSource(t)
-	searcher, _, err := ragruntime.PrepareSearch(context.Background(), embedder, source, ragruntime.SearchOptions{
+	searcher, _, err := ragcore.PrepareSearch(context.Background(), embedder, source, ragcore.SearchOptions{
 		TopK:           8,
 		ChunkSize:      1000,
 		ChunkOverlap:   200,

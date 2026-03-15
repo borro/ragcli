@@ -26,7 +26,7 @@
 | --- | --- | --- | --- |
 | `hybrid` | Нужен стартовый semantic retrieval, но ответ надо проверить и доуточнить через tools | Fused semantic seed, synthetic exact reads и итоговый `Sources:` с `Verified`/`Retrieved` | Нужны embeddings и рабочий tool calling |
 | `tools` | Нужно найти конкретные строки, секции или причины в файле или директории | Модель умеет вызывать `list_files`, `search_file`, `read_lines`, `read_around`, а с `--rag` ещё и `search_rag` | Требуется корректная поддержка tool calling на backend'е |
-| `rag` | Нужен retrieval по релевантным фрагментам, а не чтение файла целиком | Локальный индекс и ответ по evidence chunks | Нужен совместимый embedding endpoint (`/embeddings`) |
+| `rag` | Нужен retrieval по релевантным фрагментам, а не чтение файла целиком | Fused semantic seed по локальному индексу и ответ по evidence chunks | Нужен совместимый embedding endpoint (`/embeddings`) |
 | `map` | Остальные режимы неприменимы, но длинный текст всё равно нужно прогнать чанками | Не требует embeddings и tool calling | Медленнее, хуже держит глобальный контекст и агрегирует ответ по частям |
 
 Короткая эвристика:
@@ -89,7 +89,7 @@ $env:LLM_PROXY_URL = "http://127.0.0.1:1080"
 - `hybrid` сначала делает fused semantic seed из нескольких deterministic `search_rag` запросов, затем предзагружает synthetic exact reads по лучшим hit'ам и только после этого передаёт управление общему tool loop; итог дополняется `Sources:` с отдельными секциями `Verified` и `Retrieved`. `list_files` остаётся навигационным инструментом и не попадает в источники.
 - `tools` не читает весь файл в контекст модели сразу; вместо этого модель вызывает локальные инструменты `list_files`, `search_file`, `read_lines` и `read_around`. С `--rag` режим заранее строит локальный индекс и добавляет semantic retrieval tool `search_rag`.
 - `tools --rag` полезен, когда нужен semantic retrieval без обязательного стартового seed: модель сама решает, когда вызывать `search_rag`, а когда достаточно обычных file-tools.
-- `rag` отвечает только по найденным evidence chunks, поэтому качество зависит от embedding-модели и параметров chunking.
+- `rag` сначала делает fused semantic seed по нескольким variants исходного вопроса, а затем отвечает только по выбранным evidence chunks.
 - Если backend плохо поддерживает tool calling, режим `tools` может работать менее надёжно.
 - `--path` может указывать и на директорию: `hybrid`/`tools`/`rag` сохраняют file-aware пути и line numbers, а `map` в этом случае работает по synthetic corpus.
 - `map` стоит держать как fallback-режим: он режет вход на чанки и агрегирует ответ по частям, поэтому на больших файлах может быть заметно медленнее и хуже держать общий контекст.

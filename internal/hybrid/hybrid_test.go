@@ -12,7 +12,7 @@ import (
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
-	ragruntime "github.com/borro/ragcli/internal/rag"
+	ragruntime "github.com/borro/ragcli/internal/ragcore"
 	openai "github.com/sashabaranov/go-openai"
 )
 

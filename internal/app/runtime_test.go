@@ -13,6 +13,7 @@ import (
 	"github.com/borro/ragcli/internal/llm"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
+	"github.com/borro/ragcli/internal/ragcore"
 	toolsmode "github.com/borro/ragcli/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -171,7 +172,7 @@ func TestRuntimeExecuteToolsWithRAGCreatesEmbedder(t *testing.T) {
 		return opts
 	}(), toolsmode.Options{
 		EnableRAG: true,
-		RAG: rag.SearchOptions{
+		RAG: ragcore.SearchOptions{
 			TopK:           8,
 			ChunkSize:      1000,
 			ChunkOverlap:   200,
@@ -233,7 +234,7 @@ func TestRuntimeExecuteHybridCreatesEmbedder(t *testing.T) {
 		opts.EmbeddingModel = "embed"
 		return opts
 	}(), hybrid.Options{
-		Search: rag.SearchOptions{},
+		Search: ragcore.SearchOptions{},
 	}))
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runtime.execute(hybrid) error = %v, want embedder error", err)

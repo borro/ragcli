@@ -32,7 +32,7 @@
 
 - `internal/app`
 - `internal/tools`
-- `internal/rag`
+- `internal/ragcore`
 - `internal/retrieval`
 - `internal/map`
 

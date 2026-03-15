@@ -18,7 +18,7 @@ import (
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
-	ragruntime "github.com/borro/ragcli/internal/rag"
+	ragruntime "github.com/borro/ragcli/internal/ragcore"
 	"github.com/borro/ragcli/internal/retrieval"
 	"github.com/borro/ragcli/internal/verbose"
 	"github.com/borro/ragcli/internal/verbose/testutil"

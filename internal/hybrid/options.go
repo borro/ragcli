@@ -1,7 +1,7 @@
 package hybrid
 
-import ragruntime "github.com/borro/ragcli/internal/rag"
+import "github.com/borro/ragcli/internal/ragcore"
 
 type Options struct {
-	Search ragruntime.SearchOptions
+	Search ragcore.SearchOptions
 }

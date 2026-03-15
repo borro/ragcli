@@ -1,8 +1,8 @@
 package tools
 
-import ragruntime "github.com/borro/ragcli/internal/rag"
+import "github.com/borro/ragcli/internal/ragcore"
 
 type Options struct {
 	EnableRAG bool
-	RAG       ragruntime.SearchOptions
+	RAG       ragcore.SearchOptions
 }

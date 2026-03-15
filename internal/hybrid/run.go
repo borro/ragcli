@@ -8,6 +8,7 @@ import (
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
+	"github.com/borro/ragcli/internal/ragcore"
 	"github.com/borro/ragcli/internal/retrieval"
 	"github.com/borro/ragcli/internal/tools"
 	"github.com/borro/ragcli/internal/verbose"
@@ -40,7 +41,7 @@ func Run(
 	retrievalMeter := plan.Stage("retrieval")
 	retrievalMeter.Start(localize.T("progress.hybrid.seed_start"))
 	retrievalMeter.Note(localize.T("progress.hybrid.seed_search"))
-	seedBundle, err := buildSeedBundle(ctx, session, prompt, opts.Search)
+	seedBundle, err := ragcore.BuildSeedBundle(ctx, session, prompt, opts.Search)
 	if err != nil {
 		return "", err
 	}

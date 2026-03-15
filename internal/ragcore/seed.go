@@ -1,4 +1,4 @@
-package hybrid
+package ragcore
 
 import (
 	"context"
@@ -10,10 +10,7 @@ import (
 	"unicode/utf8"
 
 	filetools "github.com/borro/ragcli/internal/aitools/files"
-	ragtools "github.com/borro/ragcli/internal/aitools/rag"
-	ragruntime "github.com/borro/ragcli/internal/rag"
 	"github.com/borro/ragcli/internal/retrieval"
-	"github.com/borro/ragcli/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -39,21 +36,14 @@ var seedStopwords = map[string]struct{}{
 	"про": {}, "по": {}, "из": {}, "на": {}, "и": {}, "в": {}, "во": {}, "не": {}, "ли": {}, "а": {},
 }
 
-type seedBundle struct {
-	History []openai.ChatCompletionMessage
-	Hits    []fusedSeedHit
-	Weak    bool
+type SyntheticToolExecutor interface {
+	ExecuteSyntheticToolCall(ctx context.Context, call openai.ToolCall) (string, error)
 }
 
-type fusedSeedHit struct {
-	Path       string
-	ChunkID    int
-	StartLine  int
-	EndLine    int
-	Score      float64
-	Similarity float64
-	Overlap    float64
-	Text       string
+type SeedBundle struct {
+	History []openai.ChatCompletionMessage
+	Hits    []FusedSeedHit
+	Weak    bool
 }
 
 type fusedSeedCandidate struct {
@@ -73,27 +63,37 @@ type syntheticToolResult struct {
 	result string
 }
 
-func buildSeedBundle(ctx context.Context, session *tools.Session, prompt string, searchOpts ragruntime.SearchOptions) (seedBundle, error) {
+type seedMatch struct {
+	Path       string
+	ChunkID    int
+	StartLine  int
+	EndLine    int
+	Text       string
+	Score      float64
+	Similarity float64
+	Overlap    float64
+}
+
+func BuildSeedBundle(ctx context.Context, executor SyntheticToolExecutor, prompt string, searchOpts SearchOptions) (SeedBundle, error) {
 	queries := seedQueries(prompt)
-	searchResults, fused, err := executeSeedSearches(ctx, session, queries, searchOpts)
+	searchResults, fused, err := executeSeedSearches(ctx, executor, queries, searchOpts)
 	if err != nil {
-		return seedBundle{}, err
+		return SeedBundle{}, err
 	}
 
-	verificationResults, err := executeSeedVerificationReads(ctx, session, fused)
+	verificationResults, err := executeSeedVerificationReads(ctx, executor, fused)
 	if err != nil {
-		return seedBundle{}, err
+		return SeedBundle{}, err
 	}
 
 	history := make([]openai.ChatCompletionMessage, 0, len(searchResults)+len(verificationResults)+2)
 	history = append(history, syntheticHistory(searchResults)...)
 	history = append(history, syntheticHistory(verificationResults)...)
 
-	weak := len(fused) == 0 || retrieval.SemanticSearchTooWeak(fused[0].Similarity, fused[0].Overlap)
-	return seedBundle{
+	return SeedBundle{
 		History: history,
 		Hits:    fused,
-		Weak:    weak,
+		Weak:    FusedSearchTooWeak(fused),
 	}, nil
 }
 
@@ -161,7 +161,7 @@ func longestTokens(tokens []string, limit int) []string {
 	return sorted[:min(limit, len(sorted))]
 }
 
-func executeSeedSearches(ctx context.Context, session *tools.Session, queries []string, searchOpts ragruntime.SearchOptions) ([]syntheticToolResult, []fusedSeedHit, error) {
+func executeSeedSearches(ctx context.Context, executor SyntheticToolExecutor, queries []string, searchOpts SearchOptions) ([]syntheticToolResult, []FusedSeedHit, error) {
 	searchLimit := min(searchOpts.TopK, maxSeedSearchLimit)
 	results := make([]syntheticToolResult, 0, len(queries))
 	fused := make(map[string]*fusedSeedCandidate, len(queries)*searchLimit)
@@ -171,13 +171,13 @@ func executeSeedSearches(ctx context.Context, session *tools.Session, queries []
 		if err != nil {
 			return nil, nil, err
 		}
-		result, err := session.ExecuteToolCallWithOptions(ctx, call, tools.ToolExecutionOptions{Synthetic: true})
+		result, err := executor.ExecuteSyntheticToolCall(ctx, call)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to execute hybrid seed search: %w", err)
 		}
 		results = append(results, syntheticToolResult{call: call, result: result})
 
-		var payload ragtools.SearchResult
+		var payload SearchResult
 		if err := decodeSearchPayload(result, &payload); err != nil {
 			return nil, nil, err
 		}
@@ -189,47 +189,23 @@ func executeSeedSearches(ctx context.Context, session *tools.Session, queries []
 			if path == "" {
 				continue
 			}
-			key := fmt.Sprintf("%s:%d", path, match.ChunkID)
-			entry := fused[key]
-			if entry == nil {
-				entry = &fusedSeedCandidate{
-					Path:       path,
-					ChunkID:    match.ChunkID,
-					StartLine:  match.StartLine,
-					EndLine:    match.EndLine,
-					Text:       match.Text,
-					Score:      match.Score,
-					Similarity: match.Similarity,
-					Overlap:    match.Overlap,
-				}
-				fused[key] = entry
-			}
-			entry.Fusion += 1.0 / (seedFusionReciprocalOffset + float64(rank+1))
-			if match.Score > entry.Score {
-				entry.Score = match.Score
-			}
-			if match.Similarity > entry.Similarity {
-				entry.Similarity = match.Similarity
-			}
-			if match.Overlap > entry.Overlap {
-				entry.Overlap = match.Overlap
-			}
-			if entry.StartLine == 0 || (match.StartLine > 0 && match.StartLine < entry.StartLine) {
-				entry.StartLine = match.StartLine
-			}
-			if match.EndLine > entry.EndLine {
-				entry.EndLine = match.EndLine
-			}
-			if entry.Text == "" && match.Text != "" {
-				entry.Text = match.Text
-			}
+			addFusedCandidate(fused, seedMatch{
+				Path:       path,
+				ChunkID:    match.ChunkID,
+				StartLine:  match.StartLine,
+				EndLine:    match.EndLine,
+				Text:       match.Text,
+				Score:      match.Score,
+				Similarity: match.Similarity,
+				Overlap:    match.Overlap,
+			}, rank)
 		}
 	}
 
 	return results, truncateFusedHits(sortFusedHits(fused), searchOpts.TopK), nil
 }
 
-func executeSeedVerificationReads(ctx context.Context, session *tools.Session, hits []fusedSeedHit) ([]syntheticToolResult, error) {
+func executeSeedVerificationReads(ctx context.Context, executor SyntheticToolExecutor, hits []FusedSeedHit) ([]syntheticToolResult, error) {
 	selected := selectVerificationHits(hits, maxSeedVerificationReads)
 	results := make([]syntheticToolResult, 0, len(selected))
 	for index, hit := range selected {
@@ -237,7 +213,7 @@ func executeSeedVerificationReads(ctx context.Context, session *tools.Session, h
 		if err != nil {
 			return nil, err
 		}
-		result, err := session.ExecuteToolCallWithOptions(ctx, call, tools.ToolExecutionOptions{Synthetic: true})
+		result, err := executor.ExecuteSyntheticToolCall(ctx, call)
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute hybrid seed verification read: %w", err)
 		}
@@ -246,17 +222,58 @@ func executeSeedVerificationReads(ctx context.Context, session *tools.Session, h
 	return results, nil
 }
 
-func decodeSearchPayload(raw string, payload *ragtools.SearchResult) error {
+func decodeSearchPayload(raw string, payload *SearchResult) error {
 	if err := json.Unmarshal([]byte(raw), payload); err != nil {
 		return fmt.Errorf("failed to decode hybrid seed search result: %w", err)
 	}
 	return nil
 }
 
-func sortFusedHits(candidates map[string]*fusedSeedCandidate) []fusedSeedHit {
-	hits := make([]fusedSeedHit, 0, len(candidates))
+func addFusedCandidate(fused map[string]*fusedSeedCandidate, match seedMatch, rank int) {
+	path := strings.TrimSpace(match.Path)
+	if path == "" {
+		return
+	}
+	key := fmt.Sprintf("%s:%d", path, match.ChunkID)
+	entry := fused[key]
+	if entry == nil {
+		entry = &fusedSeedCandidate{
+			Path:       path,
+			ChunkID:    match.ChunkID,
+			StartLine:  match.StartLine,
+			EndLine:    match.EndLine,
+			Text:       match.Text,
+			Score:      match.Score,
+			Similarity: match.Similarity,
+			Overlap:    match.Overlap,
+		}
+		fused[key] = entry
+	}
+	entry.Fusion += 1.0 / (seedFusionReciprocalOffset + float64(rank+1))
+	if match.Score > entry.Score {
+		entry.Score = match.Score
+	}
+	if match.Similarity > entry.Similarity {
+		entry.Similarity = match.Similarity
+	}
+	if match.Overlap > entry.Overlap {
+		entry.Overlap = match.Overlap
+	}
+	if entry.StartLine == 0 || (match.StartLine > 0 && match.StartLine < entry.StartLine) {
+		entry.StartLine = match.StartLine
+	}
+	if match.EndLine > entry.EndLine {
+		entry.EndLine = match.EndLine
+	}
+	if entry.Text == "" && match.Text != "" {
+		entry.Text = match.Text
+	}
+}
+
+func sortFusedHits(candidates map[string]*fusedSeedCandidate) []FusedSeedHit {
+	hits := make([]FusedSeedHit, 0, len(candidates))
 	for _, candidate := range candidates {
-		hits = append(hits, fusedSeedHit{
+		hits = append(hits, FusedSeedHit{
 			Path:       candidate.Path,
 			ChunkID:    candidate.ChunkID,
 			StartLine:  candidate.StartLine,
@@ -292,23 +309,23 @@ func sortFusedHits(candidates map[string]*fusedSeedCandidate) []fusedSeedHit {
 	return hits
 }
 
-func truncateFusedHits(hits []fusedSeedHit, topK int) []fusedSeedHit {
+func truncateFusedHits(hits []FusedSeedHit, topK int) []FusedSeedHit {
 	if topK > 0 && len(hits) > topK {
-		return append([]fusedSeedHit(nil), hits[:topK]...)
+		return append([]FusedSeedHit(nil), hits[:topK]...)
 	}
-	return append([]fusedSeedHit(nil), hits...)
+	return append([]FusedSeedHit(nil), hits...)
 }
 
-func selectVerificationHits(hits []fusedSeedHit, limit int) []fusedSeedHit {
+func selectVerificationHits(hits []FusedSeedHit, limit int) []FusedSeedHit {
 	if len(hits) == 0 || limit <= 0 {
 		return nil
 	}
 
-	selected := make([]fusedSeedHit, 0, min(limit, len(hits)))
+	selected := make([]FusedSeedHit, 0, min(limit, len(hits)))
 	selectedKeys := make(map[string]struct{}, limit)
 	usedPaths := make(map[string]struct{}, limit)
 
-	appendHit := func(hit fusedSeedHit) bool {
+	appendHit := func(hit FusedSeedHit) bool {
 		key := fmt.Sprintf("%s:%d", hit.Path, hit.ChunkID)
 		if _, ok := selectedKeys[key]; ok {
 			return false
@@ -343,7 +360,7 @@ func selectVerificationHits(hits []fusedSeedHit, limit int) []fusedSeedHit {
 	return selected
 }
 
-func overlapsSelected(hit fusedSeedHit, selected []fusedSeedHit) bool {
+func overlapsSelected(hit FusedSeedHit, selected []FusedSeedHit) bool {
 	for _, item := range selected {
 		if item.Path != hit.Path {
 			continue
@@ -355,7 +372,7 @@ func overlapsSelected(hit fusedSeedHit, selected []fusedSeedHit) bool {
 	return false
 }
 
-func verificationToolCall(hit fusedSeedHit, index int) (openai.ToolCall, error) {
+func verificationToolCall(hit FusedSeedHit, index int) (openai.ToolCall, error) {
 	path := strings.TrimSpace(hit.Path)
 	if path == "" {
 		return openai.ToolCall{}, fmt.Errorf("hybrid verification hit path is required")
@@ -425,7 +442,7 @@ func syntheticHistory(results []syntheticToolResult) []openai.ChatCompletionMess
 }
 
 func seedSearchToolCall(query string, limit int, index int) (openai.ToolCall, error) {
-	arguments, err := ragtools.MarshalJSON(map[string]any{
+	arguments, err := MarshalJSON(map[string]any{
 		"query": query,
 		"limit": limit,
 	})

@@ -35,6 +35,7 @@
 - `internal/hybrid`
 - `internal/tools`
 - `internal/rag`
+- `internal/ragcore`
 - `internal/map`
 - `internal/verbose`
 - `internal/localize`

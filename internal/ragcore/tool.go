@@ -1,4 +1,4 @@
-package ragtools
+package ragcore
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"github.com/borro/ragcli/internal/aitools"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
-	ragruntime "github.com/borro/ragcli/internal/rag"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -51,12 +50,12 @@ type SearchResult struct {
 }
 
 type searchRAGTool struct {
-	searcher *ragruntime.PreparedSearch
+	searcher *PreparedSearch
 	embedder llm.EmbeddingRequester
 	cache    map[string]aitools.ExecuteResult
 }
 
-func NewTool(searcher *ragruntime.PreparedSearch, embedder llm.EmbeddingRequester) aitools.Tool {
+func NewSearchTool(searcher *PreparedSearch, embedder llm.EmbeddingRequester) aitools.Tool {
 	return &searchRAGTool{
 		searcher: searcher,
 		embedder: embedder,
@@ -251,7 +250,7 @@ func (t *searchRAGTool) search(ctx context.Context, params SearchParams) (string
 	return MarshalJSON(result)
 }
 
-func pathExists(index *ragruntime.Index, path string) bool {
+func pathExists(index *Index, path string) bool {
 	target := strings.TrimSpace(path)
 	for _, chunk := range index.Chunks {
 		if chunk.SourcePath == target {

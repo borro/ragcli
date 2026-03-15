@@ -40,15 +40,14 @@
 - `internal/llm`
 - `internal/aitools`
 - `internal/aitools/files`
-- `internal/aitools/rag`
-- `internal/rag`
+- `internal/ragcore`
 - `internal/verbose`
 - `internal/localize`
 
 ## Основной поток
 
 1. `PrepareSession` создаёт file-domain tools через `aitools/files`.
-2. При `opts.EnableRAG` заранее поднимается `internal/rag.PreparedSearch` и добавляется tool `search_rag` из `internal/aitools/rag`.
+2. При `opts.EnableRAG` заранее поднимается `internal/ragcore.PreparedSearch` и добавляется tool `search_rag` из того же shared пакета.
 3. `Session.Run` в каждом turn отправляет chat request с доступными инструментами.
 4. Запрошенные tool calls выполняются локально через registry из `aitools`.
 5. Результаты сериализуются в JSON и возвращаются модели как `role=tool`.
@@ -84,6 +83,6 @@
 ## Куда вносить изменения
 
 - Orchestration loop и лимиты: `run.go`.
-- Добавление нового tool почти всегда требует и изменения constructors в соответствующем доменном пакете `internal/aitools/*`.
+- Добавление нового tool почти всегда требует и изменения constructors в соответствующем доменном пакете или shared runtime.
 - При изменении JSON-контрактов обновляйте документацию пакета и общую архитектуру.
 - Локализованные prompts и progress режима: `i18n/{en,ru}.toml`.

@@ -13,11 +13,10 @@ import (
 
 	"github.com/borro/ragcli/internal/aitools"
 	"github.com/borro/ragcli/internal/aitools/files"
-	ragtools "github.com/borro/ragcli/internal/aitools/rag"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
-	ragruntime "github.com/borro/ragcli/internal/rag"
+	"github.com/borro/ragcli/internal/ragcore"
 	"github.com/borro/ragcli/internal/retrieval"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
@@ -262,6 +261,10 @@ func (s *Session) ExecuteToolCallWithOptions(ctx context.Context, call openai.To
 		return "", err
 	}
 	return result, nil
+}
+
+func (s *Session) ExecuteSyntheticToolCall(ctx context.Context, call openai.ToolCall) (string, error) {
+	return s.ExecuteToolCallWithOptions(ctx, call, ToolExecutionOptions{Synthetic: true})
 }
 
 func (s *Session) SetFirstTurnAnswerPolicy(policy FirstTurnAnswerPolicy) {
@@ -541,11 +544,11 @@ func newToolLoopState(ctx context.Context, source input.FileBackedSource, embedd
 			return nil, errors.New("tools rag requires embedding client")
 		}
 		indexMeter.Start(localize.T("progress.rag.read_input"))
-		searcher, _, err := ragruntime.PrepareSearch(ctx, embedder, source, opts.RAG, indexMeter)
+		searcher, _, err := ragcore.PrepareSearch(ctx, embedder, source, opts.RAG, indexMeter)
 		if err != nil {
 			return nil, err
 		}
-		toolset = append(toolset, ragtools.NewTool(searcher, embedder))
+		toolset = append(toolset, ragcore.NewSearchTool(searcher, embedder))
 	}
 	return &toolLoopState{
 		registry:          aitools.NewRegistry(toolset...),
@@ -825,7 +828,7 @@ func evidenceKindForTool(toolName string) retrieval.EvidenceKind {
 func citationsFromToolPayload(toolName string, raw string) []retrieval.Citation {
 	switch toolName {
 	case "search_rag":
-		var result ragtools.SearchResult
+		var result ragcore.SearchResult
 		if err := json.Unmarshal([]byte(raw), &result); err != nil {
 			return nil
 		}

@@ -7,7 +7,7 @@
 - тонкую точку входа `cmd/ragcli`;
 - orchestration-слой `internal/app`;
 - mode-пакеты `hybrid`, `tools`, `rag`, `map`;
-- shared infrastructure: `llm`, `input`, `retrieval`, `aitools`, `verbose`, `localize`, `logging`.
+- shared infrastructure: `ragcore`, `llm`, `input`, `retrieval`, `aitools`, `verbose`, `localize`, `logging`.
 
 Главный принцип: `internal/app` связывает CLI, input lifecycle, создание клиентов и вывод результата, а domain-specific пайплайны живут в отдельных пакетах режимов.
 
@@ -24,10 +24,13 @@ flowchart LR
     app --> hybrid["internal/hybrid"]
     app --> tools["internal/tools"]
     app --> rag["internal/rag"]
+    app --> ragcore["internal/ragcore"]
     app --> map["internal/map"]
     hybrid --> tools
-    hybrid --> rag
-    rag --> retrieval["internal/retrieval"]
+    hybrid --> ragcore
+    tools --> ragcore
+    rag --> ragcore
+    ragcore --> retrieval["internal/retrieval"]
     tools --> aitools["internal/aitools"]
     tools --> aitoolsfiles["internal/aitools/files"]
     llm --> goopenai["go-openai"]
@@ -37,9 +40,10 @@ flowchart LR
 
 - `cmd/ragcli` не содержит логики кроме вызова `app.Run`.
 - `internal/app` знает про все режимы и shared packages; режимы не знают про CLI.
-- `internal/rag` использует `internal/retrieval` как общее ядро файлового retrieval.
+- `internal/rag` остаётся mode-пакетом standalone retrieval и использует `internal/ragcore` как shared search/index/seed слой.
+- `internal/ragcore` использует `internal/retrieval` как общее ядро файлового retrieval и владеет `search_rag`.
 - `internal/tools` оркестрирует tool calling, а общий registry/API делегирует `internal/aitools`, файловый домен — `internal/aitools/files`.
-- `internal/hybrid` переиспользует shared tool session из `internal/tools`, но seed-ит историю synthetic `search_rag`.
+- `internal/hybrid` переиспользует shared tool session из `internal/tools`, а fused seed/history собирает через `internal/ragcore`.
 - `internal/map` не зависит от retrieval и tool calling.
 
 ## 3. Жизненный цикл запуска
@@ -133,11 +137,11 @@ sequenceDiagram
 4. Общий orchestration loop из `internal/tools` позволяет модели оценить preloaded retrieval, дочитать контекст через file-tools и при необходимости повторить `search_rag` с новым запросом.
 5. В финале `internal/hybrid` дописывает `Sources:` с provenance-aware секциями `Verified` и `Retrieved`.
 
-Почему `aitools`/`aitools/files`/`aitools/rag` вынесены отдельно:
+Почему `aitools`/`aitools/files` и `ragcore` разведены:
 
 - общий AI-tool registry и контракты должны переиспользоваться между режимами;
 - файловый домен удобно развивать отдельно от orchestration loop и отдельно от будущих не-файловых tools;
-- retrieval-domain tools удобно собирать отдельно от file-domain tools, но на том же базовом `aitools.Registry`;
+- retrieval-domain tools удобно держать рядом с shared RAG runtime, но на том же базовом `aitools.Registry`;
 - каждый concrete tool можно подключать в разных сочетаниях через общий `aitools.Registry`.
 
 ### 5.2 `tools`
@@ -149,7 +153,7 @@ sequenceDiagram
 Реальный pipeline:
 
 1. Создаётся tools session с `system` и `user` сообщениями.
-2. При `--rag` заранее выполняется build/load retrieval index через `internal/rag`.
+2. При `--rag` заранее выполняется build/load retrieval index через `internal/ragcore`.
 3. В каждом turn отправляется chat request с tool definitions.
 4. Если модель запросила tool calls, `toolLoopState` выполняет их локально.
 5. Результаты возвращаются как `role=tool` сообщения в JSON.
@@ -167,9 +171,9 @@ flowchart TD
     C -- no --> E["chunk source"]
     E --> F["embed chunks"]
     F --> G["persist index"]
-    D --> H["embed query"]
+    D --> H["fused seed queries"]
     G --> H
-    H --> I["retrieve + rerank"]
+    H --> I["fuse + rerank"]
     I --> J["select evidence"]
     J --> K["synthesize answer"]
     K --> L["append Sources"]
@@ -179,8 +183,8 @@ flowchart TD
 
 1. Вход спулится во временный файл и получает hash с учётом параметров индекса.
 2. Индекс грузится из кэша или строится заново.
-3. Query embed-ится отдельно.
-4. Retrieval ранжирует кандидаты по сходству и lexical overlap.
+3. Выполняется fused semantic seed по нескольким deterministic variants исходного вопроса.
+4. Fused retrieval ранжирует кандидаты по сходству и lexical overlap.
 5. Выбираются `final-k` evidence chunks.
 6. LLM отвечает только по evidence.
 7. В ответ добавляется секция `Sources:`.
@@ -232,7 +236,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | temp file from `stdin` | `internal/input` | дать режимам path + random access | удаляется в `Handle.Close()` |
 | spooled source for `rag` | `internal/retrieval` | стабильный hash и повторное чтение | удаляется после завершения run |
-| index dir | `internal/rag` | кэш embeddings и metadata | живёт до TTL cleanup |
+| index dir | `internal/ragcore` | кэш embeddings и metadata | живёт до TTL cleanup |
 
 ## 7. Что считать публичным поведением
 

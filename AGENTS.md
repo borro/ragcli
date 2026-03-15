@@ -18,6 +18,7 @@
 - [`cmd/ragcli`](cmd/ragcli) — тонкая точка входа, только передаёт управление в `internal/app`.
 - [`internal/app`](internal/app) — CLI surface, binding флагов, lifecycle команды, wiring input/llm/output/progress.
 - [`internal/map`](internal/map), [`internal/rag`](internal/rag), [`internal/tools`](internal/tools) — три режима обработки.
+- [`internal/ragcore`](internal/ragcore) — единый shared RAG runtime для `rag`, `tools --rag` и `hybrid`.
 - [`internal/aitools`](internal/aitools) — общий OpenAI-bound каркас для AI tools и registry-композиции.
 - [`internal/aitools/files`](internal/aitools/files) — файловый домен AI tools: line-based readers, JSON-контракты и concrete file tools.
 - [`internal/llm`](internal/llm), [`internal/input`](internal/input), [`internal/retrieval`](internal/retrieval), [`internal/verbose`](internal/verbose), [`internal/localize`](internal/localize), [`internal/logging`](internal/logging) — shared infrastructure.

@@ -2,14 +2,14 @@
 
 ## TL;DR
 
-Пакет реализует режим `hybrid`: сначала он строит fused semantic seed по исходному вопросу, затем предзагружает exact reads по strongest hit'ам и только после этого передаёт управление общему tool-calling loop, чтобы модель проверила релевантность, дочитала локальный контекст и при необходимости повторила retrieval.
+Пакет реализует режим `hybrid`: сначала он запрашивает fused semantic seed и synthetic verification history из `internal/ragcore`, затем передаёт управление общему tool-calling loop, чтобы модель проверила релевантность, дочитала локальный контекст и при необходимости повторила retrieval.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
 ## Зона ответственности
 
 - orchestration нового CLI-режима `hybrid`;
-- подготовка fused `search_rag` seed и synthetic verification reads до первого LLM turn;
+- orchestration fused `search_rag` seed и synthetic verification reads до первого LLM turn через `internal/ragcore`;
 - добавление hybrid-specific prompt instructions поверх общего tool session;
 - финализация ответа с `Sources:` по provenance-aware evidence results сессии, разделённым на `Verified` и `Retrieved`.
 
@@ -27,8 +27,7 @@
 Исходящие:
 
 - `internal/tools`
-- `internal/rag`
-- `internal/aitools/rag`
+- `internal/ragcore`
 - `internal/retrieval`
 - `internal/localize`
 

@@ -189,8 +189,10 @@
 - для директорий считать hash по упорядоченной последовательности `(relative path, raw content)`;
 - хранить manifest, chunks и embeddings в отдельной директории индекса;
 - при directory input chunk-ать каждый файл отдельно с file-local line numbers;
-- embed-ить query, ранжировать чанки, опционально rerank-ить и выбирать evidence;
+- выполнять fused semantic seed по нескольким deterministic query variants исходного вопроса;
+- ранжировать fused hits, опционально rerank-ить и выбирать evidence;
 - синтезировать ответ только по evidence chunks;
+- не запускать tool orchestration и не делать synthetic exact verification reads;
 - дописывать в финал секцию `Sources:` с relative paths внутри директории.
 
 Опции `rag`:
