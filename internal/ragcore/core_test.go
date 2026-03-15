@@ -422,43 +422,6 @@ func TestBuildOrLoadIndexFromMultipleFilesKeepsRelativePaths(t *testing.T) {
 	}
 }
 
-func TestEmbedQuery(t *testing.T) {
-	vector, metrics, err := embedQuery(context.Background(), &fakeEmbedder{}, " retry\n policy ")
-	if err != nil {
-		t.Fatalf("embedQuery() error = %v", err)
-	}
-	if len(vector) == 0 {
-		t.Fatal("embedQuery() vector empty, want non-empty")
-	}
-	if metrics.InputCount != 1 {
-		t.Fatalf("metrics.InputCount = %d, want 1", metrics.InputCount)
-	}
-}
-
-func TestEmbedQueryErrors(t *testing.T) {
-	embedderErr := embeddingRequesterFunc(func(_ context.Context, _ []string) ([][]float32, llm.EmbeddingMetrics, error) {
-		return nil, llm.EmbeddingMetrics{}, errors.New("embed failed")
-	})
-	_, _, err := embedQuery(context.Background(), embedderErr, "question")
-	if err == nil || !strings.Contains(err.Error(), "failed to embed query") {
-		t.Fatalf("embedQuery() error = %v, want wrapped embed error", err)
-	}
-
-	badCount := embeddingRequesterFunc(func(_ context.Context, _ []string) ([][]float32, llm.EmbeddingMetrics, error) {
-		return [][]float32{{1}, {2}}, llm.EmbeddingMetrics{}, nil
-	})
-	_, _, err = embedQuery(context.Background(), badCount, "question")
-	if err == nil || !strings.Contains(err.Error(), "query embeddings count = 2, want 1") {
-		t.Fatalf("embedQuery() error = %v, want count mismatch", err)
-	}
-}
-
-type embeddingRequesterFunc func(context.Context, []string) ([][]float32, llm.EmbeddingMetrics, error)
-
-func (f embeddingRequesterFunc) CreateEmbeddingsWithMetrics(ctx context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
-	return f(ctx, inputs)
-}
-
 type sourceMetaStub struct {
 	kind        input.Kind
 	displayName string

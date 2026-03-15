@@ -504,15 +504,16 @@ func TestListFiles_DefaultsAndPagination(t *testing.T) {
 }
 
 func TestToolDefinitions_SingleAndMultiFile(t *testing.T) {
-	singleFile := aitools.NewRegistry(NewTools(nil, ToolOptions{MultiFile: false})...).ToolDefinitions()
+	singleFile := NewTools(nil, ToolOptions{MultiFile: false})
 	if len(singleFile) != 3 {
 		t.Fatalf("len(singleFile) = %d, want 3", len(singleFile))
 	}
-	if toolByName(singleFile, "list_files") != nil {
+	singleDefinitions := toolDefinitions(singleFile)
+	if toolByName(singleDefinitions, "list_files") != nil {
 		t.Fatal("single-file tool set unexpectedly contains list_files")
 	}
 
-	readLinesSingle := toolByName(singleFile, "read_lines")
+	readLinesSingle := toolByName(singleDefinitions, "read_lines")
 	if readLinesSingle == nil {
 		t.Fatal("single-file tool set missing read_lines")
 	}
@@ -520,11 +521,18 @@ func TestToolDefinitions_SingleAndMultiFile(t *testing.T) {
 		t.Fatalf("single-file read_lines required = %#v, want start_line/end_line", required)
 	}
 
-	multiFile := aitools.NewRegistry(NewTools(nil, ToolOptions{MultiFile: true})...).ToolDefinitions()
+	multiFile := NewTools(nil, ToolOptions{MultiFile: true})
 	if len(multiFile) != 4 {
 		t.Fatalf("len(multiFile) = %d, want 4", len(multiFile))
 	}
-	listFiles := toolByName(multiFile, "list_files")
+	for i, want := range []string{"list_files", "search_file", "read_lines", "read_around"} {
+		if multiFile[i].Name() != want {
+			t.Fatalf("tools[%d].Name() = %q, want %q", i, multiFile[i].Name(), want)
+		}
+	}
+
+	multiDefinitions := toolDefinitions(multiFile)
+	listFiles := toolByName(multiDefinitions, "list_files")
 	if listFiles == nil {
 		t.Fatal("multi-file tool set missing list_files")
 	}
@@ -532,7 +540,7 @@ func TestToolDefinitions_SingleAndMultiFile(t *testing.T) {
 		t.Fatal("list_files description must not be empty")
 	}
 
-	readLinesMulti := toolByName(multiFile, "read_lines")
+	readLinesMulti := toolByName(multiDefinitions, "read_lines")
 	if readLinesMulti == nil {
 		t.Fatal("multi-file tool set missing read_lines")
 	}
@@ -540,7 +548,7 @@ func TestToolDefinitions_SingleAndMultiFile(t *testing.T) {
 		t.Fatalf("multi-file read_lines required = %#v, want path/start_line/end_line", required)
 	}
 
-	readAroundMulti := toolByName(multiFile, "read_around")
+	readAroundMulti := toolByName(multiDefinitions, "read_around")
 	if readAroundMulti == nil {
 		t.Fatal("multi-file tool set missing read_around")
 	}
@@ -604,35 +612,42 @@ func TestConcreteTool_CachesDuplicateCalls(t *testing.T) {
 	}
 }
 
-func TestRegistry_DispatchesCallsAndBuildsDefinitions(t *testing.T) {
+func TestNewTools_BuildsOrderedDefinitionsAndSearchContract(t *testing.T) {
 	reader := NewCorpusReader([]CorpusFile{
 		{Path: writeTempFile(t, "alpha\n"), DisplayPath: "a.txt"},
 		{Path: writeTempFile(t, "beta\n"), DisplayPath: "nested/b.txt"},
 	})
-	registry := aitools.NewRegistry(NewTools(reader, ToolOptions{MultiFile: true})...)
+	tools := NewTools(reader, ToolOptions{MultiFile: true})
 
-	definitions := registry.ToolDefinitions()
+	definitions := toolDefinitions(tools)
 	if len(definitions) != 4 {
 		t.Fatalf("len(definitions) = %d, want 4", len(definitions))
 	}
 	if definitions[0].Function == nil || definitions[0].Function.Name != "list_files" {
 		t.Fatalf("definitions[0] = %#v, want list_files", definitions[0].Function)
 	}
+	if tools[1].Name() != "search_file" {
+		t.Fatalf("tools[1].Name() = %q, want search_file", tools[1].Name())
+	}
 
-	result, err := registry.Execute(context.Background(), toolCall("1", "search_file", `{"query":"alpha"}`))
+	searchTool := toolInterfaceByName(t, tools, "search_file")
+	result, err := searchTool.Execute(context.Background(), toolCall("1", "search_file", `{"query":"alpha"}`))
 	if err != nil {
-		t.Fatalf("registry.Execute(search_file) error = %v", err)
+		t.Fatalf("searchTool.Execute() error = %v", err)
 	}
 	if result.Payload == "" || len(result.ProgressKeys) == 0 {
 		t.Fatalf("result = %+v, want payload and progress keys", result)
 	}
 
-	_, err = registry.Execute(context.Background(), toolCall("2", "boom", `{}`))
-	if err == nil {
-		t.Fatal("registry.Execute(unknown) error = nil, want unknown_tool")
+	var payload SearchResult
+	if err := json.Unmarshal([]byte(result.Payload), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(result.Payload) error = %v", err)
 	}
-	if got := AsToolError(err).Code; got != "unknown_tool" {
-		t.Fatalf("Code = %q, want unknown_tool", got)
+	if payload.MatchCount != 1 || len(payload.Matches) != 1 {
+		t.Fatalf("payload = %+v, want one match", payload)
+	}
+	if payload.Matches[0].Path != "a.txt" || payload.Matches[0].LineNumber != 1 {
+		t.Fatalf("first match = %+v, want a.txt:1", payload.Matches[0])
 	}
 }
 
@@ -773,8 +788,8 @@ func TestSummarizeToolArguments_OtherToolsAndErrors(t *testing.T) {
 	}
 }
 
-func TestRegistryDescribeCall_UsesCompactVerboseLabel(t *testing.T) {
-	registry := aitools.NewRegistry(NewTools(nil, ToolOptions{MultiFile: true})...)
+func TestConcreteTools_DescribeCall_UsesCompactVerboseLabel(t *testing.T) {
+	tools := NewTools(nil, ToolOptions{MultiFile: true})
 
 	tests := []struct {
 		name      string
@@ -839,7 +854,8 @@ func TestRegistryDescribeCall_UsesCompactVerboseLabel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			desc := registry.DescribeCall(tt.call)
+			tool := toolInterfaceByName(t, tools, tt.call.Function.Name)
+			desc := tool.DescribeCall(tt.call)
 			if desc.VerboseLabel != tt.wantLabel {
 				t.Fatalf("VerboseLabel = %q, want %q", desc.VerboseLabel, tt.wantLabel)
 			}
@@ -1295,6 +1311,27 @@ func toolByName(tools []openai.Tool, name string) *openai.Tool {
 			return &tools[i]
 		}
 	}
+	return nil
+}
+
+func toolDefinitions(tools []aitools.Tool) []openai.Tool {
+	definitions := make([]openai.Tool, 0, len(tools))
+	for _, tool := range tools {
+		definitions = append(definitions, tool.ToolDefinition())
+	}
+	return definitions
+}
+
+func toolInterfaceByName(t *testing.T, tools []aitools.Tool, name string) aitools.Tool {
+	t.Helper()
+
+	for _, tool := range tools {
+		if tool.Name() == name {
+			return tool
+		}
+	}
+
+	t.Fatalf("tool %q not found", name)
 	return nil
 }
 
