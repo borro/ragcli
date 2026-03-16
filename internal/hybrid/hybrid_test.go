@@ -1,6 +1,7 @@
 package hybrid
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -424,6 +425,171 @@ func TestRunHybrid_FallsBackToSeedWhenContextResolveFails(t *testing.T) {
 	}
 	if len(collectToolCalls(client.requests[0].Messages, "search_rag")) == 0 {
 		t.Fatalf("messages = %#v, want seeded retrieval fallback", client.requests[0].Messages)
+	}
+}
+
+func TestStartConversation_DirectContextResetDropsFollowUpHistory(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(filePath, []byte("alpha\nbeta\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message(openai.ChatMessageRoleAssistant, "initial direct answer", nil)),
+			chatResponse(message(openai.ChatMessageRoleAssistant, "follow-up direct answer", nil)),
+			chatResponse(message(openai.ChatMessageRoleAssistant, "answer after reset", nil)),
+		},
+		contextLength: 32000,
+	}
+
+	conversation, answer, err := StartConversation(context.Background(), client, fakeEmbedder(), openSource(t, filePath), defaultSearchOptions(t), "Что в файле?", nil)
+	if err != nil {
+		t.Fatalf("StartConversation() error = %v", err)
+	}
+	if !strings.Contains(answer, "initial direct answer") {
+		t.Fatalf("answer = %q, want initial direct answer", answer)
+	}
+
+	followUp, err := conversation.Ask(context.Background(), "И что ещё важно?", nil)
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if !strings.Contains(followUp, "follow-up direct answer") {
+		t.Fatalf("followUp = %q, want follow-up direct answer", followUp)
+	}
+
+	conversation.Reset()
+	resetAnswer, err := conversation.Ask(context.Background(), "Повтори вывод", nil)
+	if err != nil {
+		t.Fatalf("Ask() after reset error = %v", err)
+	}
+	if !strings.Contains(resetAnswer, "answer after reset") {
+		t.Fatalf("resetAnswer = %q, want answer after reset", resetAnswer)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("requests = %d, want 3", len(client.requests))
+	}
+	for _, msg := range client.requests[2].Messages {
+		if strings.Contains(msg.Content, "И что ещё важно?") {
+			t.Fatalf("messages after reset still contain prior follow-up: %#v", client.requests[2].Messages)
+		}
+	}
+}
+
+func TestStartConversation_DirectContextFollowUpVerboseMarksPreparedStateReuse(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(filePath, []byte("alpha\nbeta\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message(openai.ChatMessageRoleAssistant, "initial direct answer", nil)),
+			chatResponse(message(openai.ChatMessageRoleAssistant, "follow-up direct answer", nil)),
+		},
+		contextLength: 32000,
+	}
+
+	conversation, _, err := StartConversation(context.Background(), client, fakeEmbedder(), openSource(t, filePath), defaultSearchOptions(t), "Что в файле?", nil)
+	if err != nil {
+		t.Fatalf("StartConversation() error = %v", err)
+	}
+
+	var progress bytes.Buffer
+	plan := conversation.FollowUpPlan(verbosepkg.New(&progress, true, false))
+
+	if _, err := conversation.Ask(context.Background(), "И что ещё важно?", plan); err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+
+	output := progress.String()
+	testutil.AssertOutputOmitsAll(t, output,
+		localize.T("progress.stage.prepare"),
+		localize.T("progress.stage.index"),
+		localize.T("progress.stage.retrieval"),
+	)
+	testutil.AssertOutputContainsAll(t, output,
+		localize.T("progress.hybrid.direct_followup_request_start"),
+		localize.T("progress.hybrid.direct_followup_answer_done"),
+	)
+}
+
+func TestStartConversation_SeededFollowUpVerboseMarksPreparedStateReuse(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "retries.txt")
+	if err := os.WriteFile(filePath, []byte("retry policy enabled\nbackoff is exponential\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message(openai.ChatMessageRoleAssistant, "initial seeded answer", nil)),
+			chatResponse(message(openai.ChatMessageRoleAssistant, "follow-up seeded answer", nil)),
+		},
+		contextLength: 1,
+	}
+
+	conversation, _, err := StartConversation(context.Background(), client, fakeEmbedder(), openSource(t, filePath), defaultSearchOptions(t), "What does it say about retry policy?", nil)
+	if err != nil {
+		t.Fatalf("StartConversation() error = %v", err)
+	}
+
+	var progress bytes.Buffer
+	plan := conversation.FollowUpPlan(verbosepkg.New(&progress, true, false))
+
+	if _, err := conversation.Ask(context.Background(), "What about backoff?", plan); err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+
+	output := progress.String()
+	testutil.AssertOutputOmitsAll(t, output,
+		localize.T("progress.stage.prepare"),
+		localize.T("progress.stage.index"),
+		localize.T("progress.stage.retrieval"),
+	)
+	testutil.AssertOutputContainsAll(t, output, localize.T("progress.stage.loop"))
+}
+
+func TestStartConversation_SeededPathResetDropsFollowUpHistory(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "retries.txt")
+	if err := os.WriteFile(filePath, []byte("retry policy enabled\nbackoff is exponential\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message(openai.ChatMessageRoleAssistant, "initial seeded answer", nil)),
+			chatResponse(message(openai.ChatMessageRoleAssistant, "follow-up seeded answer", nil)),
+			chatResponse(message(openai.ChatMessageRoleAssistant, "answer after reset", nil)),
+		},
+		contextLength: 1,
+	}
+
+	conversation, answer, err := StartConversation(context.Background(), client, fakeEmbedder(), openSource(t, filePath), defaultSearchOptions(t), "What does it say about retry policy?", nil)
+	if err != nil {
+		t.Fatalf("StartConversation() error = %v", err)
+	}
+	if !strings.Contains(answer, "initial seeded answer") {
+		t.Fatalf("answer = %q, want initial seeded answer", answer)
+	}
+
+	if _, err := conversation.Ask(context.Background(), "What about backoff?", nil); err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	conversation.Reset()
+	if _, err := conversation.Ask(context.Background(), "Repeat the summary", nil); err != nil {
+		t.Fatalf("Ask() after reset error = %v", err)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("requests = %d, want 3", len(client.requests))
+	}
+	if len(collectToolCalls(client.requests[0].Messages, "search_rag")) == 0 {
+		t.Fatalf("initial request messages = %#v, want seeded search history", client.requests[0].Messages)
+	}
+	for _, msg := range client.requests[2].Messages {
+		if strings.Contains(msg.Content, "What about backoff?") {
+			t.Fatalf("messages after reset still contain prior follow-up: %#v", client.requests[2].Messages)
+		}
 	}
 }
 

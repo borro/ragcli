@@ -12,10 +12,14 @@
 - запуск fused seed retrieval через `internal/ragcore`;
 - выбор evidence chunks для прямого ответа без synthetic verification reads;
 - синтез финального ответа и дописывание `Sources:`.
+- reusable session и interactive follow-up wrapper поверх уже подготовленного индекса.
 
 ## Ключевые entrypoints/types
 
 - `Run(ctx, chat, embedder, source, opts, question, plan)`
+- `PrepareSession(ctx, embedder, source, opts, plan)`
+- `Session.Answer(...)`
+- `StartConversation(...)`
 
 ## Входящие/исходящие зависимости
 
@@ -38,6 +42,7 @@
 3. `rag` запускает fused semantic seed по нескольким deterministic query variants исходного вопроса.
 4. `rag` отбирает evidence chunks и синтезирует прямой ответ без tool loop.
 5. В ответ добавляется секция `Sources:`.
+6. При `--interaction` пакет переиспользует один и тот же `PreparedSearch`, а follow-up synthesis получает предыдущий Q/A transcript как контекст, который можно исправлять по свежему retrieval.
 
 ## Инварианты и ошибки
 

@@ -82,6 +82,9 @@ usage = "Включить debug runtime-логи в stderr; без флага о
 [cli.flag.verbose]
 usage = "Показывать ход выполнения в stderr отдельными строками статуса."
 
+[cli.flag.interaction]
+usage = "Оставить сессию открытой после первого ответа для follow-up вопросов."
+
 [cli.flag.lang]
 usage = "Язык интерфейса CLI: en или ru."
 
@@ -132,6 +135,14 @@ unknown_subcommand = "неизвестная подкоманда: {{.Name}}"
 [error.output]
 create_renderer = "не удалось создать renderer: {{.Error}}"
 render_markdown = "не удалось отрендерить markdown: {{.Error}}"
+
+[error.interaction]
+tty_required = "для интерактивных follow-up вопросов после stdin нужен управляющий терминал"
+
+[interaction]
+banner = "Интерактивный режим активен. Задавайте follow-up вопросы, используйте /reset для возврата к состоянию после первого ответа или /exit для завершения."
+prompt = "> "
+reset = "Сессия возвращена к состоянию после первого ответа."
 
 [progress.mode]
 map = "map"

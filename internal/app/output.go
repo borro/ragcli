@@ -18,6 +18,14 @@ var isTerminalWriter = func(writer io.Writer) bool {
 	return term.IsTerminal(int(fdWriter.Fd()))
 }
 
+var isTerminalReader = func(reader io.Reader) bool {
+	fdReader, ok := reader.(interface{ Fd() uintptr })
+	if !ok {
+		return false
+	}
+	return term.IsTerminal(int(fdReader.Fd()))
+}
+
 var terminalWidth = func(writer io.Writer) int {
 	fdWriter, ok := writer.(interface{ Fd() uintptr })
 	if !ok {

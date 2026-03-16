@@ -11,9 +11,7 @@ import (
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
-	"github.com/borro/ragcli/internal/ragcore"
 	"github.com/borro/ragcli/internal/retrieval"
-	"github.com/borro/ragcli/internal/tools"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -27,47 +25,8 @@ func Run(
 	prompt string,
 	plan *verbose.Plan,
 ) (string, error) {
-	slog.Debug("hybrid processing started", "input_path", source.InputPath(), "file_count", source.FileCount())
-
-	if answer, ok, err := tryDirectContextAnswer(ctx, client, source, prompt, plan); err != nil {
-		return "", err
-	} else if ok {
-		slog.Debug("hybrid processing finished", "mode", "direct_context")
-		return answer, nil
-	}
-
-	session, err := tools.PrepareSession(ctx, source, embedder, tools.Options{
-		EnableRAG: true,
-		RAG:       opts.Search,
-	}, tools.SessionOptions{
-		Prompt:                 prompt,
-		AdditionalSystemPrompt: strings.TrimSpace(localize.T("hybrid.prompt.system")),
-		AdditionalUserPrompt:   strings.TrimSpace(localize.T("hybrid.prompt.user")),
-		FirstTurnAnswerPolicy:  tools.FirstTurnAnswerAllow,
-	}, plan.Stage("index"))
-	if err != nil {
-		return "", err
-	}
-
-	retrievalMeter := plan.Stage("retrieval")
-	retrievalMeter.Start(localize.T("progress.hybrid.seed_start"))
-	retrievalMeter.Note(localize.T("progress.hybrid.seed_search"))
-	seedBundle, err := ragcore.BuildSeedBundle(ctx, session, prompt, opts.Search)
-	if err != nil {
-		return "", err
-	}
-	if seedBundle.Weak {
-		session.SetFirstTurnAnswerPolicy(tools.FirstTurnAnswerRequireToolUse)
-	}
-	retrievalMeter.Done(localize.T("progress.hybrid.seed_done"))
-
-	result, err := session.Run(ctx, client, seedBundle.History, plan)
-	if err != nil {
-		return "", err
-	}
-
-	slog.Debug("hybrid processing finished", "evidence", len(result.Evidence), "seed_hits", len(seedBundle.Hits), "weak_seed", seedBundle.Weak)
-	return retrieval.AppendEvidenceSources(result.Answer, result.Evidence), nil
+	_, answer, err := StartConversation(ctx, client, embedder, source, opts, prompt, plan)
+	return answer, err
 }
 
 const (
@@ -77,10 +36,10 @@ const (
 	directBudgetDenominator     = 5
 )
 
-func tryDirectContextAnswer(ctx context.Context, client llm.ChatAutoContextRequester, source input.FileBackedSource, prompt string, plan *verbose.Plan) (string, bool, error) {
+func startDirectConversation(ctx context.Context, client llm.ChatAutoContextRequester, source input.FileBackedSource, prompt string, plan *verbose.Plan) (*directConversation, string, bool, error) {
 	if source.IsMultiFile() {
 		slog.Debug("hybrid direct context skipped; source is multi-file", "input_path", source.InputPath(), "file_count", source.FileCount())
-		return "", false, nil
+		return nil, "", false, nil
 	}
 	indexMeter := plan.Stage("index")
 	retrievalMeter := plan.Stage("retrieval")
@@ -97,13 +56,13 @@ func tryDirectContextAnswer(ctx context.Context, client llm.ChatAutoContextReque
 
 	reader, err := source.Open()
 	if err != nil {
-		return "", false, err
+		return nil, "", false, err
 	}
 	defer func() { _ = reader.Close() }()
 
 	raw, err := io.ReadAll(reader)
 	if err != nil {
-		return "", false, fmt.Errorf("failed to read source for hybrid direct context: %w", err)
+		return nil, "", false, fmt.Errorf("failed to read source for hybrid direct context: %w", err)
 	}
 	slog.Debug("hybrid direct context source loaded",
 		"bytes", len(raw),
@@ -114,7 +73,7 @@ func tryDirectContextAnswer(ctx context.Context, client llm.ChatAutoContextReque
 	if err != nil || contextLength < 1 {
 		indexMeter.Done(localize.T("progress.hybrid.direct_check_skip"))
 		slog.Debug("hybrid direct context skipped; context length unavailable", "error", err)
-		return "", false, nil
+		return nil, "", false, nil
 	}
 
 	messages := directContextMessages(prompt, source.DisplayName(), string(raw))
@@ -132,7 +91,7 @@ func tryDirectContextAnswer(ctx context.Context, client llm.ChatAutoContextReque
 			"safe_budget", safeBudget,
 			"request_tokens", requestTokens,
 		)
-		return "", false, nil
+		return nil, "", false, nil
 	}
 	indexMeter.Done(localize.T("progress.hybrid.direct_check_done"))
 	slog.Debug("hybrid direct context selected",
@@ -147,13 +106,13 @@ func tryDirectContextAnswer(ctx context.Context, client llm.ChatAutoContextReque
 	slog.Debug("hybrid direct context request started", "message_count", len(messages))
 	resp, _, err := client.SendRequestWithMetrics(ctx, openai.ChatCompletionRequest{Messages: messages})
 	if err != nil {
-		return "", false, fmt.Errorf("failed to send hybrid direct-context request: %w", err)
+		return nil, "", false, fmt.Errorf("failed to send hybrid direct-context request: %w", err)
 	}
 	initMeter.Done(localize.T("progress.hybrid.direct_request_done"))
 	loopMeter.Done(localize.T("progress.hybrid.direct_loop_skip"))
 	finalMeter.Start(localize.T("progress.hybrid.direct_answer_start"))
 	if len(resp.Choices) == 0 {
-		return "", false, fmt.Errorf("no choices in response")
+		return nil, "", false, fmt.Errorf("no choices in response")
 	}
 	finalMeter.Done(localize.T("progress.hybrid.direct_answer_done"))
 	answer := appendDirectContextSources(strings.TrimSpace(resp.Choices[0].Message.Content), source, string(raw))
@@ -161,7 +120,20 @@ func tryDirectContextAnswer(ctx context.Context, client llm.ChatAutoContextReque
 		"choice_count", len(resp.Choices),
 		"answer_chars", len(answer),
 	)
-	return answer, true, nil
+	return &directConversation{
+		client:        client,
+		source:        source,
+		systemMessage: messages[0],
+		rawContent:    string(raw),
+		history: []openai.ChatCompletionMessage{
+			messages[1],
+			resp.Choices[0].Message,
+		},
+		baseline: []openai.ChatCompletionMessage{
+			messages[1],
+			resp.Choices[0].Message,
+		},
+	}, answer, true, nil
 }
 
 func directContextMessages(question, name, content string) []openai.ChatCompletionMessage {

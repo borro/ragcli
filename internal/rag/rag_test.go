@@ -37,12 +37,14 @@ type fakeEmbedder struct {
 	mu          sync.Mutex
 	calls       int
 	totalTokens int
+	inputs      []string
 }
 
 func (f *fakeEmbedder) CreateEmbeddingsWithMetrics(_ context.Context, inputs []string) ([][]float32, llm.EmbeddingMetrics, error) {
 	f.mu.Lock()
 	f.calls++
 	f.totalTokens += len(inputs) * 7
+	f.inputs = append(f.inputs, inputs...)
 	f.mu.Unlock()
 
 	vectors := make([][]float32, 0, len(inputs))
@@ -62,12 +64,17 @@ type fakeChat struct {
 	mu       sync.Mutex
 	requests []openai.ChatCompletionRequest
 	answer   string
+	answers  []string
 }
 
 func (f *fakeChat) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
+	index := len(f.requests) - 1
 	answer := f.answer
+	if index < len(f.answers) {
+		answer = f.answers[index]
+	}
 	f.mu.Unlock()
 
 	return &openai.ChatCompletionResponse{
@@ -275,6 +282,124 @@ func TestRunReturnsAnswerWithCitations(t *testing.T) {
 	if strings.Contains(userPrompt, "totally unrelated section") {
 		t.Fatalf("user prompt unexpectedly contains unrelated chunk: %q", userPrompt)
 	}
+}
+
+func TestStartConversation_ReusesPreparedIndexAndResetRestoresTranscript(t *testing.T) {
+	cfg := Options{
+		EmbeddingModel: "embed",
+		TopK:           3,
+		FinalK:         2,
+		ChunkSize:      55,
+		ChunkOverlap:   10,
+		IndexTTL:       time.Hour,
+		IndexDir:       t.TempDir(),
+		Rerank:         "heuristic",
+	}
+	embedder := &fakeEmbedder{}
+	chat := &fakeChat{
+		answers: []string{
+			"Initial answer [source 1].",
+			"Follow-up answer [source 1].",
+			"Answer after reset [source 1].",
+		},
+	}
+	content := strings.Join([]string{
+		"FILECHUNKMARKER retry policy enabled",
+		"backoff starts at 1s",
+		"database settings are described elsewhere",
+	}, "\n")
+
+	conversation, answer, err := StartConversation(context.Background(), chat, embedder, fileSource(strings.NewReader(content), "/tmp/retries.txt"), cfg, "What is the retry policy?", nil)
+	if err != nil {
+		t.Fatalf("StartConversation() error = %v", err)
+	}
+	if !strings.Contains(answer, "Initial answer") {
+		t.Fatalf("answer = %q, want initial answer", answer)
+	}
+
+	embedder.mu.Lock()
+	embedder.inputs = nil
+	embedder.mu.Unlock()
+
+	followUp, err := conversation.Ask(context.Background(), "What about backoff?", nil)
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if !strings.Contains(followUp, "Follow-up answer") {
+		t.Fatalf("followUp = %q, want follow-up answer", followUp)
+	}
+
+	embedder.mu.Lock()
+	followUpInputs := append([]string(nil), embedder.inputs...)
+	embedder.inputs = nil
+	embedder.mu.Unlock()
+
+	for _, input := range followUpInputs {
+		if strings.Contains(input, "FILECHUNKMARKER") {
+			t.Fatalf("follow-up embeddings unexpectedly rebuilt file chunks: %#v", followUpInputs)
+		}
+	}
+	combined := strings.Join(followUpInputs, "\n")
+	if !strings.Contains(combined, "What is the retry policy?") || !strings.Contains(combined, "What about backoff?") {
+		t.Fatalf("follow-up query context = %q, want previous and current questions", combined)
+	}
+
+	conversation.Reset()
+	resetAnswer, err := conversation.Ask(context.Background(), "Repeat the summary", nil)
+	if err != nil {
+		t.Fatalf("Ask() after reset error = %v", err)
+	}
+	if !strings.Contains(resetAnswer, "Answer after reset") {
+		t.Fatalf("resetAnswer = %q, want answer after reset", resetAnswer)
+	}
+	if len(chat.requests) != 3 {
+		t.Fatalf("chat requests = %d, want 3", len(chat.requests))
+	}
+	if strings.Contains(chat.requests[2].Messages[1].Content, "What about backoff?") {
+		t.Fatalf("request after reset still contains prior follow-up: %q", chat.requests[2].Messages[1].Content)
+	}
+}
+
+func TestStartConversation_FollowUpVerboseMarksPreparedStateReuse(t *testing.T) {
+	cfg := Options{
+		EmbeddingModel: "embed",
+		TopK:           3,
+		FinalK:         2,
+		ChunkSize:      55,
+		ChunkOverlap:   10,
+		IndexTTL:       time.Hour,
+		IndexDir:       t.TempDir(),
+		Rerank:         "heuristic",
+	}
+	embedder := &fakeEmbedder{}
+	chat := &fakeChat{
+		answers: []string{
+			"Initial answer [source 1].",
+			"Follow-up answer [source 1].",
+		},
+	}
+	content := strings.Join([]string{
+		"FILECHUNKMARKER retry policy enabled",
+		"backoff starts at 1s",
+		"database settings are described elsewhere",
+	}, "\n")
+
+	conversation, _, err := StartConversation(context.Background(), chat, embedder, fileSource(strings.NewReader(content), "/tmp/retries.txt"), cfg, "What is the retry policy?", nil)
+	if err != nil {
+		t.Fatalf("StartConversation() error = %v", err)
+	}
+
+	var stderr strings.Builder
+	plan := conversation.FollowUpPlan(verbose.New(&stderr, true, false))
+
+	if _, err := conversation.Ask(context.Background(), "What about backoff?", plan); err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+
+	testutil.AssertOutputOmitsAll(t, stderr.String(),
+		localize.T("progress.stage.prepare"),
+		localize.T("progress.stage.index"),
+	)
 }
 
 func TestRunSanitizesInstructionLikeEvidence(t *testing.T) {

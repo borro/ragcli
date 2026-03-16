@@ -63,6 +63,21 @@ func NewSearchTool(searcher *PreparedSearch, embedder llm.EmbeddingRequester) ai
 	}
 }
 
+func (t *searchRAGTool) CloneTool() aitools.Tool {
+	if t == nil {
+		return (*searchRAGTool)(nil)
+	}
+	cloned := &searchRAGTool{
+		searcher: t.searcher,
+		embedder: t.embedder,
+		cache:    make(map[string]aitools.ExecuteResult, len(t.cache)),
+	}
+	for key, value := range t.cache {
+		cloned.cache[key] = aitools.CloneExecuteResult(value)
+	}
+	return cloned
+}
+
 func NormalizeSearchParams(params SearchParams) SearchParams {
 	params.Path = strings.TrimSpace(params.Path)
 	params.Query = strings.TrimSpace(params.Query)

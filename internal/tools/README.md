@@ -12,6 +12,7 @@
 - orchestration loop по turns;
 - обработка tool calls и cross-turn guards против зацикливания;
 - финализация режима после содержательного text answer.
+- stateful conversation wrapper для `--interaction`, включая `/reset`.
 
 ## Ключевые entrypoints/types
 
@@ -21,7 +22,9 @@
 - `FirstTurnAnswerPolicy`
 - `Session`
 - `SessionResult`
+- `Conversation`
 - `Run(ctx, client, embedder, source, opts, prompt, plan)`
+- `StartConversation(...)`
 - `PrepareSession(ctx, source, embedder, opts, sessionOpts, indexMeter)`
 - `NewToolsConfig(prompt, source, opts, definitions, additionalSystemPrompt, additionalUserPrompt)`
 - `toolLoopState`
@@ -56,6 +59,7 @@
 8. При зацикливании применяются stop/retry/forced-finalization guards.
 9. Если backend прислал `<tool_call>...</tool_call>` текстом вместо `ToolCalls`, loop пытается распарсить и исполнить такой fallback; битый markup не печатается пользователю как финальный ответ и приводит к retry.
 10. `tools.Run` возвращает финальный текстовый ответ; `internal/hybrid` использует тот же evidence tracking для `Sources:`.
+11. При `--interaction` `Conversation` хранит transcript snapshot, клонирует `Session`/`toolLoopState` на follow-up turn и откатывает state к baseline по `/reset`.
 
 ## Инварианты и ошибки
 

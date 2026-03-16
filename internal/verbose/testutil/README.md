@@ -13,6 +13,8 @@ Test-only helper-пакет для проверки stage-based progress из [`
 
 - `ProgressRecorder`
 - `NewProgressRecorder(total)`
+- `AssertOutputContainsAll(t, output, parts...)`
+- `AssertOutputOmitsAll(t, output, parts...)`
 
 ## Входящие/исходящие зависимости
 

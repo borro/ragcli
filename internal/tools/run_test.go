@@ -271,6 +271,103 @@ func TestRunTools_FinalAnswerWithoutTools(t *testing.T) {
 	}
 }
 
+func TestStartConversation_PreservesAndResetsState(t *testing.T) {
+	setRussianLocale(t)
+	filePath := writeTempFile(t, strings.Join([]string{
+		"1: retry policy enabled",
+		"2: backoff is exponential",
+		"3: tail line",
+	}, "\n"))
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-1", "search_file", `{"query":"retry","limit":5}`),
+			})),
+			chatResponse(message("assistant", "Начальный ответ", nil)),
+			chatResponse(message("assistant", "", []openai.ToolCall{
+				toolCall("call-2", "read_lines", `{"start_line":1,"end_line":2}`),
+			})),
+			chatResponse(message("assistant", "Follow-up ответ", nil)),
+			chatResponse(message("assistant", "Ответ после reset", nil)),
+		},
+	}
+
+	conversation, answer, err := StartConversation(context.Background(), client, nil, fileSource(filePath, filePath), Options{}, "Что сказано про retry?", nil)
+	if err != nil {
+		t.Fatalf("StartConversation() error = %v", err)
+	}
+	if answer != "Начальный ответ" {
+		t.Fatalf("answer = %q, want initial answer", answer)
+	}
+	baselineEvidence := len(conversation.SessionEvidence())
+	if baselineEvidence == 0 {
+		t.Fatal("baseline evidence is empty, want search evidence")
+	}
+
+	followUp, err := conversation.Ask(context.Background(), "Покажи точные строки", nil)
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if followUp != "Follow-up ответ" {
+		t.Fatalf("followUp = %q, want follow-up answer", followUp)
+	}
+	if len(conversation.SessionEvidence()) <= baselineEvidence {
+		t.Fatalf("evidence count = %d, want more than baseline %d", len(conversation.SessionEvidence()), baselineEvidence)
+	}
+
+	conversation.Reset()
+	if len(conversation.SessionEvidence()) != baselineEvidence {
+		t.Fatalf("evidence count after reset = %d, want baseline %d", len(conversation.SessionEvidence()), baselineEvidence)
+	}
+
+	resetAnswer, err := conversation.Ask(context.Background(), "Повтори итог", nil)
+	if err != nil {
+		t.Fatalf("Ask() after reset error = %v", err)
+	}
+	if resetAnswer != "Ответ после reset" {
+		t.Fatalf("resetAnswer = %q, want reset answer", resetAnswer)
+	}
+	if len(client.requests) != 5 {
+		t.Fatalf("requests = %d, want 5", len(client.requests))
+	}
+	for _, msg := range client.requests[4].Messages {
+		if strings.Contains(msg.Content, "Покажи точные строки") {
+			t.Fatalf("messages after reset still contain prior follow-up question: %#v", client.requests[4].Messages)
+		}
+	}
+}
+
+func TestStartConversation_FollowUpVerboseMarksPreparedSessionReuse(t *testing.T) {
+	setRussianLocale(t)
+	filePath := writeTempFile(t, strings.Join([]string{
+		"retry enabled",
+		"backoff starts at 1s",
+	}, "\n"))
+	client := &scriptedRequester{
+		responses: []*openai.ChatCompletionResponse{
+			chatResponse(message("assistant", "Начальный ответ", nil)),
+			chatResponse(message("assistant", "Follow-up ответ", nil)),
+		},
+	}
+
+	conversation, _, err := StartConversation(context.Background(), client, nil, fileSource(filePath, filePath), Options{}, "Что сказано про retry?", nil)
+	if err != nil {
+		t.Fatalf("StartConversation() error = %v", err)
+	}
+
+	var stderr bytes.Buffer
+	plan := conversation.FollowUpPlan(verbose.New(&stderr, true, false))
+
+	if _, err := conversation.Ask(context.Background(), "А что по backoff?", plan); err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+
+	testutil.AssertOutputOmitsAll(t, stderr.String(),
+		localize.T("progress.stage.prepare"),
+		localize.T("progress.stage.index"),
+	)
+}
+
 func TestRunTools_DirectoryInputAddsListFilesTool(t *testing.T) {
 	setRussianLocale(t)
 	client := &scriptedRequester{

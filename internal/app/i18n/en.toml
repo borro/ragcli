@@ -82,6 +82,9 @@ usage = "Enable debug runtime logs in stderr; without this flag errors are print
 [cli.flag.verbose]
 usage = "Show execution progress in stderr as separate status lines."
 
+[cli.flag.interaction]
+usage = "Keep the session open after the first answer for follow-up questions."
+
 [cli.flag.lang]
 usage = "CLI interface language: en or ru."
 
@@ -132,6 +135,14 @@ unknown_subcommand = "unknown subcommand: {{.Name}}"
 [error.output]
 create_renderer = "create renderer: {{.Error}}"
 render_markdown = "render markdown: {{.Error}}"
+
+[error.interaction]
+tty_required = "interactive follow-up after stdin input requires a controlling terminal"
+
+[interaction]
+banner = "Interactive mode is active. Ask follow-up questions, use /reset to return to the first answer state, or /exit to finish."
+prompt = "> "
+reset = "Session reset to the first answer state."
 
 [progress.mode]
 map = "map"

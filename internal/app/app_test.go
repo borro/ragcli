@@ -72,7 +72,7 @@ func TestRunRootHelp(t *testing.T) {
 		t.Fatalf("Run(--help) exit code = %d, want 0", exitCode)
 	}
 	output := stdout.String()
-	for _, needle := range []string{"map", "rag", "tools", "hybrid", "version", "help, h", "--version", "--path", "--file", "--proxy-url", "--no-proxy", "--model", "--raw", "--verbose", "ragcli [global options] [command [command options]]", "v1.2.3"} {
+	for _, needle := range []string{"map", "rag", "tools", "hybrid", "version", "help, h", "--version", "--path", "--file", "--proxy-url", "--no-proxy", "--model", "--raw", "--verbose", "--interaction", "ragcli [global options] [command [command options]]", "v1.2.3"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in help output:\n%s", needle, output)
 		}
@@ -117,7 +117,7 @@ func TestRunHelpMapShowsGlobalFlags(t *testing.T) {
 		t.Fatalf("Run(help map) exit code = %d, want 0", exitCode)
 	}
 	output := stdout.String()
-	for _, needle := range []string{"GLOBAL OPTIONS:", "--path", "--file", "--api-url", "--proxy-url", "--no-proxy", "--model", "--retry", "--raw", "--debug", "--verbose"} {
+	for _, needle := range []string{"GLOBAL OPTIONS:", "--path", "--file", "--api-url", "--proxy-url", "--no-proxy", "--model", "--retry", "--raw", "--debug", "--verbose", "--interaction"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in help map output:\n%s", needle, output)
 		}
@@ -186,7 +186,7 @@ func TestRunVersionHelp(t *testing.T) {
 	if !strings.Contains(output, "ragcli version") {
 		t.Fatalf("stdout = %q, want version usage", output)
 	}
-	for _, needle := range []string{"GLOBAL OPTIONS:", "--path", "--file", "--api-url", "--proxy-url", "--no-proxy", "--model", "--retry", "--raw", "--debug", "--verbose"} {
+	for _, needle := range []string{"GLOBAL OPTIONS:", "--path", "--file", "--api-url", "--proxy-url", "--no-proxy", "--model", "--retry", "--raw", "--debug", "--verbose", "--interaction"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in version help:\n%s", needle, output)
 		}
@@ -266,7 +266,7 @@ func TestCLIMapCommandLengthExplicitFromEnv(t *testing.T) {
 }
 
 func TestCLIGlobalFlagsApplyBeforeSubcommand(t *testing.T) {
-	captured, _, err := runCLIForTest([]string{"--path", "doc.txt", "--model", "qwen2.5", "--proxy-url", "http://127.0.0.1:8080", "--raw", "--verbose", "map", "question"})
+	captured, _, err := runCLIForTest([]string{"--path", "doc.txt", "--model", "qwen2.5", "--proxy-url", "http://127.0.0.1:8080", "--raw", "--verbose", "--interaction", "map", "question"})
 	if err != nil {
 		t.Fatalf("runCLIForTest() error = %v", err)
 	}
@@ -287,6 +287,19 @@ func TestCLIGlobalFlagsApplyBeforeSubcommand(t *testing.T) {
 	}
 	if !captured.Common.Verbose {
 		t.Fatalf("Verbose = %v, want true", captured.Common.Verbose)
+	}
+	if !captured.Common.Interaction {
+		t.Fatalf("Interaction = %v, want true", captured.Common.Interaction)
+	}
+}
+
+func TestCLIInteractionFlagBindingShortAlias(t *testing.T) {
+	captured, _, err := runCLIForTest([]string{"-i", "map", "question"})
+	if err != nil {
+		t.Fatalf("runCLIForTest() error = %v", err)
+	}
+	if !captured.Common.Interaction {
+		t.Fatalf("Interaction = %v, want true", captured.Common.Interaction)
 	}
 }
 

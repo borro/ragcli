@@ -1,11 +1,12 @@
 package app
 
 type CommonOptions struct {
-	InputPath string
-	Prompt    string
-	Raw       bool
-	Debug     bool
-	Verbose   bool
+	InputPath   string
+	Prompt      string
+	Raw         bool
+	Debug       bool
+	Verbose     bool
+	Interaction bool
 }
 
 type LLMOptions struct {

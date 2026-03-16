@@ -63,11 +63,12 @@ sequenceDiagram
     App->>CLI: build root command + subcommands
     CLI->>Runtime: bind commandInvocation
     Runtime->>Runtime: create context, reporter, plan
-    Runtime->>Runtime: open input, create LLM clients
+    Runtime->>Runtime: open input once, create LLM clients
     Runtime->>Mode: execute selected pipeline
-    Mode-->>Runtime: result string / error
+    Mode-->>Runtime: result string or interactive session / error
     Runtime->>App: format output
     App-->>User: stdout result, stderr error/debug/verbose
+    Runtime->>Runtime: optional follow-up REPL
 ```
 
 ### Ключевые runtime-этапы
@@ -76,9 +77,10 @@ sequenceDiagram
 2. `newCLI` строит `urfave/cli` дерево из `commandSpec`.
 3. `bind*Invocation` собирает `commandInvocation` с нормализованными options.
 4. `appRuntime.execute` создаёт `commandSession`, progress plan и сигнал-совместимый context.
-5. `withInput` открывает файл или материализует `stdin`.
+5. `commandSession.ensureInputOpened` открывает файл или материализует `stdin` один раз и держит `input.Handle` живым до конца run/REPL.
 6. `withChatInput` / `withChatAndEmbeddingInput` создают клиентов и вызывают mode package; `hybrid`, `tools --rag` и `rag` идут через ветку с embedder.
 7. `writeResult` форматирует markdown-ответ и печатает его в `stdout`.
+8. При `--interaction` runtime открывает interaction I/O и крутит общий follow-up REPL поверх mode-specific interactive session.
 
 ## 4. Общие абстракции
 
@@ -136,6 +138,7 @@ sequenceDiagram
 3. Search phase и synthetic exact reads по strongest hit'ам добавляются в историю как два preloaded assistant/tool batch.
 4. Общий orchestration loop из `internal/tools` позволяет модели оценить preloaded retrieval, дочитать контекст через file-tools и при необходимости повторить `search_rag` с новым запросом.
 5. В финале `internal/hybrid` дописывает `Sources:` с provenance-aware секциями `Verified` и `Retrieved`.
+6. При `--interaction` direct-context fast path остаётся history-based chat path, а retrieval/tool path переиспользует baseline tools conversation и умеет `/reset`.
 
 Почему `aitools`/`aitools/files` и `ragcore` разведены:
 
@@ -160,6 +163,7 @@ sequenceDiagram
 6. Loop отслеживает duplicate calls, already-seen строки и уже перечисленные пути, а также no-progress runs.
 7. При зацикливании включаются защитные ветки: retry without tools, stop-calls prompt, forced finalization.
 8. Режим завершает работу, когда получает содержательный финальный text answer.
+9. При `--interaction` пакет клонирует `Session`/`toolLoopState` на каждый follow-up turn и commit-ит state только после успешного ответа.
 
 ### 5.3 `rag`
 
@@ -188,6 +192,7 @@ flowchart TD
 5. Выбираются `final-k` evidence chunks.
 6. LLM отвечает только по evidence.
 7. В ответ добавляется секция `Sources:`.
+8. При `--interaction` подготовленный `PreparedSearch` переиспользуется для follow-up вопросов, а synthesis prompt получает предыдущий Q/A transcript как fallible context.
 
 Файловые артефакты индекса:
 
@@ -218,6 +223,7 @@ flowchart TD
 5. `fanInReduce` схлопывает результаты батчами до одного блока фактов.
 6. Генерируется финальный draft-answer.
 7. `selfRefine` делает critique и, если нужно, refine проход.
+8. При `--interaction` follow-up turn заново прогоняет тот же map pipeline, но вопрос заранее contextualize-ится предыдущими Q/A.
 
 Когда режим полезен:
 

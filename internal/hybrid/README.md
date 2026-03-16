@@ -13,11 +13,13 @@
 - orchestration fused `search_rag` seed и synthetic verification reads до первого LLM turn через `internal/ragcore`;
 - добавление hybrid-specific prompt instructions поверх общего tool session;
 - финализация ответа с `Sources:` по provenance-aware evidence results сессии, разделённым на `Verified` и `Retrieved`.
+- interactive conversation wrapper для direct-context и seeded tools path.
 
 ## Ключевые entrypoints/types
 
 - `Options`
 - `Run(ctx, chat, embedder, source, opts, prompt, plan)`
+- `StartConversation(...)`
 
 ## Входящие/исходящие зависимости
 
@@ -42,6 +44,7 @@
 6. Общий orchestration loop из `internal/tools` продолжает исследование через file tools и повторные `search_rag`.
 7. На retrieval/tool path финальный текст дополняется секцией `Sources:` с `Verified` и `Retrieved` evidence, показанным модели.
 8. На direct-context fast path `Sources:` тоже сохраняется для совместимости CLI-контракта, но с одной grouped citation на весь single-file/`stdin` диапазон строк.
+9. При `--interaction` direct-context fast path остаётся history-based chat path, а seeded path переиспользует shared `tools.Conversation` и baseline seed history.
 
 ## Инварианты
 

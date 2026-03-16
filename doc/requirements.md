@@ -55,6 +55,7 @@
 - В corpus включаются только regular text files; dot-directories, symlink-объекты и бинарные файлы пропускаются.
 - Для `map` и map-fallback директорий строится synthetic corpus с file-boundary headers.
 - Временный файл от `stdin` должен удаляться при cleanup.
+- Если включён `--interaction` и основной input пришёл из `stdin`, follow-up вопросы читаются из controlling TTY; если TTY недоступен, интерактивный loop не стартует и команда возвращает локализованную ошибку после первого ответа.
 
 ### 3.3 Конфигурация LLM
 
@@ -85,15 +86,18 @@
 | `--raw` | `RAW` | Печатать финальный ответ как сырой текст без markdown renderer |
 | `--debug`, `-d` | `DEBUG` | Включить structured runtime-логи в `stderr` |
 | `--verbose`, `-v` | `VERBOSE` | Включить пользовательский stage/progress вывод в `stderr` |
+| `--interaction`, `-i` | - | После первого успешного ответа оставить сессию открытой для follow-up вопросов |
 | `--lang` | `RAGCLI_LANG` | Язык интерфейса CLI (`ru`/`en`) |
 
 Инварианты вывода:
 
 - Финальный результат печатается только в `stdout`.
+- В interactive loop follow-up ответы тоже печатаются только в `stdout`.
 - Краткая пользовательская ошибка печатается в `stderr`, если `--debug` выключен.
 - Structured runtime-логи через `slog` пишутся в `stderr` только при `--debug`.
 - `--verbose` не должен смешиваться с `--debug`: при `--debug` verbose reporter отключён.
 - Если `stdout` — TTY и `--raw` не задан, ответ рендерится через `glamour`; иначе печатается raw Markdown.
+- При `--interaction` CLI принимает follow-up строки до `/exit` или EOF; `/reset` возвращает состояние к моменту сразу после первого ответа, пустые строки игнорируются.
 
 ## 4. Режимы обработки
 
@@ -116,6 +120,8 @@
 - считать `list_files` discovery-навигацией, а `search_file` учитывать как line-based evidence по найденным match lines;
 - не останавливаться только из-за слабого seeded retrieval, если индекс успешно подготовлен.
 - для directory input никогда не использовать direct-context fast path, даже если synthetic corpus короткий.
+- при `--interaction` direct-context fast path должен оставаться direct-context chat-history path без автоматического переключения в retrieval/tools;
+- при `--interaction` retrieval/tool path должен переиспользовать preloaded seed history и тот же tools session state; `/reset` возвращает baseline после первого ответа.
 
 Инструменты `hybrid`:
 
@@ -186,6 +192,7 @@
 - максимум `20` turns в одном orchestration loop;
 - guard на повторные no-progress/duplicate tool runs;
 - JSON-результаты инструментов как единственный wire-format между локальным tool runner и моделью.
+- при `--interaction` follow-up turns должны переиспользовать ту же history, evidence tracking, duplicate cache и progress guards; `/reset` возвращает их к baseline после первого ответа.
 
 ### 4.3 `rag`
 
@@ -202,6 +209,9 @@
 - синтезировать ответ только по evidence chunks;
 - не запускать tool orchestration и не делать synthetic exact verification reads;
 - дописывать в финал секцию `Sources:` с relative paths внутри директории.
+- при `--interaction` режим должен готовить index один раз и переиспользовать тот же `PreparedSearch` для follow-up вопросов;
+- retrieval query follow-up turn должен включать предыдущие user questions как query-context, а финальный synthesis prompt — предыдущий Q/A transcript как fallible context;
+- `/reset` должен возвращать transcript к состоянию сразу после первого ответа.
 
 Опции `rag`:
 
@@ -249,6 +259,8 @@
 - при неуспехе auto-detect используется fallback `10000`;
 - пустой файл возвращает ответ об empty input;
 - отсутствие полезных map-results возвращает ответ об insufficient information без падения.
+- при `--interaction` follow-up turn заново выполняет обычный map pipeline по тому же source/options, но получает contextualized вопрос с предыдущими Q/A;
+- `/reset` должен возвращать transcript к состоянию сразу после первого ответа.
 
 ## 5. Нефункциональные требования
 

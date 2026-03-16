@@ -69,6 +69,19 @@ type Session struct {
 type SessionResult struct {
 	Answer   string
 	Evidence []retrieval.Evidence
+	History  []openai.ChatCompletionMessage
+}
+
+type conversationSnapshot struct {
+	session *Session
+	history []openai.ChatCompletionMessage
+}
+
+type Conversation struct {
+	client   llm.ChatRequester
+	session  *Session
+	history  []openai.ChatCompletionMessage
+	baseline conversationSnapshot
 }
 
 type orchestratorStats struct {
@@ -96,6 +109,7 @@ func (e orchestrationError) Error() string {
 }
 
 type toolLoopState struct {
+	toolset               []aitools.Tool
 	registry              aitools.Registry
 	seenLinesByDomain     map[string]map[string]struct{}
 	evidence              []retrieval.Evidence
@@ -205,6 +219,61 @@ func Run(ctx context.Context, client llm.ChatRequester, embedder llm.EmbeddingRe
 	return result.Answer, nil
 }
 
+func StartConversation(
+	ctx context.Context,
+	client llm.ChatRequester,
+	embedder llm.EmbeddingRequester,
+	source input.FileBackedSource,
+	opts Options,
+	prompt string,
+	plan *verbose.Plan,
+) (*Conversation, string, error) {
+	return PrepareConversation(ctx, client, source, embedder, opts, SessionOptions{
+		Prompt:                prompt,
+		FirstTurnAnswerPolicy: FirstTurnAnswerWarn,
+	}, nil, plan)
+}
+
+func PrepareConversation(
+	ctx context.Context,
+	client llm.ChatRequester,
+	source input.FileBackedSource,
+	embedder llm.EmbeddingRequester,
+	opts Options,
+	sessionOpts SessionOptions,
+	initialHistory []openai.ChatCompletionMessage,
+	plan *verbose.Plan,
+) (*Conversation, string, error) {
+	session, err := PrepareSession(ctx, source, embedder, opts, sessionOpts, plan.Stage("index"))
+	if err != nil {
+		return nil, "", err
+	}
+	return StartConversationWithSession(ctx, client, session, initialHistory, plan)
+}
+
+func StartConversationWithSession(
+	ctx context.Context,
+	client llm.ChatRequester,
+	session *Session,
+	initialHistory []openai.ChatCompletionMessage,
+	plan *verbose.Plan,
+) (*Conversation, string, error) {
+	result, err := session.Run(ctx, client, initialHistory, plan)
+	if err != nil {
+		return nil, "", err
+	}
+	conversation := &Conversation{
+		client:  client,
+		session: session,
+		history: cloneMessages(result.History),
+	}
+	conversation.baseline = conversationSnapshot{
+		session: session.Clone(),
+		history: cloneMessages(result.History),
+	}
+	return conversation, result.Answer, nil
+}
+
 func PrepareSession(
 	ctx context.Context,
 	source input.FileBackedSource,
@@ -246,6 +315,65 @@ func (s *Session) InitialMessages() []openai.ChatCompletionMessage {
 		s.config.systemMessage,
 		s.config.userQuestion,
 	}
+}
+
+func (s *Session) Clone() *Session {
+	if s == nil {
+		return nil
+	}
+	return &Session{
+		config: toolsConfig{
+			tools:         append([]openai.Tool(nil), s.config.tools...),
+			systemMessage: cloneMessages([]openai.ChatCompletionMessage{s.config.systemMessage})[0],
+			userQuestion:  cloneMessages([]openai.ChatCompletionMessage{s.config.userQuestion})[0],
+		},
+		state:                 s.state.clone(),
+		inputPath:             s.inputPath,
+		readerPath:            s.readerPath,
+		firstTurnAnswerPolicy: s.firstTurnAnswerPolicy,
+	}
+}
+
+func (c *Conversation) Ask(ctx context.Context, prompt string, plan *verbose.Plan) (string, error) {
+	if c == nil || c.session == nil {
+		return "", errors.New("tools conversation is not prepared")
+	}
+	workingSession := c.session.Clone()
+	workingHistory := cloneMessages(c.history)
+	workingHistory = append(workingHistory, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleUser,
+		Content: strings.TrimSpace(prompt),
+	})
+	result, err := workingSession.Run(ctx, c.client, workingHistory, plan)
+	if err != nil {
+		return "", err
+	}
+	c.session = workingSession
+	c.history = cloneMessages(result.History)
+	return result.Answer, nil
+}
+
+func (c *Conversation) FollowUpPlan(reporter verbose.Reporter) *verbose.Plan {
+	return verbose.NewPlan(reporter, localize.T("progress.mode.tools"),
+		verbose.StageDef{Key: "init", Label: localize.T("progress.stage.init"), Slots: 2},
+		verbose.StageDef{Key: "loop", Label: localize.T("progress.stage.loop"), Slots: 10},
+		verbose.StageDef{Key: "final", Label: localize.T("progress.stage.final"), Slots: 2},
+	)
+}
+
+func (c *Conversation) Reset() {
+	if c == nil {
+		return
+	}
+	c.session = c.baseline.session.Clone()
+	c.history = cloneMessages(c.baseline.history)
+}
+
+func (c *Conversation) SessionEvidence() []retrieval.Evidence {
+	if c == nil || c.session == nil || c.session.state == nil {
+		return nil
+	}
+	return c.session.state.Evidence()
 }
 
 func (s *Session) ExecuteToolCall(ctx context.Context, call openai.ToolCall) (string, error) {
@@ -498,18 +626,21 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 		return SessionResult{
 			Answer:   choice.Message.Content,
 			Evidence: s.state.Evidence(),
+			History:  sessionHistory(messages),
 		}, nil
 	}
 
 	if haveToolResults {
 		finalMeter.Start(localize.T("progress.tools.text_answer", localize.Data{"Turn": toolsMaxTurns + 1}))
-		result, err := requestFinalAnswerWithoutTools(ctx, client, messages, s.config.tools, maxTurnFinalizationRetries)
+		finalMessage, err := requestFinalAnswerWithoutTools(ctx, client, messages, s.config.tools, maxTurnFinalizationRetries)
 		if err == nil {
+			messages = append(messages, finalMessage)
 			finalMeter.Done(localize.T("progress.tools.final_done", localize.Data{"Turn": toolsMaxTurns + 1}))
 			logStop("forced_final_answer", toolsMaxTurns)
 			return SessionResult{
-				Answer:   result,
+				Answer:   finalMessage.Content,
 				Evidence: s.state.Evidence(),
+				History:  sessionHistory(messages),
 			}, nil
 		}
 		logStop("orchestration_limit_finalization_failed", toolsMaxTurns)
@@ -549,12 +680,43 @@ func newToolLoopState(ctx context.Context, source input.FileBackedSource, embedd
 			return nil, err
 		}
 		toolset = append(toolset, ragcore.NewSearchTool(searcher, embedder))
+	} else {
+		indexMeter.Done(localize.T("progress.tools.index_skip"))
 	}
 	return &toolLoopState{
+		toolset:           toolset,
 		registry:          aitools.NewRegistry(toolset...),
 		seenLinesByDomain: make(map[string]map[string]struct{}),
 		seenEvidence:      make(map[string]struct{}),
 	}, nil
+}
+
+func (s *toolLoopState) clone() *toolLoopState {
+	if s == nil {
+		return nil
+	}
+	clonedToolset := aitools.CloneTools(s.toolset)
+	cloned := &toolLoopState{
+		toolset:               clonedToolset,
+		registry:              aitools.NewRegistry(clonedToolset...),
+		seenLinesByDomain:     make(map[string]map[string]struct{}, len(s.seenLinesByDomain)),
+		evidence:              append([]retrieval.Evidence(nil), s.evidence...),
+		seenEvidence:          make(map[string]struct{}, len(s.seenEvidence)),
+		consecutiveNoProgress: s.consecutiveNoProgress,
+		consecutiveDuplicates: s.consecutiveDuplicates,
+		stats:                 s.stats,
+	}
+	for domain, seenLines := range s.seenLinesByDomain {
+		clonedLines := make(map[string]struct{}, len(seenLines))
+		for key := range seenLines {
+			clonedLines[key] = struct{}{}
+		}
+		cloned.seenLinesByDomain[domain] = clonedLines
+	}
+	for key := range s.seenEvidence {
+		cloned.seenEvidence[key] = struct{}{}
+	}
+	return cloned
 }
 
 func summarizeToolMeta(label string, meta toolExecutionMeta, index int, total int) string {
@@ -1089,6 +1251,13 @@ func cloneMessages(messages []openai.ChatCompletionMessage) []openai.ChatComplet
 	return cloned
 }
 
+func sessionHistory(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	if len(messages) <= 2 {
+		return nil
+	}
+	return cloneMessages(messages[2:])
+}
+
 func containsToolResponses(messages []openai.ChatCompletionMessage) bool {
 	for _, message := range messages {
 		if message.Role == "tool" {
@@ -1098,7 +1267,7 @@ func containsToolResponses(messages []openai.ChatCompletionMessage) bool {
 	return false
 }
 
-func requestFinalAnswerWithoutTools(ctx context.Context, client llm.ChatRequester, messages []openai.ChatCompletionMessage, tools []openai.Tool, retries int) (string, error) {
+func requestFinalAnswerWithoutTools(ctx context.Context, client llm.ChatRequester, messages []openai.ChatCompletionMessage, tools []openai.Tool, retries int) (openai.ChatCompletionMessage, error) {
 	attemptMessages := append([]openai.ChatCompletionMessage{}, messages...)
 
 	for attempt := 0; attempt <= retries; attempt++ {
@@ -1113,10 +1282,10 @@ func requestFinalAnswerWithoutTools(ctx context.Context, client llm.ChatRequeste
 			ToolChoice: "none",
 		})
 		if err != nil {
-			return "", fmt.Errorf("failed to send forced finalization request: %w", err)
+			return openai.ChatCompletionMessage{}, fmt.Errorf("failed to send forced finalization request: %w", err)
 		}
 		if len(resp.Choices) == 0 {
-			return "", fmt.Errorf("forced finalization returned no choices")
+			return openai.ChatCompletionMessage{}, fmt.Errorf("forced finalization returned no choices")
 		}
 
 		choice := resp.Choices[0]
@@ -1131,11 +1300,11 @@ func requestFinalAnswerWithoutTools(ctx context.Context, client llm.ChatRequeste
 		}
 		attemptMessages = append(attemptMessages, choice.Message)
 		if strings.TrimSpace(choice.Message.Content) != "" {
-			return choice.Message.Content, nil
+			return choice.Message, nil
 		}
 	}
 
-	return "", orchestrationError{
+	return openai.ChatCompletionMessage{}, orchestrationError{
 		Code:    "orchestration_limit",
 		Message: fmt.Sprintf("tools orchestration exceeded %d turns and forced finalization returned no answer", toolsMaxTurns),
 		Details: map[string]any{"max_turns": toolsMaxTurns},

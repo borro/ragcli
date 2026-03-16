@@ -1,4 +1,5 @@
 [progress.tools]
+index_skip = "semantic index не нужен: search_rag в этой tool session выключен"
 session_start = "подготавливаю tool session"
 session_done = "tool session готова"
 turn_start = "отправляю в LLM историю из {{.Count}} сообщений (turn {{.Turn}}/{{.Total}})"

@@ -35,12 +35,37 @@ Requirements:
 - cite sources in the format [source N]
 - do not invent facts outside the context
 - answer in the user's question language unless the user explicitly asks for another language
+- use the previous Q/A transcript only as disambiguating context and re-check the answer against the fresh retrieval results
+- prefer the fresh retrieval evidence over any earlier answer if they disagree
+
+Conversation policy:
+{{.Conversation}}
 """
 answer_user = """
 Question: {{.Question}}
 
+Conversation history:
+{{.Conversation}}
+
 Sources:
 {{.Sources}}
+"""
+conversation_policy = "Treat previous answers as fallible context; if the new retrieval evidence contradicts them, correct the answer."
+conversation_none = "- none"
+conversation_turn = """
+[Turn {{.Index}}]
+Question:
+{{.Question}}
+
+Answer:
+{{.Answer}}
+"""
+query_context = """
+Previous questions:
+- {{.History}}
+
+Current question:
+{{.Current}}
 """
 
 [rag.answer]

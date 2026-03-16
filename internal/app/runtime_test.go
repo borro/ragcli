@@ -4,17 +4,22 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/borro/ragcli/internal/hybrid"
+	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/localize"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
 	"github.com/borro/ragcli/internal/ragcore"
 	toolsmode "github.com/borro/ragcli/internal/tools"
+	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -64,6 +69,33 @@ func testInvocation(name string, common CommonOptions, llmOpts LLMOptions, paylo
 		LLM:     llmOpts,
 		payload: payload,
 	}
+}
+
+type scriptedInteractiveSession struct {
+	answers []string
+	errs    []error
+	asks    []string
+	resets  int
+}
+
+func (s *scriptedInteractiveSession) Ask(_ context.Context, prompt string, _ *verbose.Plan) (string, error) {
+	s.asks = append(s.asks, prompt)
+	index := len(s.asks) - 1
+	if index < len(s.errs) && s.errs[index] != nil {
+		return "", s.errs[index]
+	}
+	if index >= len(s.answers) {
+		return "", errors.New("unexpected interactive ask")
+	}
+	return s.answers[index], nil
+}
+
+func (s *scriptedInteractiveSession) Reset() {
+	s.resets++
+}
+
+func (s *scriptedInteractiveSession) FollowUpPlan(verbose.Reporter) *verbose.Plan {
+	return nil
 }
 
 func TestRuntimeExecuteMapDoesNotCreateEmbedder(t *testing.T) {
@@ -252,4 +284,156 @@ func TestRuntimeExecuteUnknownCommandReturnsLocalizedError(t *testing.T) {
 	if err == nil || err.Error() != unknownSubcommandError("unknown").Error() {
 		t.Fatalf("runtime.execute(unknown) error = %v, want localized unknown-subcommand error", err)
 	}
+}
+
+func TestRunInteractionSupportsAskResetAndExit(t *testing.T) {
+	runtime, stdout, _ := newTestRuntime("")
+	var interaction bytes.Buffer
+	runtime.openREPL = func(_ input.Source, _ io.Reader, _ io.Writer) (*interactionIO, error) {
+		return &interactionIO{
+			reader: strings.NewReader("follow up\n/reset\nafter reset\n/exit\n"),
+			writer: &interaction,
+		}, nil
+	}
+
+	handle, err := input.Open(writeRuntimeTempFile(t, "alpha\n"), nil)
+	if err != nil {
+		t.Fatalf("input.Open() error = %v", err)
+	}
+	defer func() { _ = handle.Close() }()
+
+	repl := &scriptedInteractiveSession{
+		answers: []string{"answer 1", "answer 2"},
+	}
+	session := &commandSession{
+		runtime:  runtime,
+		ctx:      context.Background(),
+		inv:      testInvocation("map", CommonOptions{}, defaultLLMOptions(), nil),
+		reporter: runtime.newReporter(io.Discard, false, false),
+		source:   handle.Source(),
+	}
+
+	if err := session.runInteraction(repl); err != nil {
+		t.Fatalf("runInteraction() error = %v", err)
+	}
+	if got := stdout.String(); got != "answer 1\nanswer 2\n" {
+		t.Fatalf("stdout = %q, want follow-up answers", got)
+	}
+	if got := repl.asks; len(got) != 2 || got[0] != "follow up" || got[1] != "after reset" {
+		t.Fatalf("asks = %#v, want both follow-up prompts", got)
+	}
+	if repl.resets != 1 {
+		t.Fatalf("resets = %d, want 1", repl.resets)
+	}
+	if !strings.Contains(interaction.String(), localize.T("interaction.banner")) {
+		t.Fatalf("interaction output = %q, want banner", interaction.String())
+	}
+	if !strings.Contains(interaction.String(), localize.T("interaction.reset")) {
+		t.Fatalf("interaction output = %q, want reset ack", interaction.String())
+	}
+}
+
+func TestRuntimeExecuteInteractiveKeepsStdinSnapshotUntilLoopEnds(t *testing.T) {
+	runtime, stdout, _ := newTestRuntime("from stdin\n")
+	var duringInteractionSnapshot string
+	runtime.openREPL = func(source input.Source, _ io.Reader, _ io.Writer) (*interactionIO, error) {
+		return &interactionIO{
+			reader: strings.NewReader("check\n/exit\n"),
+			writer: io.Discard,
+		}, nil
+	}
+
+	customInteractive := &scriptedInteractiveSession{
+		answers: []string{"checked"},
+	}
+
+	spec := &commandSpec{
+		name: "custom",
+		execute: func(session *commandSession) (commandResult, error) {
+			source, err := session.ensureInputOpened(session.plan.Stage("prepare"))
+			if err != nil {
+				return commandResult{}, err
+			}
+			duringInteractionSnapshot = source.SnapshotPath()
+			customInteractive.errs = []error{func() error {
+				if _, statErr := os.Stat(duringInteractionSnapshot); statErr != nil {
+					return statErr
+				}
+				return nil
+			}()}
+			customInteractive.answers = []string{"checked"}
+			return commandResult{
+				Output:      "initial",
+				Interactive: customInteractive,
+			}, nil
+		},
+	}
+
+	err := runtime.execute(context.Background(), commandInvocation{
+		spec: spec,
+		Common: CommonOptions{
+			Prompt:      "question",
+			Interaction: true,
+		},
+		LLM: defaultLLMOptions(),
+	})
+	if err != nil {
+		t.Fatalf("runtime.execute() error = %v", err)
+	}
+	if got := stdout.String(); got != "initial\nchecked\n" {
+		t.Fatalf("stdout = %q, want initial and follow-up answers", got)
+	}
+	if duringInteractionSnapshot == "" {
+		t.Fatal("snapshot path is empty")
+	}
+	if _, statErr := os.Stat(duringInteractionSnapshot); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("snapshot still exists after interaction: %v", statErr)
+	}
+}
+
+func TestRuntimeExecuteInteractiveStdinRequiresTTY(t *testing.T) {
+	runtime, stdout, _ := newTestRuntime("from stdin\n")
+	runtime.openREPL = func(source input.Source, _ io.Reader, _ io.Writer) (*interactionIO, error) {
+		if source.Kind() != input.KindStdin {
+			t.Fatalf("source.Kind() = %q, want stdin", source.Kind())
+		}
+		return nil, fmt.Errorf("%s", localize.T("error.interaction.tty_required"))
+	}
+
+	spec := &commandSpec{
+		name: "custom",
+		execute: func(session *commandSession) (commandResult, error) {
+			if _, err := session.ensureInputOpened(session.plan.Stage("prepare")); err != nil {
+				return commandResult{}, err
+			}
+			return commandResult{
+				Output:      "initial",
+				Interactive: &scriptedInteractiveSession{},
+			}, nil
+		},
+	}
+
+	err := runtime.execute(context.Background(), commandInvocation{
+		spec: spec,
+		Common: CommonOptions{
+			Prompt:      "question",
+			Interaction: true,
+		},
+		LLM: defaultLLMOptions(),
+	})
+	if err == nil || err.Error() != localize.T("error.interaction.tty_required") {
+		t.Fatalf("runtime.execute() error = %v, want tty-required error", err)
+	}
+	if got := stdout.String(); got != "initial\n" {
+		t.Fatalf("stdout = %q, want initial answer before tty error", got)
+	}
+}
+
+func writeRuntimeTempFile(t *testing.T, content string) string {
+	t.Helper()
+	path := t.TempDir() + "/input.txt"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
 }

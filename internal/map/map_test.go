@@ -163,6 +163,101 @@ func TestSanitizeUntrustedBlock_PreservesDataAndDropsInstructions(t *testing.T) 
 	}
 }
 
+func TestBuildFollowUpPromptIncludesPriorTurns(t *testing.T) {
+	setRussianLocale(t)
+	prompt := buildFollowUpPrompt([]conversationTurn{
+		{Question: "Что в файле?", Answer: "Есть retry policy."},
+		{Question: "А что с backoff?", Answer: "Он экспоненциальный."},
+	}, "Какие есть ограничения?")
+
+	assertContains(t, prompt, "Ответь на follow-up вопрос")
+	assertContains(t, prompt, "Что в файле?")
+	assertContains(t, prompt, "Есть retry policy.")
+	assertContains(t, prompt, "А что с backoff?")
+	assertContains(t, prompt, "Какие есть ограничения?")
+}
+
+func TestConversationAskRerunsMapPipelineWithFollowUpContext(t *testing.T) {
+	setRussianLocale(t)
+	client, requests := newCapturingLLMClient(t, []string{
+		"факт 1",
+		"initial answer",
+		"NONE",
+		"факт 2",
+		"follow-up answer",
+		"NONE",
+	}, nil)
+
+	handle, err := input.Open("", strings.NewReader("alpha\n"))
+	if err != nil {
+		t.Fatalf("input.Open() error = %v", err)
+	}
+	defer func() { _ = handle.Close() }()
+
+	conversation, answer, err := StartConversation(context.Background(), client, handle.Source(), Options{
+		ChunkLength:    2000,
+		LengthExplicit: true,
+		Concurrency:    1,
+	}, "Что в файле?", nil)
+	if err != nil {
+		t.Fatalf("StartConversation() error = %v", err)
+	}
+	if answer != "initial answer" {
+		t.Fatalf("answer = %q, want initial answer", answer)
+	}
+
+	followUp, err := conversation.Ask(context.Background(), "Что ещё важно?", nil)
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if followUp != "follow-up answer" {
+		t.Fatalf("followUp = %q, want follow-up answer", followUp)
+	}
+	if len(*requests) < 4 {
+		t.Fatalf("requests = %d, want at least 4", len(*requests))
+	}
+	followUpPrompt := (*requests)[3].Messages[1].Content
+	assertContains(t, followUpPrompt, "Что в файле?")
+	assertContains(t, followUpPrompt, "initial answer")
+	assertContains(t, followUpPrompt, "Что ещё важно?")
+}
+
+func TestConversationAskVerboseMarksPreparedInputReuse(t *testing.T) {
+	setRussianLocale(t)
+	client := newSequencedLLMClient(t, []string{
+		"факт 1",
+		"initial answer",
+		"NONE",
+		"факт 2",
+		"follow-up answer",
+		"NONE",
+	}, nil)
+
+	handle, err := input.Open("", strings.NewReader("alpha\n"))
+	if err != nil {
+		t.Fatalf("input.Open() error = %v", err)
+	}
+	defer func() { _ = handle.Close() }()
+
+	conversation, _, err := StartConversation(context.Background(), client, handle.Source(), Options{
+		ChunkLength:    2000,
+		LengthExplicit: true,
+		Concurrency:    1,
+	}, "Что в файле?", nil)
+	if err != nil {
+		t.Fatalf("StartConversation() error = %v", err)
+	}
+
+	var stderr strings.Builder
+	plan := conversation.FollowUpPlan(verbose.New(&stderr, true, false))
+
+	if _, err := conversation.Ask(context.Background(), "Что ещё важно?", plan); err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+
+	testutil.AssertOutputOmitsAll(t, stderr.String(), localize.T("progress.stage.prepare"))
+}
+
 func TestRun_EndToEndWithRefine(t *testing.T) {
 	client := newSequencedLLMClient(t, []string{
 		"fact from chunk 1",

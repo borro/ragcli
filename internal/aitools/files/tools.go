@@ -43,6 +43,17 @@ func newBaseTool(reader LineReader) baseTool {
 	}
 }
 
+func (b baseTool) clone() baseTool {
+	cloned := baseTool{
+		reader: b.reader,
+		cache:  make(map[string]aitools.ExecuteResult, len(b.cache)),
+	}
+	for key, value := range b.cache {
+		cloned.cache[key] = aitools.CloneExecuteResult(value)
+	}
+	return cloned
+}
+
 func (b baseTool) DescribeCall(call openai.ToolCall) aitools.CallDescription {
 	return aitools.CallDescription{
 		Arguments:    aitools.CloneSummary(SummarizeToolArguments(call)),
@@ -124,6 +135,13 @@ func (t *listFilesTool) Execute(ctx context.Context, call openai.ToolCall) (aito
 	return t.execute(ctx, t.Name(), call)
 }
 
+func (t *listFilesTool) CloneTool() aitools.Tool {
+	if t == nil {
+		return (*listFilesTool)(nil)
+	}
+	return &listFilesTool{baseTool: t.clone()}
+}
+
 type searchFileTool struct {
 	baseTool
 }
@@ -181,6 +199,13 @@ func (t *searchFileTool) Execute(ctx context.Context, call openai.ToolCall) (ait
 	return t.execute(ctx, t.Name(), call)
 }
 
+func (t *searchFileTool) CloneTool() aitools.Tool {
+	if t == nil {
+		return (*searchFileTool)(nil)
+	}
+	return &searchFileTool{baseTool: t.clone()}
+}
+
 type readLinesTool struct {
 	baseTool
 	multiFile bool
@@ -232,6 +257,16 @@ func (t *readLinesTool) ToolDefinition() openai.Tool {
 
 func (t *readLinesTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
 	return t.execute(ctx, t.Name(), call)
+}
+
+func (t *readLinesTool) CloneTool() aitools.Tool {
+	if t == nil {
+		return (*readLinesTool)(nil)
+	}
+	return &readLinesTool{
+		baseTool:  t.clone(),
+		multiFile: t.multiFile,
+	}
 }
 
 type readAroundTool struct {
@@ -289,6 +324,16 @@ func (t *readAroundTool) ToolDefinition() openai.Tool {
 
 func (t *readAroundTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
 	return t.execute(ctx, t.Name(), call)
+}
+
+func (t *readAroundTool) CloneTool() aitools.Tool {
+	if t == nil {
+		return (*readAroundTool)(nil)
+	}
+	return &readAroundTool{
+		baseTool:  t.clone(),
+		multiFile: t.multiFile,
+	}
 }
 
 func progressKeys(toolName, raw string) ([]string, error) {

@@ -24,6 +24,11 @@ type Tool interface {
 	Execute(ctx context.Context, call openai.ToolCall) (ExecuteResult, error)
 }
 
+type CloneableTool interface {
+	Tool
+	CloneTool() Tool
+}
+
 type ExecuteResult struct {
 	Payload      string
 	Summary      map[string]any

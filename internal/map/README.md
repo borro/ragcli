@@ -13,11 +13,13 @@
 - параллельный вызов LLM на map-фазе;
 - схлопывание промежуточных фактов;
 - self-critique и refine финального ответа.
+- stateless interactive wrapper, который заново прогоняет pipeline для follow-up вопросов.
 
 ## Ключевые entrypoints/types
 
 - `Options`
 - `Run(ctx, client, source, opts, question, plan)`
+- `StartConversation(...)`
 - `SplitByApproxTokens(...)`
 
 ## Входящие/исходящие зависимости
@@ -42,6 +44,7 @@
 5. Reduce-фаза схлопывает факты до одного блока.
 6. Генерируется draft answer.
 7. Draft проходит critique/refine и возвращается как результат режима.
+8. При `--interaction` `Conversation` хранит только transcript Q/A и строит contextualized follow-up prompt, после чего снова вызывает обычный `Run`.
 
 ## Инварианты и ошибки
 

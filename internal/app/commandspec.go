@@ -352,6 +352,16 @@ func globalFlagSpecs() []flagSpec {
 			},
 		},
 		{
+			names: []string{"--interaction", "-i"},
+			build: func() cli.Flag {
+				return &cli.BoolFlag{
+					Name:    "interaction",
+					Aliases: []string{"i"},
+					Usage:   localize.T("cli.flag.interaction.usage"),
+				}
+			},
+		},
+		{
 			names:      []string{"--lang"},
 			takesValue: true,
 			build: func() cli.Flag {
@@ -398,11 +408,12 @@ func flagMatches(spec flagSpec, token string) bool {
 
 func bindCommonOptions(cmd *cli.Command) CommonOptions {
 	return CommonOptions{
-		InputPath: cmd.String("path"),
-		Prompt:    bindPrompt(cmd),
-		Raw:       cmd.Bool("raw"),
-		Debug:     cmd.Bool("debug"),
-		Verbose:   cmd.Bool("verbose"),
+		InputPath:   cmd.String("path"),
+		Prompt:      bindPrompt(cmd),
+		Raw:         cmd.Bool("raw"),
+		Debug:       cmd.Bool("debug"),
+		Verbose:     cmd.Bool("verbose"),
+		Interaction: cmd.Bool("interaction"),
 	}
 }
 

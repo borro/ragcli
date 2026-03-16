@@ -1,6 +1,10 @@
 package testutil
 
-import "sync"
+import (
+	"strings"
+	"sync"
+	"testing"
+)
 
 type ProgressRecorder struct {
 	mu        sync.Mutex
@@ -35,4 +39,22 @@ func (r *ProgressRecorder) Snapshot() (int, []int, []int) {
 	currents := append([]int(nil), r.currents...)
 	totals := append([]int(nil), r.totals...)
 	return r.progressN, currents, totals
+}
+
+func AssertOutputContainsAll(t testing.TB, output string, parts ...string) {
+	t.Helper()
+	for _, part := range parts {
+		if !strings.Contains(output, part) {
+			t.Fatalf("output = %q, want substring %q", output, part)
+		}
+	}
+}
+
+func AssertOutputOmitsAll(t testing.TB, output string, parts ...string) {
+	t.Helper()
+	for _, part := range parts {
+		if strings.Contains(output, part) {
+			t.Fatalf("output = %q, do not want substring %q", output, part)
+		}
+	}
 }
