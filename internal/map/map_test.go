@@ -331,6 +331,51 @@ func TestRun_ReportsFinalCompletionOnce(t *testing.T) {
 	}
 }
 
+func TestRun_ProgressNeverDecreases(t *testing.T) {
+	client := newSequencedLLMClient(t, []string{
+		"fact from chunk 1",
+		"initial answer",
+		"SUPPORTED: no\nISSUES:\n- make it more precise",
+		"refined answer",
+	}, nil)
+	plan := verbose.NewPlan(nil, "map",
+		verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+		verbose.StageDef{Key: "chunking", Label: "чанкинг", Slots: 4},
+		verbose.StageDef{Key: "chunks", Label: "обработка чанков", Slots: 9},
+		verbose.StageDef{Key: "reduce", Label: "reduce", Slots: 5},
+		verbose.StageDef{Key: "verify", Label: "проверка ответа", Slots: 2},
+		verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+	)
+	recorder := testutil.NewProgressRecorder(plan.Total())
+	plan = verbose.NewPlan(recorder, "map",
+		verbose.StageDef{Key: "prepare", Label: "подготовка", Slots: 2},
+		verbose.StageDef{Key: "chunking", Label: "чанкинг", Slots: 4},
+		verbose.StageDef{Key: "chunks", Label: "обработка чанков", Slots: 9},
+		verbose.StageDef{Key: "reduce", Label: "reduce", Slots: 5},
+		verbose.StageDef{Key: "verify", Label: "проверка ответа", Slots: 2},
+		verbose.StageDef{Key: "final", Label: "финальный ответ", Slots: 2},
+	)
+
+	if _, err := runMap(context.Background(), client, strings.NewReader("aaa\n"), Options{
+		ChunkLength:    (estimateMapRequestTokens("Что в файле?", "aaa") * mapBudgetDenominator / mapBudgetNumerator) + 1,
+		LengthExplicit: true,
+		Concurrency:    1,
+	}, "Что в файле?", plan); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	_, currents, _ := recorder.Snapshot()
+	if len(currents) == 0 {
+		t.Fatal("progress recorder saw no updates")
+	}
+	for index := 1; index < len(currents); index++ {
+		if currents[index] < currents[index-1] {
+			t.Fatalf("currents[%d] = %d, currents[%d] = %d; progress must not decrease; all currents = %#v",
+				index-1, currents[index-1], index, currents[index], currents)
+		}
+	}
+}
+
 func TestRun_ProgressFromPlanDoesNotRequirePrepareStage(t *testing.T) {
 	client := newSequencedLLMClient(t, []string{
 		"fact from chunk 1",

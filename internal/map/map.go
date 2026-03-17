@@ -720,7 +720,7 @@ func resolveChunkLength(ctx context.Context, client llm.AutoContextLengthResolve
 //
 
 func selfRefine(ctx context.Context, client llm.ChatRequester, question, facts, answer string, stats *pipelineStats, verifyMeter verbose.Meter) (string, error) {
-	verifyMeter.Start(localize.T("progress.map.verify_start"))
+	verifyMeter.Note(localize.T("progress.map.verify_start"))
 	slog.Debug("self-refine critique started")
 
 	critique, err := callLLM(ctx, client, critiqueMessages(question, facts, answer), llmCallContext{Stage: "self_refine_critique"}, stats)
@@ -832,17 +832,18 @@ func Run(ctx context.Context, client llm.ChatAutoContextRequester, source input.
 	reduceMeter.Done(localize.T("progress.map.reduce_done"))
 
 	slog.Debug("final answer generation started")
-	finalMeter.Start(localize.T("progress.map.final_start"))
+	verifyMeter.Start(localize.T("progress.map.final_start"))
 	answer, err := callLLM(ctx, client, finalMessages(question, facts), llmCallContext{Stage: "final_answer"}, stats)
 	if err != nil {
 		return "", err
 	}
-	finalMeter.Note(localize.T("progress.map.final_draft"))
+	verifyMeter.Note(localize.T("progress.map.final_draft"))
 
 	result, err := selfRefine(ctx, client, question, facts, answer, stats, verifyMeter)
 	if err != nil {
 		return "", err
 	}
+	finalMeter.Start(localize.T("progress.map.final_draft"))
 	finalMeter.Done(localize.T("progress.map.final_done"))
 
 	slog.Debug("map-reduce pipeline finished",
