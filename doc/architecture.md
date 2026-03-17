@@ -7,7 +7,7 @@
 - тонкую точку входа `cmd/ragcli`;
 - orchestration-слой `internal/app`;
 - mode-пакеты `hybrid`, `tools`, `rag`, `map`;
-- shared infrastructure: `ragcore`, `llm`, `input`, `retrieval`, `aitools`, `verbose`, `localize`, `logging`.
+- shared infrastructure: `ragcore`, `llm`, `input`, `retrieval`, `aitools`, `selfupdate`, `verbose`, `localize`, `logging`.
 
 Главный принцип: `internal/app` связывает CLI, input lifecycle, создание клиентов и вывод результата, а domain-specific пайплайны живут в отдельных пакетах режимов.
 
@@ -26,6 +26,7 @@ flowchart LR
     app --> rag["internal/rag"]
     app --> ragcore["internal/ragcore"]
     app --> map["internal/map"]
+    app --> selfupdate["internal/selfupdate"]
     hybrid --> tools
     hybrid --> ragcore
     tools --> ragcore
@@ -45,6 +46,7 @@ flowchart LR
 - `internal/tools` оркестрирует tool calling, а общий registry/API делегирует `internal/aitools`, файловый домен — `internal/aitools/files`.
 - `internal/hybrid` переиспользует shared tool session из `internal/tools`, а fused seed/history собирает через `internal/ragcore`.
 - `internal/map` не зависит от retrieval и tool calling.
+- `internal/selfupdate` изолирует GitHub Releases discovery, checksum validation и безопасную замену бинаря для `ragcli self-update`.
 
 ## 3. Жизненный цикл запуска
 
@@ -79,8 +81,9 @@ sequenceDiagram
 4. `appRuntime.execute` создаёт `commandSession`, progress plan и сигнал-совместимый context.
 5. `commandSession.ensureInputOpened` открывает файл или материализует `stdin` один раз и держит `input.Handle` живым до конца run/REPL.
 6. `withChatInput` / `withChatAndEmbeddingInput` создают клиентов и вызывают mode package; `hybrid`, `tools --rag` и `rag` идут через ветку с embedder.
-7. `writeResult` форматирует markdown-ответ и печатает его в `stdout`.
-8. При `--interaction` runtime открывает interaction I/O и крутит общий follow-up REPL поверх mode-specific interactive session.
+7. `self-update` не открывает input и не создаёт LLM-клиентов: runtime передаёт build-time version и progress meter в `internal/selfupdate`.
+8. `writeResult` форматирует markdown-ответ и печатает его в `stdout`.
+9. При `--interaction` runtime открывает interaction I/O и крутит общий follow-up REPL поверх mode-specific interactive session.
 
 ## 4. Общие абстракции
 
@@ -236,6 +239,19 @@ flowchart TD
 - на слабых моделях качество critique/refine может быть неровным;
 - на больших входах такой прогон легко оказывается самым медленным из доступных вариантов.
 
+### 5.5 `self-update`
+
+`self-update` — maintenance command, а не mode обработки текста. Он живёт в отдельном пакете, чтобы не смешивать CLI wiring и release-update policy.
+
+Реальный pipeline:
+
+1. Пакет проверяет, что текущая версия — released semver, а не `dev`.
+2. Через GitHub Releases source выбирается последний stable release `borro/ragcli`.
+3. Для выбранного релиза ищется asset под текущие `GOOS/GOARCH` и обязательный `checksums.txt`.
+4. `--check` останавливается после этапа discovery и возвращает статус без записи на диск.
+5. Обычный `self-update` скачивает asset и `checksums.txt`, валидирует checksum и только после этого атомарно заменяет текущий бинарь.
+6. Ошибки checksum, отсутствующего asset-а и неполного rollback-а мапятся в user-facing сообщения без привязки к GitHub API деталям.
+
 ## 6. Файловые и временные артефакты
 
 | Артефакт | Кто создаёт | Зачем | Lifecycle |
@@ -252,6 +268,7 @@ flowchart TD
 - разделение `stdout`/`stderr`;
 - наличие локализации `ru`/`en`;
 - semantics режимов `hybrid`, `tools`, `rag`, `map`;
+- поведение `self-update` для binary installs из GitHub Releases;
 - формат источников в ответах `rag`.
 
 Не считаются жёстким public API:

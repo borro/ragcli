@@ -18,6 +18,7 @@ import (
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
 	"github.com/borro/ragcli/internal/ragcore"
+	selfupdatepkg "github.com/borro/ragcli/internal/selfupdate"
 	toolsmode "github.com/borro/ragcli/internal/tools"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
@@ -76,6 +77,24 @@ type scriptedInteractiveSession struct {
 	errs    []error
 	asks    []string
 	resets  int
+}
+
+type fakeSelfUpdater struct {
+	result         selfupdatepkg.Result
+	err            error
+	calls          int
+	currentVersion string
+	options        selfupdatepkg.Options
+}
+
+func (u *fakeSelfUpdater) Run(_ context.Context, currentVersion string, opts selfupdatepkg.Options, _ verbose.Meter) (selfupdatepkg.Result, error) {
+	u.calls++
+	u.currentVersion = currentVersion
+	u.options = opts
+	if u.err != nil {
+		return selfupdatepkg.Result{}, u.err
+	}
+	return u.result, nil
 }
 
 func (s *scriptedInteractiveSession) Ask(_ context.Context, prompt string, _ *verbose.Plan) (string, error) {
@@ -283,6 +302,47 @@ func TestRuntimeExecuteUnknownCommandReturnsLocalizedError(t *testing.T) {
 	}, defaultLLMOptions(), nil))
 	if err == nil || err.Error() != unknownSubcommandError("unknown").Error() {
 		t.Fatalf("runtime.execute(unknown) error = %v, want localized unknown-subcommand error", err)
+	}
+}
+
+func TestRuntimeExecuteSelfUpdateSkipsInputAndLLMClients(t *testing.T) {
+	runtime, stdout, _ := newTestRuntime("alpha\n")
+	updater := &fakeSelfUpdater{
+		result: selfupdatepkg.Result{Output: "updated ragcli from v1.0.0 to v1.1.0"},
+	}
+	runtime.openInput = func(string, io.Reader) (*input.Handle, error) {
+		t.Fatal("openInput must not be called for self-update")
+		return nil, nil
+	}
+	runtime.newChatClient = func(llm.Config) (llm.ChatAutoContextRequester, error) {
+		t.Fatal("newChatClient must not be called for self-update")
+		return nil, nil
+	}
+	runtime.newEmbedder = func(llm.Config) (llm.EmbeddingRequester, error) {
+		t.Fatal("newEmbedder must not be called for self-update")
+		return nil, nil
+	}
+	runtime.newSelfUpdater = func() (selfUpdater, error) {
+		return updater, nil
+	}
+
+	err := runtime.execute(context.Background(), testInvocation("self-update", CommonOptions{}, defaultLLMOptions(), selfupdatepkg.Options{
+		CheckOnly: true,
+	}))
+	if err != nil {
+		t.Fatalf("runtime.execute(self-update) error = %v", err)
+	}
+	if updater.calls != 1 {
+		t.Fatalf("calls = %d, want 1", updater.calls)
+	}
+	if updater.currentVersion != "test-version" {
+		t.Fatalf("currentVersion = %q, want test-version", updater.currentVersion)
+	}
+	if !updater.options.CheckOnly {
+		t.Fatalf("CheckOnly = %v, want true", updater.options.CheckOnly)
+	}
+	if got := stdout.String(); got != "updated ragcli from v1.0.0 to v1.1.0\n" {
+		t.Fatalf("stdout = %q, want self-update output", got)
 	}
 }
 

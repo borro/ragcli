@@ -37,6 +37,7 @@ Repo-level инструкции для кодинг-агентов лежат в
 - [`../internal/llm/README.md`](../internal/llm/README.md)
 - [`../internal/input/README.md`](../internal/input/README.md)
 - [`../internal/retrieval/README.md`](../internal/retrieval/README.md)
+- [`../internal/selfupdate/README.md`](../internal/selfupdate/README.md)
 - [`../internal/verbose/README.md`](../internal/verbose/README.md)
 - [`../internal/verbose/testutil/README.md`](../internal/verbose/testutil/README.md)
 - [`../internal/localize/README.md`](../internal/localize/README.md)
@@ -47,4 +48,4 @@ Repo-level инструкции для кодинг-агентов лежат в
 - При изменении CLI-флагов или defaults сначала обновляйте код и тесты, затем `doc/requirements.md` и корневой `README.md`.
 - При изменении пайплайна одного режима обновляйте `doc/architecture.md` и package-level `README.md` соответствующего пакета.
 - При добавлении нового пакета с самостоятельной ролью добавляйте рядом с ним `README.md` и ссылку на него из этого индекса.
-- Live smoke с реальным backend'ом запускается через `scripts/e2e_live_smoke.sh`; `lefthook` вешает его на `pre-push`, а не на `pre-commit`.
+- Live smoke с реальным backend'ом запускается через `scripts/e2e_live_smoke.sh`; `lefthook` вешает его на `pre-push`, а на `pre-commit` гоняет `gofmt`, `golangci-lint`, `go test ./...` и `govulncheck ./...`.

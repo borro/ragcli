@@ -18,6 +18,7 @@ import (
 	"github.com/borro/ragcli/internal/logging"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
+	selfupdatepkg "github.com/borro/ragcli/internal/selfupdate"
 	"github.com/borro/ragcli/internal/tools"
 	"github.com/borro/ragcli/internal/verbose"
 )
@@ -29,6 +30,11 @@ type inputOpener func(string, io.Reader) (*input.Handle, error)
 type outputFormatter func(string, io.Writer, bool) (string, error)
 type interactionIOOpener func(input.Source, io.Reader, io.Writer) (*interactionIO, error)
 type runtimeCommandExecutor func(*commandSession) (commandResult, error)
+type selfUpdaterFactory func() (selfUpdater, error)
+
+type selfUpdater interface {
+	Run(context.Context, string, selfupdatepkg.Options, verbose.Meter) (selfupdatepkg.Result, error)
+}
 
 type interactiveSession interface {
 	Ask(context.Context, string, *verbose.Plan) (string, error)
@@ -51,12 +57,13 @@ type appRuntime struct {
 	envErr    error
 	startedAt time.Time
 
-	newChatClient chatClientFactory
-	newEmbedder   embedderFactory
-	newReporter   reporterFactory
-	openInput     inputOpener
-	openREPL      interactionIOOpener
-	formatOutput  outputFormatter
+	newChatClient  chatClientFactory
+	newEmbedder    embedderFactory
+	newReporter    reporterFactory
+	openInput      inputOpener
+	openREPL       interactionIOOpener
+	formatOutput   outputFormatter
+	newSelfUpdater selfUpdaterFactory
 }
 
 type commandSession struct {
@@ -90,6 +97,9 @@ func newRuntime(stdout io.Writer, stderr io.Writer, stdin io.Reader, version str
 		openInput:    input.Open,
 		openREPL:     defaultInteractionIO,
 		formatOutput: formatOutput,
+		newSelfUpdater: func() (selfUpdater, error) {
+			return selfupdatepkg.New(selfupdatepkg.Config{})
+		},
 	}
 }
 
@@ -394,6 +404,25 @@ func executeHybridCommand(session *commandSession) (commandResult, error) {
 		}
 		return commandResult{Output: answer, Interactive: conv}, nil
 	})
+}
+
+func executeSelfUpdateCommand(session *commandSession) (commandResult, error) {
+	opts, err := payloadAs[selfupdatepkg.Options](session.inv.payload)
+	if err != nil {
+		return commandResult{}, err
+	}
+
+	updater, err := session.runtime.newSelfUpdater()
+	if err != nil {
+		return commandResult{}, err
+	}
+
+	slog.Info("starting self-update", "check_only", opts.CheckOnly)
+	result, err := updater.Run(session.ctx, session.runtime.version, opts, session.plan.Stage("update"))
+	if err != nil {
+		return commandResult{}, err
+	}
+	return commandResult{Output: result.Output}, nil
 }
 
 func payloadAs[T any](payload any) (T, error) {

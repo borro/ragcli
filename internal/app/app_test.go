@@ -13,6 +13,7 @@ import (
 	"github.com/borro/ragcli/internal/localize"
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
+	selfupdatepkg "github.com/borro/ragcli/internal/selfupdate"
 	toolsmode "github.com/borro/ragcli/internal/tools"
 )
 
@@ -72,7 +73,7 @@ func TestRunRootHelp(t *testing.T) {
 		t.Fatalf("Run(--help) exit code = %d, want 0", exitCode)
 	}
 	output := stdout.String()
-	for _, needle := range []string{"map", "rag", "tools", "hybrid", "version", "help, h", "--version", "--path", "--file", "--proxy-url", "--no-proxy", "--model", "--raw", "--verbose", "--interaction", "ragcli [global options] [command [command options]]", "v1.2.3"} {
+	for _, needle := range []string{"map", "rag", "tools", "hybrid", "self-update", "version", "help, h", "--version", "--path", "--file", "--proxy-url", "--no-proxy", "--model", "--raw", "--verbose", "--interaction", "ragcli [global options] [command [command options]]", "v1.2.3"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in help output:\n%s", needle, output)
 		}
@@ -189,6 +190,24 @@ func TestRunVersionHelp(t *testing.T) {
 	for _, needle := range []string{"GLOBAL OPTIONS:", "--path", "--file", "--api-url", "--proxy-url", "--no-proxy", "--model", "--retry", "--raw", "--debug", "--verbose", "--interaction"} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("stdout missing %q in version help:\n%s", needle, output)
+		}
+	}
+}
+
+func TestRunSelfUpdateHelp(t *testing.T) {
+	var stdout bytes.Buffer
+
+	exitCode := Run([]string{"self-update", "--help"}, &stdout, &bytes.Buffer{}, bytes.NewBuffer(nil), "v1.2.3")
+	if exitCode != 0 {
+		t.Fatalf("Run(self-update --help) exit code = %d, want 0", exitCode)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "ragcli self-update") {
+		t.Fatalf("stdout = %q, want self-update usage", output)
+	}
+	for _, needle := range []string{"--check", "GLOBAL OPTIONS:", "--path", "--api-url"} {
+		if !strings.Contains(output, needle) {
+			t.Fatalf("stdout missing %q in self-update help:\n%s", needle, output)
 		}
 	}
 }
@@ -440,6 +459,9 @@ func TestApplyPromptArgCompatibility(t *testing.T) {
 
 func TestApplyPromptArgCompatibilityRecognizesSharedValueFlags(t *testing.T) {
 	for _, spec := range commandSpecs() {
+		if spec.noPrompt {
+			continue
+		}
 		flags := append([]flagSpec{}, globalFlagSpecs()...)
 		flags = append(flags, spec.flagSpecs...)
 
@@ -461,6 +483,14 @@ func TestApplyPromptArgCompatibilityRecognizesSharedValueFlags(t *testing.T) {
 func TestApplyPromptArgCompatibilitySkipsUnsupportedCommands(t *testing.T) {
 	got := applyPromptArgCompatibility([]string{"version", "--path", "doc.txt"})
 	want := []string{"version", "--path", "doc.txt"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("applyPromptArgCompatibility() = %q, want %q", got, want)
+	}
+}
+
+func TestApplyPromptArgCompatibilitySkipsNoPromptCommands(t *testing.T) {
+	got := applyPromptArgCompatibility([]string{"self-update", "--check"})
+	want := []string{"self-update", "--check"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("applyPromptArgCompatibility() = %q, want %q", got, want)
 	}
@@ -626,6 +656,36 @@ func TestBindRAGCommandNormalizesValues(t *testing.T) {
 	}
 	if mustPayload[rag.Options](t, captured).Rerank != "heuristic" {
 		t.Fatalf("Rerank = %q, want heuristic", mustPayload[rag.Options](t, captured).Rerank)
+	}
+}
+
+func TestCLISelfUpdateBinding(t *testing.T) {
+	captured, _, err := runCLIForTest([]string{"self-update", "--check"})
+	if err != nil {
+		t.Fatalf("runCLIForTest() error = %v", err)
+	}
+	if captured.Name() != "self-update" {
+		t.Fatalf("Name = %q, want self-update", captured.Name())
+	}
+	if !mustPayload[selfupdatepkg.Options](t, captured).CheckOnly {
+		t.Fatalf("CheckOnly = %v, want true", mustPayload[selfupdatepkg.Options](t, captured).CheckOnly)
+	}
+}
+
+func TestRunSelfUpdateRejectsPositionalArgs(t *testing.T) {
+	setLangEnv(t, "en")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run([]string{"self-update", "now"}, &stdout, &stderr, bytes.NewBuffer(nil), "v1.2.3")
+	if exitCode != 1 {
+		t.Fatalf("Run(self-update now) exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "ragcli self-update") {
+		t.Fatalf("stdout = %q, want self-update help", stdout.String())
+	}
+	if stderr.String() != "unexpected positional arguments: now\n" {
+		t.Fatalf("stderr = %q, want positional-args error", stderr.String())
 	}
 }
 

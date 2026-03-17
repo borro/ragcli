@@ -112,8 +112,7 @@ func (r *toolRegistry) Execute(ctx context.Context, call openai.ToolCall) (Execu
 }
 
 func AsToolError(err error) ToolError {
-	var toolErr ToolError
-	if errors.As(err, &toolErr) {
+	if toolErr, ok := errors.AsType[ToolError](err); ok {
 		return toolErr
 	}
 

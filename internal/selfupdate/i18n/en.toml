@@ -1,0 +1,24 @@
+[selfupdate.status]
+up_to_date = "ragcli {{.Current}} is up to date"
+available = "update available: {{.Current}} -> {{.Latest}}"
+updated = "updated ragcli from {{.Current}} to {{.Latest}}"
+
+[selfupdate.progress]
+checking = "checking GitHub releases"
+resolving_asset = "resolving asset for {{.Version}}"
+applying = "downloading and applying {{.Version}}"
+up_to_date = "already on the latest release"
+available = "new release is available"
+updated = "update applied"
+
+[error.selfupdate]
+invalid_current_version = "self-update requires a released semantic version; got {{.Version}}"
+no_stable_release = "no stable GitHub releases found for borro/ragcli"
+list_releases = "failed to query GitHub releases"
+asset_unavailable = "release {{.Version}} does not contain an asset for {{.OS}}/{{.Arch}}"
+missing_checksum = "release {{.Version}} is missing required asset checksums.txt"
+executable_path = "failed to locate the current executable"
+detect_release = "failed to prepare release {{.Version}} for update"
+checksum = "downloaded asset for {{.Version}} failed checksum validation"
+rollback = "update failed and automatic rollback was incomplete: {{.Error}}"
+apply = "failed to apply update {{.Version}}"

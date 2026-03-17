@@ -11,6 +11,7 @@ import (
 	mapmode "github.com/borro/ragcli/internal/map"
 	"github.com/borro/ragcli/internal/rag"
 	"github.com/borro/ragcli/internal/ragcore"
+	selfupdatepkg "github.com/borro/ragcli/internal/selfupdate"
 	toolsmode "github.com/borro/ragcli/internal/tools"
 	"github.com/borro/ragcli/internal/verbose"
 	"github.com/urfave/cli/v3"
@@ -26,6 +27,7 @@ type commandSpec struct {
 	name        string
 	usage       string
 	description string
+	noPrompt    bool
 	flagSpecs   []flagSpec
 	template    templateSpec
 	bind        func(*cli.Command, *commandSpec) (commandInvocation, error)
@@ -76,6 +78,9 @@ func applyPromptArgCompatibility(args []string) []string {
 	if !ok {
 		return args
 	}
+	if spec.noPrompt {
+		return args
+	}
 
 	subArgs := args[1:]
 	for i := 0; i < len(subArgs); i++ {
@@ -104,6 +109,7 @@ func commandSpecs() []*commandSpec {
 			name:        "map",
 			usage:       localize.T("cli.command.map.usage"),
 			description: mapCommandDescription(),
+			noPrompt:    false,
 			flagSpecs: []flagSpec{
 				{
 					names:      []string{"--concurrency", "-c"},
@@ -147,6 +153,7 @@ func commandSpecs() []*commandSpec {
 			name:        "rag",
 			usage:       localize.T("cli.command.rag.usage"),
 			description: ragCommandDescription(),
+			noPrompt:    false,
 			flagSpecs:   ragFlagSpecs(true),
 			template: progressTemplate("progress.mode.rag",
 				stageTemplate("prepare", "progress.stage.prepare", 2),
@@ -161,6 +168,7 @@ func commandSpecs() []*commandSpec {
 			name:        "tools",
 			usage:       localize.T("cli.command.tools.usage"),
 			description: toolsCommandDescription(),
+			noPrompt:    false,
 			flagSpecs:   append([]flagSpec{toolsRAGFlagSpec()}, ragFlagSpecs(false)...),
 			template: progressTemplate("progress.mode.tools",
 				stageTemplate("prepare", "progress.stage.prepare", 2),
@@ -176,6 +184,7 @@ func commandSpecs() []*commandSpec {
 			name:        "hybrid",
 			usage:       localize.T("cli.command.hybrid.usage"),
 			description: hybridCommandDescription(),
+			noPrompt:    false,
 			flagSpecs:   ragFlagSpecs(false),
 			template: progressTemplate("progress.mode.hybrid",
 				stageTemplate("prepare", "progress.stage.prepare", 2),
@@ -187,6 +196,20 @@ func commandSpecs() []*commandSpec {
 			),
 			bind:    bindHybridInvocation,
 			execute: executeHybridCommand,
+		},
+		{
+			name:        "self-update",
+			usage:       localize.T("cli.command.self_update.usage"),
+			description: selfUpdateCommandDescription(),
+			noPrompt:    true,
+			flagSpecs: []flagSpec{
+				selfUpdateCheckFlagSpec(),
+			},
+			template: progressTemplate("progress.mode.self_update",
+				stageTemplate("update", "progress.stage.update", 3),
+			),
+			bind:    bindSelfUpdateInvocation,
+			execute: executeSelfUpdateCommand,
 		},
 	}
 }
@@ -509,6 +532,23 @@ func bindHybridInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocatio
 	return inv, nil
 }
 
+func bindSelfUpdateInvocation(cmd *cli.Command, spec *commandSpec) (commandInvocation, error) {
+	inv, err := bindCommandBase(cmd, spec)
+	if err != nil {
+		return commandInvocation{}, err
+	}
+	if cmd.NArg() > 0 {
+		return commandInvocation{}, fmt.Errorf("%s", localize.T("error.app.unexpected_arguments", localize.Data{
+			"Value": strings.Join(cmd.Args().Slice(), " "),
+		}))
+	}
+
+	inv.payload = selfupdatepkg.Options{
+		CheckOnly: cmd.Bool("check"),
+	}
+	return inv, nil
+}
+
 func bindCommandBase(cmd *cli.Command, spec *commandSpec) (commandInvocation, error) {
 	inv := commandInvocation{
 		spec:   spec,
@@ -517,7 +557,9 @@ func bindCommandBase(cmd *cli.Command, spec *commandSpec) (commandInvocation, er
 	}
 
 	if err := validatePrompt(inv.Common.Prompt); err != nil {
-		return commandInvocation{}, err
+		if !spec.noPrompt {
+			return commandInvocation{}, err
+		}
 	}
 
 	return inv, nil
@@ -634,6 +676,10 @@ func hybridCommandDescription() string {
 	return strings.TrimSpace(localize.T("cli.description.hybrid"))
 }
 
+func selfUpdateCommandDescription() string {
+	return strings.TrimSpace(localize.T("cli.description.self_update"))
+}
+
 func toolsRAGFlagSpec() flagSpec {
 	return flagSpec{
 		names: []string{"--rag"},
@@ -642,6 +688,18 @@ func toolsRAGFlagSpec() flagSpec {
 				Name:    "rag",
 				Usage:   localize.T("cli.flag.tools.rag.usage"),
 				Sources: cli.EnvVars("TOOLS_RAG"),
+			}
+		},
+	}
+}
+
+func selfUpdateCheckFlagSpec() flagSpec {
+	return flagSpec{
+		names: []string{"--check"},
+		build: func() cli.Flag {
+			return &cli.BoolFlag{
+				Name:  "check",
+				Usage: localize.T("cli.flag.self_update.check.usage"),
 			}
 		},
 	}

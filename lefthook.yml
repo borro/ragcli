@@ -9,6 +9,16 @@ pre-commit:
       run: golangci-lint run --timeout=5m ./cmd/... ./internal/...
     go-test:
       run: go test ./...
+    govulncheck:
+      run: |
+        if command -v govulncheck >/dev/null 2>&1; then
+          govulncheck ./...
+        elif [ -x "$(go env GOPATH)/bin/govulncheck" ]; then
+          "$(go env GOPATH)/bin/govulncheck" ./...
+        else
+          echo "govulncheck is required for pre-commit. Install it with: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4" >&2
+          exit 1
+        fi
 pre-push:
   parallel: false
   commands:

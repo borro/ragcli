@@ -33,14 +33,17 @@
 - `ragcli tools [options] <prompt>`
 - `ragcli rag [options] <prompt>`
 - `ragcli map [options] <prompt>`
+- `ragcli self-update [--check]`
 - `ragcli version`
 - `ragcli help [command]`
 
 Инварианты CLI:
 
 - `prompt` обязателен для всех режимов обработки.
+- `self-update` не принимает positional prompt и работает только по build-time version текущего бинаря.
 - `ragcli` без подкоманды показывает help корня.
 - `ragcli --version` и `ragcli version` выводят версию.
+- `ragcli self-update` проверяет последний stable GitHub Release `borro/ragcli`, а `ragcli self-update --check` только сообщает о доступности обновления.
 - `ragcli help <command>` и `<command> --help` должны описывать один и тот же command surface.
 - После начала positional prompt парсинг флагов должен останавливаться через внутреннюю compatibility-обвязку `applyPromptArgCompatibility`.
 
@@ -76,6 +79,7 @@
 - Proxy precedence: `--no-proxy` сильнее `--proxy-url`; `--proxy-url` сильнее `HTTP_PROXY`/`HTTPS_PROXY`; иначе используется proxy окружения.
 - Для `hybrid`, `tools --rag` и `rag` дополнительно нужен embeddings endpoint.
 - CLI default для `--embedding-model` — `text-embedding-nomic-embed-text-v1.5`.
+- `self-update` не использует `LLM_PROXY_URL`/`LLM_NO_PROXY` и полагается только на стандартный HTTPS transport Go и proxy env системы.
 
 ### 3.4 Вывод и UX
 
@@ -262,6 +266,27 @@
 - при `--interaction` follow-up turn заново выполняет обычный map pipeline по тому же source/options, но получает contextualized вопрос с предыдущими Q/A;
 - `/reset` должен возвращать transcript к состоянию сразу после первого ответа.
 
+### 4.5 `self-update`
+
+Назначение: безопасно обновить `ragcli`, установленный как standalone binary из GitHub Releases.
+
+Команда должна:
+
+- принимать build-time version текущего бинаря и отклонять `dev`, empty и non-semver значения;
+- смотреть только public GitHub Releases репозитория `borro/ragcli`;
+- игнорировать draft и prerelease релизы;
+- подбирать asset строго под текущие `GOOS/GOARCH`;
+- требовать наличия `checksums.txt` в release assets;
+- при `--check` не скачивать asset и не писать на диск;
+- при обычном запуске скачивать asset и `checksums.txt`, валидировать checksum до любой замены бинаря и затем применять atomic replace;
+- не использовать package-manager detection, target version selection, background checks или auto-update.
+
+Опции `self-update`:
+
+| Flag | Env | Значение | Default |
+| --- | --- | --- | --- |
+| `--check` | - | Только проверить доступность нового stable release без записи на диск | `false` |
+
 ## 5. Нефункциональные требования
 
 ### 5.1 Надёжность
@@ -269,6 +294,7 @@
 - Все LLM и embeddings-запросы идут через retry wrapper с exponential backoff `1s`, `2s`, `4s`, ... .
 - Отмена через `context.Context` должна прерывать запросы, backoff sleep и длинные пайплайны.
 - `SIGINT` и `SIGTERM` должны переводиться в command context через `signal.NotifyContext`.
+- `self-update` должен валидировать checksum до filesystem commit и по возможности оставлять старый бинарь нетронутым при любой ошибке download/validation.
 
 ### 5.2 Локальные артефакты и приватность
 
@@ -304,3 +330,4 @@
 - При добавлении новой команды её нужно зарегистрировать в `internal/app/commandspec.go`, включить в help и в progress template.
 - При изменении defaults нужно синхронизировать код, тесты, `doc/requirements.md` и корневой `README.md`.
 - При изменении поведения режима нужно обновлять также package-level `README.md` соответствующего пакета.
+- При изменении release asset naming или validation policy нужно синхронизировать `.goreleaser.yml`, CI и `internal/selfupdate`.

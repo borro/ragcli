@@ -16,6 +16,9 @@ usage = "Give the model tools for targeted file investigation"
 [cli.command.hybrid]
 usage = "Seed semantic retrieval, then verify and refine through tools"
 
+[cli.command.self_update]
+usage = "Update ragcli from GitHub Releases"
+
 [cli.command.version]
 usage = "Print ragcli version"
 
@@ -51,6 +54,9 @@ usage = "Rerank strategy: heuristic, off, model."
 
 [cli.flag.tools.rag]
 usage = "Enable the semantic retrieval tool search_rag with pre-indexing of the input."
+
+[cli.flag.self_update.check]
+usage = "Check whether a newer stable GitHub release exists without applying it."
 
 [cli.flag.path]
 usage = "Path to the input file or directory. If omitted, the command reads stdin."
@@ -123,6 +129,14 @@ Examples:
   ragcli hybrid --path app.log --rag-top-k 10 "Which lines explain the 5xx spikes?"
 
 """
+self_update = """
+Checks the latest stable GitHub Release for `borro/ragcli`, validates that a matching asset and `checksums.txt` exist, and optionally replaces the current binary.
+
+Examples:
+  ragcli self-update --check
+  ragcli self-update
+
+"""
 [error.prompt]
 required = "missing required argument: prompt"
 
@@ -131,6 +145,7 @@ unsupported = "unsupported locale {{.Value}}; use en or ru"
 
 [error.app]
 unknown_subcommand = "unknown subcommand: {{.Name}}"
+unexpected_arguments = "unexpected positional arguments: {{.Value}}"
 
 [error.output]
 create_renderer = "create renderer: {{.Error}}"
@@ -149,6 +164,7 @@ map = "map"
 tools = "tools"
 rag = "rag"
 hybrid = "hybrid"
+self_update = "self-update"
 
 [progress.detail.prepare]
 open_input = "opening input data"

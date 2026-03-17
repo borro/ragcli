@@ -34,7 +34,7 @@ archives:
     builds:
       - ragcli
       - ragcli-windows
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
     format_overrides:

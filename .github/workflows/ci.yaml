@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.25"
+  GO_VERSION: "1.26"
 
 jobs:
   test:
@@ -44,6 +44,14 @@ jobs:
       - name: Run tests
         run: |
           go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Install govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: Run govulncheck
+        run: |
+          "$(go env GOPATH)/bin/govulncheck" ./...
 
       - name: Upload coverage
         uses: codecov/codecov-action@v5

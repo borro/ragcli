@@ -38,6 +38,7 @@
 - `internal/rag`
 - `internal/ragcore`
 - `internal/map`
+- `internal/selfupdate`
 - `internal/verbose`
 - `internal/localize`
 - `internal/logging`
@@ -50,8 +51,9 @@
 4. `appRuntime.execute` создаёт signal-aware context и progress plan.
 5. `commandSession.ensureInputOpened` открывает файл или материализует `stdin` один раз на весь lifecycle запуска.
 6. `withChatInput` / `withChatAndEmbeddingInput` создают клиентов и вызывают режим; `hybrid`, `tools --rag` и `rag` идут через ветку с embedder.
-7. `writeResult` рендерит markdown при необходимости и печатает ответ в `stdout`.
-8. При `--interaction` runtime после первого ответа запускает общий REPL, читает follow-up вопросы, умеет `/reset` и `/exit`, а при `stdin` переключает follow-up input на controlling TTY.
+7. `self-update` обходит input/LLM lifecycle и делегирует проверку release-ов и замену бинаря в `internal/selfupdate`.
+8. `writeResult` рендерит markdown при необходимости и печатает ответ в `stdout`.
+9. При `--interaction` runtime после первого ответа запускает общий REPL, читает follow-up вопросы, умеет `/reset` и `/exit`, а при `stdin` переключает follow-up input на controlling TTY.
 
 ## Инварианты и ошибки
 
@@ -64,9 +66,9 @@
 
 ## Что подтверждают тесты
 
-- help/version и binding флагов;
+- help/version/self-update и binding флагов;
 - precedence глобальных флагов и prompt compatibility;
-- выбор chat/embedder клиентов по режиму, включая `hybrid` и `tools --rag`;
+- выбор chat/embedder/self-update lifecycle по команде, включая `hybrid` и `tools --rag`;
 - markdown rendering и разделение stdout/stderr;
 - completeness реестра команд.
 

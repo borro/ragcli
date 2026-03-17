@@ -50,7 +50,7 @@ func buildCLICommands(cfg cliConfig) []*cli.Command {
 	commands := make([]*cli.Command, 0, len(commandSpecs())+1)
 	for _, spec := range commandSpecs() {
 		spec := spec
-		commands = append(commands, newPromptCLICommand(spec, buildFlags(spec.flagSpecs), cfg.execute))
+		commands = append(commands, newCLICommand(spec, buildFlags(spec.flagSpecs), cfg.execute))
 	}
 	commands = append(commands, newVersionCLICommand())
 
@@ -61,12 +61,17 @@ func buildCLICommands(cfg cliConfig) []*cli.Command {
 	return commands
 }
 
-func newPromptCLICommand(spec *commandSpec, flags []cli.Flag, execute commandExecutor) *cli.Command {
+func newCLICommand(spec *commandSpec, flags []cli.Flag, execute commandExecutor) *cli.Command {
+	var arguments []cli.Argument
+	if !spec.noPrompt {
+		arguments = promptArguments()
+	}
+
 	return &cli.Command{
 		Name:        spec.name,
 		Usage:       spec.usage,
 		Description: spec.description,
-		Arguments:   promptArguments(),
+		Arguments:   arguments,
 		Flags:       flags,
 		Action:      bindAndExecute(spec, execute),
 	}
