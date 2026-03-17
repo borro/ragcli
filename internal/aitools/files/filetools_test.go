@@ -503,6 +503,55 @@ func TestListFiles_DefaultsAndPagination(t *testing.T) {
 	}
 }
 
+func TestSearchAutoAcrossCorpusPrefersLiteralMatches(t *testing.T) {
+	reader := NewCorpusReader([]CorpusFile{
+		{Path: writeTempFile(t, "retry only\n"), DisplayPath: "a.txt"},
+		{Path: writeTempFile(t, "retry policy\n"), DisplayPath: "b.txt"},
+	})
+
+	raw, err := ExecuteTool(toolCall("1", "search_file", `{"query":"retry policy"}`), reader)
+	if err != nil {
+		t.Fatalf("ExecuteTool(search_file) error = %v", err)
+	}
+
+	var result SearchResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("json.Unmarshal(search_file) error = %v", err)
+	}
+	if result.Mode != "literal" {
+		t.Fatalf("Mode = %q, want literal", result.Mode)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Path != "b.txt" {
+		t.Fatalf("Matches = %+v, want only literal match from b.txt", result.Matches)
+	}
+}
+
+func TestSearchAutoAcrossCorpusSortsTokenOverlapGlobally(t *testing.T) {
+	reader := NewCorpusReader([]CorpusFile{
+		{Path: writeTempFile(t, "retry policy\n"), DisplayPath: "a.txt"},
+		{Path: writeTempFile(t, "retry backoff policy\n"), DisplayPath: "b.txt"},
+	})
+
+	raw, err := ExecuteTool(toolCall("1", "search_file", `{"query":"retry policy backoff"}`), reader)
+	if err != nil {
+		t.Fatalf("ExecuteTool(search_file) error = %v", err)
+	}
+
+	var result SearchResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("json.Unmarshal(search_file) error = %v", err)
+	}
+	if result.Mode != "token_overlap" {
+		t.Fatalf("Mode = %q, want token_overlap", result.Mode)
+	}
+	if len(result.Matches) < 2 {
+		t.Fatalf("Matches = %+v, want at least two overlap matches", result.Matches)
+	}
+	if result.Matches[0].Path != "b.txt" {
+		t.Fatalf("first match = %+v, want best-scored b.txt result first", result.Matches[0])
+	}
+}
+
 func TestToolDefinitions_SingleAndMultiFile(t *testing.T) {
 	singleFile := NewTools(nil, ToolOptions{MultiFile: false})
 	if len(singleFile) != 3 {
@@ -679,6 +728,69 @@ func TestConcreteTools_ExposeProgressKeysAndHints(t *testing.T) {
 	}
 	if got := searchResult.Hints[HintSuggestedNextOffset]; got != 1 {
 		t.Fatalf("searchResult.Hints[%q] = %#v, want 1", HintSuggestedNextOffset, got)
+	}
+}
+
+func TestReadLinesRejectsMissingRequiredArguments(t *testing.T) {
+	_, err := ExecuteTool(toolCall("1", "read_lines", `{}`), NewFileReader(writeTempFile(t, "alpha\n")))
+	if err == nil {
+		t.Fatal("ExecuteTool(read_lines) error = nil, want invalid_arguments")
+	}
+	if got := AsToolError(err).Code; got != "invalid_arguments" {
+		t.Fatalf("Code = %q, want invalid_arguments", got)
+	}
+}
+
+func TestReadAllLinesNormalizesCRLFInput(t *testing.T) {
+	filePath := writeTempFile(t, "retry policy\r\nnext line\r\n")
+
+	raw, err := executeSearch(filePath, SearchParams{Query: "policy$", Mode: "regex"})
+	if err != nil {
+		t.Fatalf("executeSearch() error = %v", err)
+	}
+	assertSearchResult(t, raw, "policy$", "regex", "regex", []int{1})
+
+	linesRaw, err := executeReadLines(filePath, 1, 1)
+	if err != nil {
+		t.Fatalf("executeReadLines() error = %v", err)
+	}
+	var result ReadLinesResult
+	if err := json.Unmarshal([]byte(linesRaw), &result); err != nil {
+		t.Fatalf("json.Unmarshal(read_lines) error = %v", err)
+	}
+	if len(result.Lines) != 1 || result.Lines[0].Content != "retry policy" {
+		t.Fatalf("Lines = %+v, want CRLF-trimmed content", result.Lines)
+	}
+}
+
+func TestNewCorpusReaderDisambiguatesDuplicateDisplayPaths(t *testing.T) {
+	reader := NewCorpusReader([]CorpusFile{
+		{Path: writeTempFile(t, "alpha\n"), DisplayPath: "a.txt"},
+		{Path: writeTempFile(t, "beta\n"), DisplayPath: "a.txt"},
+	})
+
+	listRaw, err := ExecuteTool(toolCall("1", "list_files", `{}`), reader)
+	if err != nil {
+		t.Fatalf("ExecuteTool(list_files) error = %v", err)
+	}
+	var listResult ListFilesResult
+	if err := json.Unmarshal([]byte(listRaw), &listResult); err != nil {
+		t.Fatalf("json.Unmarshal(list_files) error = %v", err)
+	}
+	if got := strings.Join(listResult.Files, ","); got != "a.txt,a.txt#2" {
+		t.Fatalf("files = %q, want disambiguated duplicate paths", got)
+	}
+
+	readRaw, err := ExecuteTool(toolCall("2", "read_lines", `{"path":"a.txt#2","start_line":1,"end_line":1}`), reader)
+	if err != nil {
+		t.Fatalf("ExecuteTool(read_lines) error = %v", err)
+	}
+	var readResult ReadLinesResult
+	if err := json.Unmarshal([]byte(readRaw), &readResult); err != nil {
+		t.Fatalf("json.Unmarshal(read_lines) error = %v", err)
+	}
+	if len(readResult.Lines) != 1 || readResult.Lines[0].Content != "beta" {
+		t.Fatalf("readResult = %+v, want second file contents", readResult)
 	}
 }
 

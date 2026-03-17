@@ -40,9 +40,13 @@ var terminalWidth = func(writer io.Writer) int {
 }
 
 func formatOutput(result string, stdout io.Writer, raw bool) (string, error) {
+	if raw || !isTerminalWriter(stdout) {
+		return result, nil
+	}
+
 	trimmed := strings.TrimSpace(result)
-	if raw || !isTerminalWriter(stdout) || trimmed == "" {
-		return trimmed, nil
+	if trimmed == "" {
+		return result, nil
 	}
 
 	options := []glamour.TermRendererOption{
@@ -61,5 +65,5 @@ func formatOutput(result string, stdout io.Writer, raw bool) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s", localize.T("error.output.render_markdown", localize.Data{"Error": err}))
 	}
-	return strings.TrimSpace(rendered), nil
+	return strings.Trim(rendered, "\n"), nil
 }

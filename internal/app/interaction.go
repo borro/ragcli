@@ -26,6 +26,7 @@ type interactionReadResult struct {
 }
 
 type interactionLineReader func(context.Context, io.Writer, string) (string, error)
+type interactionReadCancelFunc func() error
 
 var openInteractionTTYFunc = openInteractionTTY
 
@@ -118,16 +119,17 @@ func (s *commandSession) runInteraction(interactive interactiveSession) error {
 }
 
 func newInteractionLineReader(ioState *interactionIO) interactionLineReader {
+	cancelRead := interactionCancelFunc(ioState.reader)
 	if readerFD, ok := interactionReaderFD(ioState); ok && isTerminalWriter(ioState.writer) {
 		readWriter := interactionReadWriter{reader: ioState.reader, writer: ioState.writer}
 		return func(ctx context.Context, writer io.Writer, prompt string) (string, error) {
-			return readTerminalLine(ctx, readerFD, readWriter, prompt)
+			return readTerminalLine(ctx, readerFD, readWriter, cancelRead, prompt)
 		}
 	}
 
 	reader := bufio.NewReader(ioState.reader)
 	return func(ctx context.Context, writer io.Writer, prompt string) (string, error) {
-		return readInteractionLine(ctx, reader, writer, prompt)
+		return readInteractionLine(ctx, reader, cancelRead, writer, prompt)
 	}
 }
 
@@ -155,7 +157,39 @@ func interactionReaderFD(ioState *interactionIO) (int, bool) {
 	return int(fdReader.Fd()), true
 }
 
-func readTerminalLine(ctx context.Context, readerFD int, readWriter io.ReadWriter, prompt string) (string, error) {
+func interactionCancelFunc(reader io.Reader) interactionReadCancelFunc {
+	closer, ok := reader.(io.Closer)
+	if !ok {
+		return nil
+	}
+	return closer.Close
+}
+
+func readLineWithContext(ctx context.Context, readFn func() (string, error), cancelRead interactionReadCancelFunc) (string, error) {
+	if ctx == nil {
+		return readFn()
+	}
+
+	resultCh := make(chan interactionReadResult, 1)
+	go func() {
+		line, err := readFn()
+		resultCh <- interactionReadResult{line: line, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		return result.line, result.err
+	case <-ctx.Done():
+		if cancelRead == nil {
+			return "", ctx.Err()
+		}
+		_ = cancelRead()
+		<-resultCh
+		return "", ctx.Err()
+	}
+}
+
+func readTerminalLine(ctx context.Context, readerFD int, readWriter io.ReadWriter, cancelRead interactionReadCancelFunc, prompt string) (string, error) {
 	if readerFD < 0 || readWriter == nil {
 		return "", io.EOF
 	}
@@ -171,22 +205,9 @@ func readTerminalLine(ctx context.Context, readerFD int, readWriter io.ReadWrite
 	terminal := term.NewTerminal(readWriter, prompt)
 	terminal.SetBracketedPasteMode(false)
 
-	if ctx == nil {
+	return readLineWithContext(ctx, func() (string, error) {
 		return readTerminalLineFromEditor(terminal)
-	}
-
-	resultCh := make(chan interactionReadResult, 1)
-	go func() {
-		line, err := readTerminalLineFromEditor(terminal)
-		resultCh <- interactionReadResult{line: line, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case result := <-resultCh:
-		return result.line, result.err
-	}
+	}, cancelRead)
 }
 
 func readTerminalLineFromEditor(terminal *term.Terminal) (string, error) {
@@ -200,27 +221,14 @@ func readTerminalLineFromEditor(terminal *term.Terminal) (string, error) {
 	return strings.TrimRight(line, "\r\n"), err
 }
 
-func readInteractionLine(ctx context.Context, reader *bufio.Reader, writer io.Writer, prompt string) (string, error) {
+func readInteractionLine(ctx context.Context, reader *bufio.Reader, cancelRead interactionReadCancelFunc, writer io.Writer, prompt string) (string, error) {
 	if _, err := io.WriteString(writer, prompt); err != nil {
 		return "", err
 	}
 
-	if ctx == nil {
+	return readLineWithContext(ctx, func() (string, error) {
 		return readBufferedInteractionLine(reader)
-	}
-
-	resultCh := make(chan interactionReadResult, 1)
-	go func() {
-		line, err := readBufferedInteractionLine(reader)
-		resultCh <- interactionReadResult{line: line, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case result := <-resultCh:
-		return result.line, result.err
-	}
+	}, cancelRead)
 }
 
 func readBufferedInteractionLine(reader *bufio.Reader) (string, error) {

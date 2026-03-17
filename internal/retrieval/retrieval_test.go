@@ -76,6 +76,24 @@ func TestSpoolSourceProducesStableHashAndBytes(t *testing.T) {
 	}
 }
 
+func TestSpoolSourceHashMetadataAvoidsDelimiterCollisions(t *testing.T) {
+	first, err := SpoolSource(strings.NewReader("one\ntwo\n"), "retrieval-test-*", []string{"a|b", "c"}, nil)
+	if err != nil {
+		t.Fatalf("SpoolSource(first) error = %v", err)
+	}
+	defer func() { _ = os.Remove(first.TempPath) }()
+
+	second, err := SpoolSource(strings.NewReader("one\ntwo\n"), "retrieval-test-*", []string{"a", "b|c"}, nil)
+	if err != nil {
+		t.Fatalf("SpoolSource(second) error = %v", err)
+	}
+	defer func() { _ = os.Remove(second.TempPath) }()
+
+	if first.Hash == second.Hash {
+		t.Fatalf("Hash collision: %q == %q", first.Hash, second.Hash)
+	}
+}
+
 func TestPersistAndLoadIndexRoundTrip(t *testing.T) {
 	const schemaVersion = 2
 
@@ -290,6 +308,31 @@ func TestPersistIndexReportsContextualWriteErrors(t *testing.T) {
 				t.Fatalf("PersistIndex() error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestPersistIndexReturnsAlreadyExistsForPublishedDirectory(t *testing.T) {
+	indexDir := filepath.Join(t.TempDir(), "index")
+	if err := os.Mkdir(indexDir, 0o700); err != nil {
+		t.Fatalf("Mkdir(index) error = %v", err)
+	}
+
+	err := PersistIndex(indexDir, Manifest{
+		SchemaVersion:  2,
+		CreatedAt:      time.Now().UTC(),
+		InputHash:      "hash",
+		SourcePath:     "source.txt",
+		EmbeddingModel: "embed",
+		ChunkSize:      128,
+		ChunkOverlap:   16,
+		ItemCount:      1,
+	}, []string{"alpha"}, [][]float32{{1, 0, 0}}, Filenames{
+		Manifest:   "manifest.json",
+		Items:      "items.jsonl",
+		Embeddings: "embeddings.jsonl",
+	})
+	if !errors.Is(err, ErrIndexAlreadyExists) {
+		t.Fatalf("PersistIndex() error = %v, want ErrIndexAlreadyExists", err)
 	}
 }
 

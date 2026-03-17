@@ -61,6 +61,42 @@ func (r fakeReadCloser) Close() error {
 	return r.closeErr
 }
 
+type trackingTempFile struct {
+	data []byte
+}
+
+func (f *trackingTempFile) Write(p []byte) (int, error) {
+	f.data = append(f.data, p...)
+	return len(p), nil
+}
+
+func (f *trackingTempFile) Close() error {
+	return nil
+}
+
+func (f *trackingTempFile) Name() string {
+	return "tracking-temp.txt"
+}
+
+type writerToReadCloser struct {
+	content      string
+	usedWriterTo bool
+}
+
+func (r *writerToReadCloser) Read(_ []byte) (int, error) {
+	return 0, errors.New("Read() must not be used when WriteTo() is available")
+}
+
+func (r *writerToReadCloser) WriteTo(w io.Writer) (int64, error) {
+	r.usedWriterTo = true
+	n, err := io.WriteString(w, r.content)
+	return int64(n), err
+}
+
+func (r *writerToReadCloser) Close() error {
+	return nil
+}
+
 func stubInputDeps(t *testing.T) {
 	t.Helper()
 
@@ -710,5 +746,31 @@ func TestWriteDirectoryCorpusErrors(t *testing.T) {
 				t.Fatalf("writeDirectoryCorpus() error = %v, want %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestWriteDirectoryCorpusStreamsFileContents(t *testing.T) {
+	stubInputDeps(t)
+
+	src := &writerToReadCloser{content: "alpha\nbeta\n"}
+	openFile = func(string) (io.ReadCloser, error) {
+		return src, nil
+	}
+	dst := &trackingTempFile{}
+
+	if err := writeDirectoryCorpus(dst, []File{{
+		Path:        "sample.txt",
+		DisplayPath: "sample.txt",
+	}}); err != nil {
+		t.Fatalf("writeDirectoryCorpus() error = %v", err)
+	}
+	if !src.usedWriterTo {
+		t.Fatal("writeDirectoryCorpus() did not stream file contents")
+	}
+
+	got := string(dst.data)
+	want := "=== file: sample.txt ===\nalpha\nbeta\n"
+	if got != want {
+		t.Fatalf("corpus = %q, want %q", got, want)
 	}
 }

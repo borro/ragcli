@@ -88,21 +88,24 @@ func refinePrompt() string {
 // LLM helper
 //
 
-func callLLM(ctx context.Context, client llm.ChatRequester, messages []openai.ChatCompletionMessage, callCtx llmCallContext, stats *pipelineStats) (string, error) {
+func addLLMMetrics(stats *pipelineStats, metrics llm.RequestMetrics) {
+	if stats == nil {
+		return
+	}
+	stats.LLMCalls++
+	stats.PromptTokens += metrics.PromptTokens
+	stats.CompletionTokens += metrics.CompletionTokens
+	stats.TotalTokens += metrics.TotalTokens
+}
+
+func callLLMWithMetrics(ctx context.Context, client llm.ChatRequester, messages []openai.ChatCompletionMessage, callCtx llmCallContext) (string, llm.RequestMetrics, error) {
 	req := openai.ChatCompletionRequest{
 		Messages: messages,
 	}
 
 	resp, metrics, err := client.SendRequestWithMetrics(ctx, req)
 	if err != nil {
-		return "", err
-	}
-
-	if stats != nil {
-		stats.LLMCalls++
-		stats.PromptTokens += metrics.PromptTokens
-		stats.CompletionTokens += metrics.CompletionTokens
-		stats.TotalTokens += metrics.TotalTokens
+		return "", metrics, err
 	}
 
 	logArgs := []any{"stage", callCtx.Stage}
@@ -125,10 +128,19 @@ func callLLM(ctx context.Context, client llm.ChatRequester, messages []openai.Ch
 	slog.Debug("map-reduce llm call completed", logArgs...)
 
 	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("empty response")
+		return "", metrics, fmt.Errorf("empty response")
 	}
 
-	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
+	return strings.TrimSpace(resp.Choices[0].Message.Content), metrics, nil
+}
+
+func callLLM(ctx context.Context, client llm.ChatRequester, messages []openai.ChatCompletionMessage, callCtx llmCallContext, stats *pipelineStats) (string, error) {
+	content, metrics, err := callLLMWithMetrics(ctx, client, messages, callCtx)
+	if err != nil {
+		return "", err
+	}
+	addLLMMetrics(stats, metrics)
+	return content, nil
 }
 
 //
@@ -218,14 +230,14 @@ func refineMessages(question, facts, answer, critique string) []openai.ChatCompl
 
 func buildUserMessage(question string, blocks ...string) string {
 	parts := make([]string, 0, len(blocks)+1)
-	parts = append(parts, fmt.Sprintf("Вопрос:\n%s", question))
+	parts = append(parts, fmt.Sprintf("%s:\n%s", localize.T("map.label.question"), question))
 	parts = append(parts, blocks...)
 	return strings.Join(parts, "\n\n")
 }
 
 func formatUntrustedBlock(label, content string) string {
 	if content == "" {
-		content = "(пусто)"
+		content = localize.T("map.label.empty")
 	}
 	return fmt.Sprintf("%s:\n```\n%s\n```", label, content)
 }
@@ -407,11 +419,13 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []text
 		chunk textChunk
 	}
 	type mapResult struct {
+		index        int
 		output       string
 		skipped      bool
 		err          error
 		rawFactLines int
 		keptFactLine int
+		metrics      llm.RequestMetrics
 	}
 
 	jobs := make(chan mapJob)
@@ -428,17 +442,17 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []text
 			defer wg.Done()
 
 			for job := range jobs {
-				res, err := callLLM(ctx, client, mapMessages(question, job.chunk.Text), llmCallContext{
+				res, metrics, err := callLLMWithMetrics(ctx, client, mapMessages(question, job.chunk.Text), llmCallContext{
 					Stage:         "map_chunk",
 					ChunkIndex:    job.index + 1,
 					ChunkCount:    len(chunks),
 					ChunkBytes:    job.chunk.ByteCount,
 					ChunkTokens:   job.chunk.TokenCount,
 					RequestTokens: job.chunk.RequestTokens,
-				}, stats)
+				})
 				if err != nil {
 					slog.Debug("map chunk failed", "chunk_index", job.index+1, "chunk_count", len(chunks), "error", err)
-					resultMeta <- mapResult{err: err}
+					resultMeta <- mapResult{index: job.index, err: err, metrics: metrics}
 					continue
 				}
 
@@ -453,9 +467,20 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []text
 				)
 
 				if normalized != "" && normalized != "SKIP" {
-					resultMeta <- mapResult{output: normalized, rawFactLines: rawFactLines, keptFactLine: keptFactLines}
+					resultMeta <- mapResult{
+						index:        job.index,
+						output:       normalized,
+						rawFactLines: rawFactLines,
+						keptFactLine: keptFactLines,
+						metrics:      metrics,
+					}
 				} else {
-					resultMeta <- mapResult{skipped: true, rawFactLines: rawFactLines}
+					resultMeta <- mapResult{
+						index:        job.index,
+						skipped:      true,
+						rawFactLines: rawFactLines,
+						metrics:      metrics,
+					}
 				}
 			}
 
@@ -474,11 +499,12 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []text
 		close(resultMeta)
 	}()
 
-	var collected []string
+	orderedResults := make([]string, len(chunks))
 
 	completed := 0
 	for result := range resultMeta {
 		completed++
+		addLLMMetrics(stats, result.metrics)
 		switch {
 		case result.err != nil:
 			stats.MapErrors++
@@ -487,12 +513,19 @@ func runMapParallel(ctx context.Context, client llm.ChatRequester, chunks []text
 		default:
 			stats.MapSuccesses++
 			if result.output != "" {
-				collected = append(collected, result.output)
+				orderedResults[result.index] = result.output
 			}
 		}
 		stats.MapFactLinesRaw += result.rawFactLines
 		stats.MapFactLinesKept += result.keptFactLine
-		chunkMeter.Report(completed, len(chunks), fmt.Sprintf("обработано %d/%d chunks", completed, len(chunks)))
+		chunkMeter.Report(completed, len(chunks), localize.T("progress.map.chunk_progress", localize.Data{"Done": completed, "Total": len(chunks)}))
+	}
+
+	collected := make([]string, 0, len(orderedResults))
+	for _, output := range orderedResults {
+		if output != "" {
+			collected = append(collected, output)
+		}
 	}
 
 	slog.Debug("map phase finished",

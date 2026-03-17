@@ -367,7 +367,8 @@ func writeDirectoryCorpus(dst tempFile, files []File) error {
 		if err != nil {
 			return err
 		}
-		content, copyErr := io.ReadAll(src)
+
+		hadTrailingNewline, copyErr := copyFileContents(dst, src)
 		closeErr := src.Close()
 		if copyErr != nil {
 			return copyErr
@@ -375,10 +376,7 @@ func writeDirectoryCorpus(dst tempFile, files []File) error {
 		if closeErr != nil {
 			return closeErr
 		}
-		if _, err := dst.Write(content); err != nil {
-			return err
-		}
-		if len(content) == 0 || content[len(content)-1] != '\n' {
+		if !hadTrailingNewline {
 			if _, err := io.WriteString(dst, "\n"); err != nil {
 				return err
 			}
@@ -390,4 +388,30 @@ func writeDirectoryCorpus(dst tempFile, files []File) error {
 		}
 	}
 	return nil
+}
+
+type trailingNewlineTracker struct {
+	writer             io.Writer
+	lastByte           byte
+	hasWrittenAnyBytes bool
+}
+
+func (t *trailingNewlineTracker) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		t.lastByte = p[len(p)-1]
+		t.hasWrittenAnyBytes = true
+	}
+	return t.writer.Write(p)
+}
+
+func (t *trailingNewlineTracker) endedWithNewline() bool {
+	return t.hasWrittenAnyBytes && t.lastByte == '\n'
+}
+
+func copyFileContents(dst io.Writer, src io.Reader) (bool, error) {
+	tracker := &trailingNewlineTracker{writer: dst}
+	if _, err := io.Copy(tracker, src); err != nil {
+		return false, err
+	}
+	return tracker.endedWithNewline(), nil
 }

@@ -178,11 +178,13 @@ func NewCorpusReader(files []CorpusFile) LineReader {
 	normalized := make([]CorpusFile, 0, len(files))
 	byPath := make(map[string]*cachedLineReader, len(files))
 	ordered := make([]*cachedLineReader, 0, len(files))
+	usedPaths := make(map[string]int, len(files))
 	for _, file := range files {
 		displayPath := strings.TrimSpace(file.DisplayPath)
 		if displayPath == "" {
 			displayPath = filepath.Base(strings.TrimSpace(file.Path))
 		}
+		displayPath = uniqueCorpusDisplayPath(displayPath, usedPaths)
 		normalized = append(normalized, CorpusFile{
 			Path:        file.Path,
 			DisplayPath: displayPath,
@@ -204,6 +206,24 @@ func NewCorpusReader(files []CorpusFile) LineReader {
 		files:   normalized,
 		byPath:  byPath,
 		ordered: ordered,
+	}
+}
+
+func uniqueCorpusDisplayPath(displayPath string, used map[string]int) string {
+	if used[displayPath] == 0 {
+		used[displayPath] = 1
+		return displayPath
+	}
+
+	base := displayPath
+	for suffix := used[base] + 1; ; suffix++ {
+		candidate := fmt.Sprintf("%s#%d", base, suffix)
+		if used[candidate] != 0 {
+			continue
+		}
+		used[base] = suffix
+		used[candidate] = 1
+		return candidate
 	}
 }
 
@@ -269,22 +289,17 @@ func (r *multiFileReader) Search(params SearchParams) (string, error) {
 		return raw, nil
 	}
 
-	allMatches := make([]SearchMatch, 0, 32)
-	actualMode := params.Mode
 	for _, reader := range r.ordered {
 		if err := reader.ensureLoaded(); err != nil {
 			return "", err
 		}
-		matches, mode, err := searchMatches(reader.lines, reader.displayPath, params)
-		if err != nil {
-			return "", err
-		}
-		if actualMode == "auto" && mode != "" {
-			actualMode = mode
-		}
-		allMatches = append(allMatches, matches...)
 	}
 	r.refreshLoadCount()
+
+	allMatches, actualMode, err := searchMatchesAcrossReaders(r.ordered, params)
+	if err != nil {
+		return "", err
+	}
 
 	totalMatches := len(allMatches)
 	start := min(params.Offset, totalMatches)
@@ -308,6 +323,52 @@ func (r *multiFileReader) Search(params SearchParams) (string, error) {
 	}
 
 	return MarshalJSON(result)
+}
+
+func searchMatchesAcrossReaders(readers []*cachedLineReader, params SearchParams) ([]SearchMatch, string, error) {
+	params = NormalizeSearchParams(params)
+
+	switch params.Mode {
+	case "literal":
+		matches := make([]SearchMatch, 0, 32)
+		for _, reader := range readers {
+			matches = append(matches, literalMatches(reader.lines, reader.displayPath, params.Query, params.ContextLines)...)
+		}
+		return matches, "literal", nil
+	case "regex":
+		matches := make([]SearchMatch, 0, 32)
+		for _, reader := range readers {
+			fileMatches, err := regexMatches(reader.lines, reader.displayPath, params.Query, params.ContextLines)
+			if err != nil {
+				return nil, "", err
+			}
+			matches = append(matches, fileMatches...)
+		}
+		return matches, "regex", nil
+	case "auto":
+		literal := make([]SearchMatch, 0, 32)
+		for _, reader := range readers {
+			literal = append(literal, literalMatches(reader.lines, reader.displayPath, params.Query, params.ContextLines)...)
+		}
+		if len(literal) > 0 {
+			return literal, "literal", nil
+		}
+
+		overlap := make([]SearchMatch, 0, 32)
+		for _, reader := range readers {
+			overlap = append(overlap, tokenOverlapMatches(reader.lines, reader.displayPath, params.Query, params.ContextLines)...)
+		}
+		sortTokenOverlapMatches(overlap)
+		return overlap, "token_overlap", nil
+	default:
+		return searchMatchesAcrossReaders(readers, SearchParams{
+			Query:        params.Query,
+			Mode:         "auto",
+			Limit:        params.Limit,
+			Offset:       params.Offset,
+			ContextLines: params.ContextLines,
+		})
+	}
 }
 
 func (r *multiFileReader) ReadLines(path string, start, end int) (string, error) {
@@ -428,7 +489,7 @@ func readAllLines(reader io.Reader) ([]string, error) {
 		}
 
 		if len(line) > 0 {
-			lines = append(lines, strings.TrimSuffix(line, "\n"))
+			lines = append(lines, strings.TrimRight(line, "\r\n"))
 		}
 
 		if err == io.EOF {
@@ -620,11 +681,21 @@ func tokenOverlapMatches(lines []string, displayPath string, query string, conte
 		matches = append(matches, buildSearchMatch(lines, displayPath, idx, line, score, reason, contextLines))
 	}
 
+	sortTokenOverlapMatches(matches)
+
+	return matches
+}
+
+func sortTokenOverlapMatches(matches []SearchMatch) {
 	slices.SortStableFunc(matches, func(a, b SearchMatch) int {
 		switch {
 		case a.Score > b.Score:
 			return -1
 		case a.Score < b.Score:
+			return 1
+		case a.Path < b.Path:
+			return -1
+		case a.Path > b.Path:
 			return 1
 		case a.LineNumber < b.LineNumber:
 			return -1
@@ -634,8 +705,6 @@ func tokenOverlapMatches(lines []string, displayPath string, query string, conte
 			return 0
 		}
 	})
-
-	return matches
 }
 
 func tokenizeQuery(query string) []string {

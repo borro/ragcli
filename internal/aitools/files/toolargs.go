@@ -51,6 +51,9 @@ func decodeToolArgs(call openai.ToolCall) (toolArgs, error) {
 		}
 		return searchFileArgs{SearchParams: NormalizeSearchParams(params)}, nil
 	case "read_lines":
+		if err := ensureRequiredArguments(call, "start_line", "end_line"); err != nil {
+			return nil, err
+		}
 		params, err := decodeJSONArguments[readLinesArgs](call, false)
 		if err != nil {
 			return nil, err
@@ -76,6 +79,33 @@ func decodeToolArgs(call openai.ToolCall) (toolArgs, error) {
 			"tool": call.Function.Name,
 		})
 	}
+}
+
+func ensureRequiredArguments(call openai.ToolCall, required ...string) error {
+	raw := strings.TrimSpace(call.Function.Arguments)
+	if raw == "" {
+		return NewToolError("invalid_arguments", fmt.Sprintf("invalid arguments for %s", call.Function.Name), false, map[string]any{
+			"tool": call.Function.Name,
+		})
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return NewToolError("invalid_arguments", fmt.Sprintf("invalid arguments for %s", call.Function.Name), false, map[string]any{
+			"tool":  call.Function.Name,
+			"error": err.Error(),
+		})
+	}
+	for _, field := range required {
+		if _, ok := payload[field]; ok {
+			continue
+		}
+		return NewToolError("invalid_arguments", fmt.Sprintf("missing required argument %s for %s", field, call.Function.Name), false, map[string]any{
+			"tool":  call.Function.Name,
+			"field": field,
+		})
+	}
+	return nil
 }
 
 func decodeJSONArguments[T any](call openai.ToolCall, allowEmpty bool) (T, error) {

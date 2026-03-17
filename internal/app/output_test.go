@@ -19,6 +19,19 @@ func TestFormatOutputRawSkipsRendering(t *testing.T) {
 	}
 }
 
+func TestFormatOutputRawPreservesWhitespace(t *testing.T) {
+	t.Cleanup(setTerminalWriterForTest(false))
+
+	input := "\n  # Title\n\n"
+	got, err := formatOutput(input, &bytes.Buffer{}, true)
+	if err != nil {
+		t.Fatalf("formatOutput() error = %v", err)
+	}
+	if got != input {
+		t.Fatalf("formatOutput() = %q, want exact raw output %q", got, input)
+	}
+}
+
 func TestFormatOutputNonTTYSkipsRendering(t *testing.T) {
 	t.Cleanup(setTerminalWriterForTest(false))
 
@@ -28,6 +41,19 @@ func TestFormatOutputNonTTYSkipsRendering(t *testing.T) {
 	}
 	if got != "# Title" {
 		t.Fatalf("formatOutput() = %q, want raw markdown on non-tty", got)
+	}
+}
+
+func TestFormatOutputNonTTYPreservesWhitespace(t *testing.T) {
+	t.Cleanup(setTerminalWriterForTest(false))
+
+	input := "\n  # Title\n\n"
+	got, err := formatOutput(input, &bytes.Buffer{}, false)
+	if err != nil {
+		t.Fatalf("formatOutput() error = %v", err)
+	}
+	if got != input {
+		t.Fatalf("formatOutput() = %q, want exact non-tty output %q", got, input)
 	}
 }
 

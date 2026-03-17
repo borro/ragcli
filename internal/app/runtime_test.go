@@ -145,6 +145,24 @@ func TestRuntimeExecuteMapDoesNotCreateEmbedder(t *testing.T) {
 	}
 }
 
+func TestCommandSessionWriteResultPreservesTrailingNewlines(t *testing.T) {
+	runtime, stdout, _ := newTestRuntime("")
+	session := &commandSession{
+		runtime: runtime,
+		inv: commandInvocation{
+			Common: CommonOptions{Raw: true},
+			spec:   &commandSpec{name: "test"},
+		},
+	}
+
+	if err := session.writeResult("line 1\n\n"); err != nil {
+		t.Fatalf("writeResult() error = %v", err)
+	}
+	if got := stdout.String(); got != "line 1\n\n" {
+		t.Fatalf("stdout = %q, want preserved trailing newlines", got)
+	}
+}
+
 func TestRuntimeExecuteMapWithDirectoryInput(t *testing.T) {
 	runtime, stdout, _ := newTestRuntime("")
 	chat := &runtimeChatClient{responses: []string{"fact", "answer", "NONE"}}

@@ -103,60 +103,21 @@ func buildOrLoadIndex(ctx context.Context, embedder llm.EmbeddingRequester, sour
 		_ = os.Remove(spooled.TempPath)
 	}()
 	indexMeter.Note(localize.T("progress.rag.read_done", localize.Data{"Bytes": spooled.Bytes}))
-	indexDir := filepath.Join(opts.IndexDir, spooled.Hash)
-
-	if cached, err := loadIndex(indexDir, opts.IndexTTL); err == nil {
-		stats.CacheHit = true
-		indexMeter.Done(localize.T("progress.rag.cache_hit"))
-		return cached, nil
-	}
-
-	sourceFile, err := os.Open(spooled.TempPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to reopen spooled source: %w", err)
-	}
-	chunks, err := chunkTextReader(sourceFile, sourcePath, spooled.Hash, opts.ChunkSize, opts.ChunkOverlap)
-	_ = sourceFile.Close()
-	if err != nil {
-		return nil, fmt.Errorf("failed to chunk source: %w", err)
-	}
-	if len(chunks) == 0 {
-		return nil, errors.New("input did not produce retrieval chunks")
-	}
-	indexMeter.Note(localize.T("progress.rag.index_build", localize.Data{"Count": len(chunks)}))
-	embeddings, calls, tokens, err := embedChunks(ctx, embedder, chunks, indexMeter)
-	if err != nil {
-		return nil, err
-	}
-	stats.EmbeddingCalls += calls
-	stats.EmbeddingTokens += tokens
-
-	index := &Index{
-		Manifest: Manifest{
-			SchemaVersion:  indexSchemaVersion,
-			CreatedAt:      time.Now().UTC(),
-			InputHash:      spooled.Hash,
-			SourcePath:     sourcePath,
-			EmbeddingModel: opts.EmbeddingModel,
-			ChunkSize:      opts.ChunkSize,
-			ChunkOverlap:   opts.ChunkOverlap,
-			ItemCount:      len(chunks),
-		},
-		Chunks:     chunks,
-		Embeddings: embeddings,
-	}
-
-	if err := persistIndex(indexDir, index); err != nil {
-		if cached, loadErr := loadIndex(indexDir, opts.IndexTTL); loadErr == nil {
-			stats.CacheHit = true
-			indexMeter.Done(localize.T("progress.rag.index_race_cached"))
-			return cached, nil
+	return buildOrLoadPreparedIndex(ctx, embedder, sourcePath, spooled.Hash, opts, stats, indexMeter, func() ([]Chunk, error) {
+		sourceFile, err := os.Open(spooled.TempPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reopen spooled source: %w", err)
 		}
-		return nil, err
-	}
-	indexMeter.Done(localize.T("progress.rag.index_saved"))
-
-	return index, nil
+		chunks, chunkErr := chunkTextReader(sourceFile, sourcePath, spooled.Hash, opts.ChunkSize, opts.ChunkOverlap)
+		closeErr := sourceFile.Close()
+		if chunkErr != nil {
+			return nil, fmt.Errorf("failed to chunk source: %w", chunkErr)
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		return chunks, nil
+	})
 }
 
 func buildOrLoadIndexFromFiles(ctx context.Context, embedder llm.EmbeddingRequester, source input.FileBackedSource, opts RunOptions, stats *pipelineStats, indexMeter verbose.Meter) (*Index, error) {
@@ -172,17 +133,62 @@ func buildOrLoadIndexFromFiles(ctx context.Context, embedder llm.EmbeddingReques
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash source files: %w", err)
 	}
-	indexDir := filepath.Join(opts.IndexDir, inputHash)
+	return buildOrLoadPreparedIndex(ctx, embedder, sourcePath, inputHash, opts, stats, indexMeter, func() ([]Chunk, error) {
+		chunks, err := chunkSourceFiles(files, inputHash, opts.ChunkSize, opts.ChunkOverlap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to chunk source files: %w", err)
+		}
+		return chunks, nil
+	})
+}
 
+func hashSourceFiles(files []input.File, hashParts []string) (string, error) {
+	hasher := sha256.New()
+	writeHashParts(hasher, hashParts...)
+	for _, file := range files {
+		writeHashParts(hasher, file.DisplayPath)
+		reader, err := os.Open(file.Path)
+		if err != nil {
+			return "", err
+		}
+		_, copyErr := io.Copy(hasher, reader)
+		closeErr := reader.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func writeHashParts(w io.Writer, parts ...string) {
+	for _, part := range parts {
+		_, _ = fmt.Fprintf(w, "|%d:%s", len(part), part)
+	}
+}
+
+func buildOrLoadPreparedIndex(
+	ctx context.Context,
+	embedder llm.EmbeddingRequester,
+	sourcePath string,
+	inputHash string,
+	opts RunOptions,
+	stats *pipelineStats,
+	indexMeter verbose.Meter,
+	buildChunks func() ([]Chunk, error),
+) (*Index, error) {
+	indexDir := filepath.Join(opts.IndexDir, inputHash)
 	if cached, err := loadIndex(indexDir, opts.IndexTTL); err == nil {
 		stats.CacheHit = true
 		indexMeter.Done(localize.T("progress.rag.cache_hit"))
 		return cached, nil
 	}
 
-	chunks, err := chunkSourceFiles(files, inputHash, opts.ChunkSize, opts.ChunkOverlap)
+	chunks, err := buildChunks()
 	if err != nil {
-		return nil, fmt.Errorf("failed to chunk source files: %w", err)
+		return nil, err
 	}
 	if len(chunks) == 0 {
 		return nil, errors.New("input did not produce retrieval chunks")
@@ -210,39 +216,37 @@ func buildOrLoadIndexFromFiles(ctx context.Context, embedder llm.EmbeddingReques
 		Embeddings: embeddings,
 	}
 
-	if err := persistIndex(indexDir, index); err != nil {
-		if cached, loadErr := loadIndex(indexDir, opts.IndexTTL); loadErr == nil {
+	return persistBuiltIndex(indexDir, index, opts.IndexTTL, stats, indexMeter)
+}
+
+func persistBuiltIndex(indexDir string, index *Index, ttl time.Duration, stats *pipelineStats, indexMeter verbose.Meter) (*Index, error) {
+	if err := persistIndex(indexDir, index); err == nil {
+		indexMeter.Done(localize.T("progress.rag.index_saved"))
+		return index, nil
+	} else {
+		if cached, loadErr := loadIndex(indexDir, ttl); loadErr == nil {
 			stats.CacheHit = true
 			indexMeter.Done(localize.T("progress.rag.index_race_cached"))
 			return cached, nil
 		}
+		if errors.Is(err, retrieval.ErrIndexAlreadyExists) {
+			if removeErr := os.RemoveAll(indexDir); removeErr != nil {
+				return nil, fmt.Errorf("failed to replace stale index dir: %w", removeErr)
+			}
+			if retryErr := persistIndex(indexDir, index); retryErr == nil {
+				indexMeter.Done(localize.T("progress.rag.index_saved"))
+				return index, nil
+			} else {
+				if cached, loadErr := loadIndex(indexDir, ttl); loadErr == nil {
+					stats.CacheHit = true
+					indexMeter.Done(localize.T("progress.rag.index_race_cached"))
+					return cached, nil
+				}
+				return nil, retryErr
+			}
+		}
 		return nil, err
 	}
-	indexMeter.Done(localize.T("progress.rag.index_saved"))
-	return index, nil
-}
-
-func hashSourceFiles(files []input.File, hashParts []string) (string, error) {
-	hasher := sha256.New()
-	for _, part := range hashParts {
-		_, _ = fmt.Fprintf(hasher, "|%s", part)
-	}
-	for _, file := range files {
-		_, _ = fmt.Fprintf(hasher, "|%s|", file.DisplayPath)
-		reader, err := os.Open(file.Path)
-		if err != nil {
-			return "", err
-		}
-		_, copyErr := io.Copy(hasher, reader)
-		closeErr := reader.Close()
-		if copyErr != nil {
-			return "", copyErr
-		}
-		if closeErr != nil {
-			return "", closeErr
-		}
-	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func chunkSourceFiles(files []input.File, docID string, chunkSize, overlap int) ([]Chunk, error) {
@@ -372,6 +376,25 @@ func chunkTextReader(reader io.Reader, sourcePath, docID string, chunkSize, over
 			lineNo:    lineNo,
 		}
 
+		if line.byteLen > chunkSize {
+			for len(window) > 0 {
+				emitChunk(window)
+				window = retainOverlap(window)
+			}
+			for _, segment := range splitOversizedLine(text, byteStart, chunkSize, overlap) {
+				chunks = append(chunks, Chunk{
+					DocID:      docID,
+					SourcePath: sourcePath,
+					ChunkID:    len(chunks),
+					StartLine:  lineNo,
+					EndLine:    lineNo,
+					ByteOffset: segment.byteOffset,
+					Text:       segment.text,
+				})
+			}
+			return nil
+		}
+
 		for len(window) > 0 && windowBytes+line.byteLen > chunkSize {
 			emitChunk(window)
 			window = retainOverlap(window)
@@ -389,6 +412,68 @@ func chunkTextReader(reader io.Reader, sourcePath, docID string, chunkSize, over
 		emitChunk(window)
 	}
 	return chunks, nil
+}
+
+func splitOversizedLine(text string, byteStart int, chunkSize int, overlap int) []struct {
+	text       string
+	byteOffset int
+} {
+	if chunkSize < 1 {
+		chunkSize = 1
+	}
+	step := chunkSize - overlap
+	if step < 1 {
+		step = chunkSize
+	}
+
+	boundaries := make([]int, 0, len(text)+1)
+	for idx := range text {
+		boundaries = append(boundaries, idx)
+	}
+	boundaries = append(boundaries, len(text))
+
+	nextBoundary := func(start int, limit int) int {
+		maxEnd := start + limit
+		best := start
+		for _, boundary := range boundaries {
+			if boundary <= start {
+				continue
+			}
+			if boundary > maxEnd {
+				break
+			}
+			best = boundary
+		}
+		if best > start {
+			return best
+		}
+		for _, boundary := range boundaries {
+			if boundary > start {
+				return boundary
+			}
+		}
+		return len(text)
+	}
+
+	segments := make([]struct {
+		text       string
+		byteOffset int
+	}, 0, max(1, (len(text)+step-1)/step))
+	for start := 0; start < len(text); {
+		end := nextBoundary(start, chunkSize)
+		segments = append(segments, struct {
+			text       string
+			byteOffset int
+		}{
+			text:       text[start:end],
+			byteOffset: byteStart + start,
+		})
+		if end >= len(text) {
+			break
+		}
+		start = nextBoundary(start, step)
+	}
+	return segments
 }
 
 func embedChunks(ctx context.Context, embedder llm.EmbeddingRequester, chunks []Chunk, indexMeter verbose.Meter) ([][]float32, int, int, error) {
@@ -413,7 +498,7 @@ func embedChunks(ctx context.Context, embedder llm.EmbeddingRequester, chunks []
 		calls++
 		totalTokens += metrics.TotalTokens
 		vectors = append(vectors, vectorsBatch...)
-		indexMeter.Report(calls, totalBatches, fmt.Sprintf("готов embeddings batch %d/%d", calls, totalBatches))
+		indexMeter.Report(calls, totalBatches, localize.T("progress.rag.embed_batch_done", localize.Data{"Index": calls, "Total": totalBatches}))
 	}
 
 	if len(vectors) != len(chunks) {

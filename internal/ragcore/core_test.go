@@ -181,6 +181,25 @@ func TestChunkTextIgnoresTrailingNewlinePhantomLine(t *testing.T) {
 	}
 }
 
+func TestChunkTextSplitsOversizedSingleLine(t *testing.T) {
+	line := strings.Repeat("a", 25)
+	chunks := chunkText([]byte(line+"\n"), "sample.txt", 10, 0)
+	if len(chunks) != 3 {
+		t.Fatalf("len(chunks) = %d, want 3", len(chunks))
+	}
+	for i, chunk := range chunks {
+		if len(chunk.Text) > 10 {
+			t.Fatalf("chunk[%d].Text len = %d, want <= 10", i, len(chunk.Text))
+		}
+		if chunk.StartLine != 1 || chunk.EndLine != 1 {
+			t.Fatalf("chunk[%d] lines = %d-%d, want 1-1", i, chunk.StartLine, chunk.EndLine)
+		}
+	}
+	if got := chunks[0].Text + chunks[1].Text + chunks[2].Text; got != line {
+		t.Fatalf("reconstructed line = %q, want %q", got, line)
+	}
+}
+
 func TestBuildOrLoadIndexUsesCacheAndInvalidatesByModel(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := Options{
@@ -377,6 +396,42 @@ func TestBuildOrLoadIndexConcurrentWritersSharePublishedIndex(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(indexDir, name)); err != nil {
 			t.Fatalf("expected published index file %s: %v", name, err)
 		}
+	}
+}
+
+func TestBuildOrLoadIndexRepairsCorruptedPublishedIndex(t *testing.T) {
+	cfg := Options{
+		EmbeddingModel: "embed",
+		ChunkSize:      40,
+		ChunkOverlap:   8,
+		IndexTTL:       time.Hour,
+		IndexDir:       t.TempDir(),
+	}
+	source := fileSource(strings.NewReader("alpha\nretry policy\nbeta\n"), "/tmp/source.txt", "source.txt")
+	embedder := &fakeEmbedder{}
+
+	index, err := buildOrLoadIndex(context.Background(), embedder, source, cfg, &pipelineStats{}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("buildOrLoadIndex(initial) error = %v", err)
+	}
+
+	indexDir := filepath.Join(cfg.IndexDir, index.Manifest.InputHash)
+	if err := os.WriteFile(filepath.Join(indexDir, embeddingsFilename), []byte("{bad json\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(embeddings) error = %v", err)
+	}
+
+	rebuilt, err := buildOrLoadIndex(context.Background(), embedder, source, cfg, &pipelineStats{}, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("buildOrLoadIndex(repair) error = %v", err)
+	}
+	if embedder.calls < 2 {
+		t.Fatalf("embedder.calls = %d, want rebuild after corruption", embedder.calls)
+	}
+	if rebuilt.Manifest.InputHash != index.Manifest.InputHash {
+		t.Fatalf("rebuilt hash = %q, want %q", rebuilt.Manifest.InputHash, index.Manifest.InputHash)
+	}
+	if _, err := loadIndex(indexDir, time.Hour); err != nil {
+		t.Fatalf("loadIndex(repaired) error = %v", err)
 	}
 }
 

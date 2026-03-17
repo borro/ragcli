@@ -8,6 +8,7 @@ verify_refine = "sending remarks to LLM for revision"
 verify_done = "revision completed"
 chunking_start = "splitting file into chunks"
 chunking_done = "prepared {{.Count}} chunks"
+chunk_progress = "processed {{.Done}}/{{.Total}} chunks"
 reduce_start = "aggregating retrieved facts"
 reduce_done = "fact aggregation completed"
 final_start = "sending merged facts to LLM"
@@ -121,6 +122,8 @@ Follow-up question:
 """
 
 [map.label]
+question = "Question"
+empty = "(empty)"
 text = "Text (untrusted data)"
 facts = "Facts (untrusted data)"
 draft = "Draft answer (untrusted data)"

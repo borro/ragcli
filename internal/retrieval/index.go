@@ -14,6 +14,7 @@ var (
 	ErrIndexSchemaMismatch = errors.New("index schema mismatch")
 	ErrIndexTTLExpired     = errors.New("index ttl expired")
 	ErrIndexCorrupted      = errors.New("index corrupted")
+	ErrIndexAlreadyExists  = errors.New("index already exists")
 )
 
 type Manifest struct {
@@ -89,7 +90,7 @@ func PersistIndex[T any](indexDir string, manifest Manifest, items []T, embeddin
 	}
 
 	if _, err := os.Stat(indexDir); err == nil {
-		return nil
+		return ErrIndexAlreadyExists
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to stat index dir: %w", err)
 	}
@@ -106,7 +107,7 @@ func PersistIndex[T any](indexDir string, manifest Manifest, items []T, embeddin
 
 	if err := os.Rename(tempDir, indexDir); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return nil
+			return ErrIndexAlreadyExists
 		}
 		return fmt.Errorf("failed to publish index dir: %w", err)
 	}

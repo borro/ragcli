@@ -79,7 +79,7 @@ func SpoolSource(reader io.Reader, tempPattern string, hashParts []string, obser
 
 func writeHashMetadata(w io.Writer, parts ...string) {
 	for _, part := range parts {
-		_, _ = fmt.Fprintf(w, "|%s", part)
+		_, _ = fmt.Fprintf(w, "|%d:%s", len(part), part)
 	}
 }
 

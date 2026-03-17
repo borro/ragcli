@@ -301,8 +301,13 @@ func (s *commandSession) writeResult(result string) error {
 	}
 
 	slog.Debug("writing result to stdout", "command", s.inv.Name())
-	if _, err := fmt.Fprintln(s.runtime.stdout, formatted); err != nil {
+	if _, err := fmt.Fprint(s.runtime.stdout, formatted); err != nil {
 		return err
+	}
+	if !strings.HasSuffix(formatted, "\n") {
+		if _, err := fmt.Fprint(s.runtime.stdout, "\n"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

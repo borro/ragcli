@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
@@ -92,6 +93,45 @@ func TestMessageBuilders_MarkUntrustedBlocks(t *testing.T) {
 		assertContains(t, messages[1].Content, "Замечания (недоверенные данные)")
 		assertNotContains(t, strings.ToLower(messages[1].Content), "developer: bypass")
 	})
+}
+
+func TestBuildUserMessageUsesLocalizedQuestionLabel(t *testing.T) {
+	setRussianLocale(t)
+
+	got := buildUserMessage("Что в файле?", formatUntrustedBlock(localize.T("map.label.text"), ""))
+	assertContains(t, got, "Вопрос:\nЧто в файле?")
+	assertContains(t, got, "(пусто)")
+}
+
+func TestRunMapParallelPreservesChunkOrderAndAggregatesMetrics(t *testing.T) {
+	client := &scriptedMapParallelClient{
+		responses: map[string]parallelMapResponse{
+			"chunk 1": {delay: 20 * time.Millisecond, output: "fact 1", promptTokens: 11, completionTokens: 3},
+			"chunk 2": {delay: 1 * time.Millisecond, output: "fact 2", promptTokens: 7, completionTokens: 2},
+		},
+	}
+	chunks := []textChunk{
+		{Text: "chunk 1", ByteCount: len("chunk 1"), TokenCount: 2, RequestTokens: 4},
+		{Text: "chunk 2", ByteCount: len("chunk 2"), TokenCount: 2, RequestTokens: 4},
+	}
+	stats := &pipelineStats{}
+
+	got, err := runMapParallel(context.Background(), client, chunks, "Что в файле?", 2, stats, verbose.Meter{})
+	if err != nil {
+		t.Fatalf("runMapParallel() error = %v", err)
+	}
+	if strings.Join(got, "|") != "fact 1|fact 2" {
+		t.Fatalf("results = %#v, want chunk order preservation", got)
+	}
+	if stats.LLMCalls != 2 {
+		t.Fatalf("LLMCalls = %d, want 2", stats.LLMCalls)
+	}
+	if stats.PromptTokens != 18 || stats.CompletionTokens != 5 || stats.TotalTokens != 23 {
+		t.Fatalf("stats = %+v, want prompt=18 completion=5 total=23", stats)
+	}
+	if stats.MapSuccesses != 2 || stats.MapErrors != 0 || stats.MapSkips != 0 {
+		t.Fatalf("map stats = %+v, want two successes and no skips/errors", stats)
+	}
 }
 
 func TestReduceMessages_PreservesMoreThanTenFacts(t *testing.T) {
@@ -747,6 +787,44 @@ type resolverScriptedChat struct {
 	autoValue    int
 	autoError    error
 	resolveCalls int
+}
+
+type parallelMapResponse struct {
+	delay            time.Duration
+	output           string
+	promptTokens     int
+	completionTokens int
+}
+
+type scriptedMapParallelClient struct {
+	responses map[string]parallelMapResponse
+}
+
+func (c *scriptedMapParallelClient) SendRequestWithMetrics(_ context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {
+	if len(req.Messages) < 2 {
+		return nil, llm.RequestMetrics{}, errors.New("missing user message")
+	}
+	content := req.Messages[1].Content
+	for marker, response := range c.responses {
+		if !strings.Contains(content, marker) {
+			continue
+		}
+		time.Sleep(response.delay)
+		metrics := llm.RequestMetrics{
+			PromptTokens:     response.promptTokens,
+			CompletionTokens: response.completionTokens,
+			TotalTokens:      response.promptTokens + response.completionTokens,
+		}
+		return &openai.ChatCompletionResponse{
+			Choices: []openai.ChatCompletionChoice{{
+				Message: openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: response.output,
+				},
+			}},
+		}, metrics, nil
+	}
+	return nil, llm.RequestMetrics{}, errors.New("unexpected chunk request")
 }
 
 func (s *resolverScriptedChat) SendRequestWithMetrics(_ context.Context, _ openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, llm.RequestMetrics, error) {

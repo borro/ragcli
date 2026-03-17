@@ -14,6 +14,7 @@ index_build = "строю embedding-индекс по {{.Count}} chunks"
 index_race_cached = "индекс уже успел сохраниться, использую готовую версию"
 index_saved = "локальный индекс сохранён на диск"
 embed_batch = "отправляю embeddings batch {{.Index}}/{{.Total}}"
+embed_batch_done = "готов embeddings batch {{.Index}}/{{.Total}}"
 
 [rag.prompt]
 shared_policy = """

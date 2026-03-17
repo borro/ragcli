@@ -60,7 +60,7 @@ func TestReadInteractionLineWritesPromptAndTrimsLine(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("hello\r\n"))
 	var writer bytes.Buffer
 
-	line, err := readInteractionLine(context.Background(), reader, &writer, "> ")
+	line, err := readInteractionLine(context.Background(), reader, nil, &writer, "> ")
 	if err != nil {
 		t.Fatalf("readInteractionLine() error = %v", err)
 	}
@@ -104,12 +104,47 @@ func TestReadInteractionLineReturnsOnContextCancel(t *testing.T) {
 		close(done)
 	}()
 
-	_, err := readInteractionLine(ctx, reader, io.Discard, "> ")
+	_, err := readInteractionLine(ctx, reader, pr.Close, io.Discard, "> ")
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("readInteractionLine() error = %v, want context canceled", err)
 	}
 	<-done
 	_ = pr.Close()
+}
+
+func TestReadLineWithContextWaitsForCanceledReadToFinish(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	cancelCalls := 0
+
+	go func() {
+		<-started
+		cancel()
+	}()
+
+	_, err := readLineWithContext(ctx, func() (string, error) {
+		close(started)
+		<-release
+		close(done)
+		return "", io.EOF
+	}, func() error {
+		cancelCalls++
+		close(release)
+		return nil
+	})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("readLineWithContext() error = %v, want context canceled", err)
+	}
+	if cancelCalls != 1 {
+		t.Fatalf("cancelCalls = %d, want 1", cancelCalls)
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("read goroutine did not finish before return")
+	}
 }
 
 func TestInteractionReaderFDReturnsTerminalFD(t *testing.T) {
