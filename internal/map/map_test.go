@@ -777,6 +777,7 @@ func TestRun_NormalizesMapOutputBeforeReduce(t *testing.T) {
 }
 
 func newSequencedLLMClient(t *testing.T, responses []string, statuses []int) *llm.Client {
+	t.Helper()
 	client, _ := newCapturingLLMClient(t, responses, statuses)
 	return client
 }

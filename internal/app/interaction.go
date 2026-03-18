@@ -63,7 +63,7 @@ func defaultInteractionIO(source input.Source, stdin io.Reader, fallbackWriter i
 	}, nil
 }
 
-func (s *commandSession) runInteraction(interactive interactiveSession) error {
+func (s *commandSession) runInteraction(ctx context.Context, interactive interactiveSession) error {
 	ioState, err := s.runtime.openREPL(s.source, s.runtime.stdin, s.runtime.stderr)
 	if err != nil {
 		return err
@@ -81,7 +81,7 @@ func (s *commandSession) runInteraction(interactive interactiveSession) error {
 	prompt := localize.T("interaction.prompt")
 
 	for {
-		line, readErr := lineReader(s.ctx, ioState.writer, prompt)
+		line, readErr := lineReader(ctx, ioState.writer, prompt)
 		if errors.Is(readErr, context.Canceled) {
 			return nil
 		}
@@ -104,7 +104,7 @@ func (s *commandSession) runInteraction(interactive interactiveSession) error {
 				return err
 			}
 		default:
-			answer, askErr := interactive.Ask(s.ctx, query, interactive.FollowUpPlan(s.reporter))
+			answer, askErr := interactive.Ask(ctx, query, interactive.FollowUpPlan(s.reporter))
 			if askErr != nil {
 				handleRunError(s.runtime.stderr, askErr, s.inv.Common.Debug)
 			} else if err := s.writeResult(answer); err != nil {

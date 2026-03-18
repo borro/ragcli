@@ -41,20 +41,20 @@ func (r *ProgressRecorder) Snapshot() (int, []int, []int) {
 	return r.progressN, currents, totals
 }
 
-func AssertOutputContainsAll(t testing.TB, output string, parts ...string) {
-	t.Helper()
+func AssertOutputContainsAll(tb testing.TB, output string, parts ...string) {
+	tb.Helper()
 	for _, part := range parts {
 		if !strings.Contains(output, part) {
-			t.Fatalf("output = %q, want substring %q", output, part)
+			tb.Fatalf("output = %q, want substring %q", output, part)
 		}
 	}
 }
 
-func AssertOutputOmitsAll(t testing.TB, output string, parts ...string) {
-	t.Helper()
+func AssertOutputOmitsAll(tb testing.TB, output string, parts ...string) {
+	tb.Helper()
 	for _, part := range parts {
 		if strings.Contains(output, part) {
-			t.Fatalf("output = %q, do not want substring %q", output, part)
+			tb.Fatalf("output = %q, do not want substring %q", output, part)
 		}
 	}
 }

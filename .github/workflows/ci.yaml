@@ -39,7 +39,7 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version-file: .golangci-lint-version
-          args: --timeout=5m ./cmd/... ./internal/...
+          args: ./cmd/... ./internal/...
 
       - name: Run tests
         run: |

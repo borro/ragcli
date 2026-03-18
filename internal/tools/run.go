@@ -482,43 +482,8 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 		}
 
 		choice := resp.Choices[0]
-		if len(choice.Message.ToolCalls) == 0 {
-			sanitizedContent, parsedToolCalls, detected, parseErr := parseTextToolCalls(choice.Message.Content, turn)
-			toolCallsAllowed := !toolChoiceIsNone(toolChoiceToSend)
-			if detected {
-				if parseErr == nil && len(parsedToolCalls) > 0 && toolCallsAllowed {
-					slog.Warn("backend returned tool calls in assistant text; executing parsed fallback",
-						"turn", turn,
-						"tool_call_count", len(parsedToolCalls),
-					)
-					choice.Message.Content = sanitizedContent
-					choice.Message.ToolCalls = parsedToolCalls
-				} else if textToolCallRetries < textToolCallRetryLimit {
-					textToolCallRetries++
-					slog.Warn("backend returned malformed tool-call text; asking for retry",
-						"turn", turn,
-						"attempt", textToolCallRetries,
-						"error", parseErr,
-					)
-					messages = append(messages, openai.ChatCompletionMessage{
-						Role:    "user",
-						Content: localize.T("tools.prompt.text_tool_call_retry"),
-					})
-					toolChoiceToSend = "auto"
-					continue
-				} else {
-					slog.Warn("backend kept returning malformed tool-call text; requesting plain-text final answer",
-						"turn", turn,
-						"error", parseErr,
-					)
-					messages = append(messages, openai.ChatCompletionMessage{
-						Role:    "user",
-						Content: localize.T("tools.prompt.stop_calls"),
-					})
-					toolChoiceToSend = "none"
-					continue
-				}
-			}
+		if len(choice.Message.ToolCalls) == 0 && s.handleTextToolCallFallback(turn, &choice.Message, &messages, &toolChoiceToSend, &textToolCallRetries) {
+			continue
 		}
 		messages = append(messages, choice.Message)
 
@@ -532,90 +497,19 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 			turnMeter.Note(localize.T("progress.tools.calls_requested", localize.Data{"Count": len(choice.Message.ToolCalls)}))
 		}
 
-		if turn == 1 && s.readerPath != "" && len(choice.Message.ToolCalls) == 0 && strings.TrimSpace(choice.Message.Content) != "" {
-			switch s.firstTurnAnswerPolicy {
-			case FirstTurnAnswerWarn:
-				slog.Warn("tools backend returned a direct answer without using file tools",
-					"turn", turn,
-					"file_path", s.inputPath,
-					"reader_path", s.readerPath,
-					"message_role", choice.Message.Role,
-				)
-			case FirstTurnAnswerRequireToolUse:
-				if firstTurnToolUseRetries < firstTurnToolUseRetryLimit {
-					firstTurnToolUseRetries++
-					slog.Warn("tools backend returned a direct answer before model-driven tool use; retrying with explicit verification request",
-						"turn", turn,
-						"file_path", s.inputPath,
-						"reader_path", s.readerPath,
-						"message_role", choice.Message.Role,
-						"attempt", firstTurnToolUseRetries,
-					)
-					messages = append(messages, openai.ChatCompletionMessage{
-						Role:    "user",
-						Content: localize.T("tools.prompt.first_turn_tool_retry"),
-					})
-					toolChoiceToSend = "auto"
-					continue
-				}
-			}
+		if s.handleFirstTurnDirectAnswer(turn, choice.Message, &messages, &toolChoiceToSend, &firstTurnToolUseRetries) {
+			continue
 		}
 
-		if len(choice.Message.ToolCalls) > 0 {
-			slog.Debug("received tool calls from model", "turn", turn, "count", len(choice.Message.ToolCalls))
-			toolMeter := turnMeter.WithStage(localize.T("progress.tools.call_stage"))
-			toolMeter.Start(localize.T("progress.tools.executing_calls", localize.Data{"Count": len(choice.Message.ToolCalls)}))
-
-			results, err := s.state.executeToolCalls(ctx, choice.Message.ToolCalls, toolMeter)
-			slog.Debug("tool calls finished", "turn", turn, "result_count", len(results), "has_error", err != nil)
-			for i, result := range results {
-				messages = append(messages, openai.ChatCompletionMessage{
-					Role:       "tool",
-					Name:       choice.Message.ToolCalls[i].Function.Name,
-					Content:    result,
-					ToolCallID: choice.Message.ToolCalls[i].ID,
-				})
-			}
-			haveToolResults = haveToolResults || len(results) > 0
-			if err != nil {
-				var orchErr orchestrationError
-				if errorsAsOrchestration(err, &orchErr) && shouldRetryWithoutTools(orchErr) && stalledToolRetries < stalledToolRetryLimit {
-					stalledToolRetries++
-					slog.Warn("tool loop stalled, retrying without tools",
-						"turn", turn,
-						"code", orchErr.Code,
-						"attempt", stalledToolRetries,
-					)
-					messages = append(messages, openai.ChatCompletionMessage{
-						Role:    "user",
-						Content: localize.T("tools.prompt.stop_calls"),
-					})
-					toolChoiceToSend = "none"
-					continue
-				}
-				if errorsAsOrchestration(err, &orchErr) {
-					logStop(orchErr.Code, turn)
-				} else {
-					logStop("tool_error", turn)
-				}
-				return SessionResult{}, fmt.Errorf("failed to execute tool calls: %w", err)
-			}
-
-			toolMeter.Done(localize.T("progress.tools.calls_done", localize.Data{"Count": len(results)}))
-
+		if handled, err := s.handleToolCallTurn(ctx, turn, choice.Message, turnMeter, &messages, &haveToolResults, &stalledToolRetries, &toolChoiceToSend, logStop); err != nil {
+			return SessionResult{}, err
+		} else if handled {
 			continue
 		}
 
 		slog.Debug("received final answer from model", "turn", turn)
 		if choice.Message.Content == "" {
-			if emptyFinalAnswerRetries < emptyFinalAnswerRetryLimit {
-				emptyFinalAnswerRetries++
-				slog.Warn("received empty final answer from model, retrying without tools", "attempt", emptyFinalAnswerRetries)
-				messages = append(messages, openai.ChatCompletionMessage{
-					Role:    "user",
-					Content: localize.T("tools.prompt.final_retry"),
-				})
-				toolChoiceToSend = "none"
+			if handleEmptyFinalAnswer(&emptyFinalAnswerRetries, &messages, &toolChoiceToSend) {
 				continue
 			}
 			logStop("empty_final_answer", turn)
@@ -654,6 +548,155 @@ func (s *Session) Run(ctx context.Context, client llm.ChatRequester, initialHist
 		Message: fmt.Sprintf("tools orchestration exceeded %d turns without final answer", toolsMaxTurns),
 		Details: map[string]any{"max_turns": toolsMaxTurns},
 	}
+}
+
+func (s *Session) handleTextToolCallFallback(turn int, choice *openai.ChatCompletionMessage, messages *[]openai.ChatCompletionMessage, toolChoiceToSend *interface{}, textToolCallRetries *int) bool {
+	sanitizedContent, parsedToolCalls, detected, parseErr := parseTextToolCalls(choice.Content, turn)
+	if !detected {
+		return false
+	}
+
+	switch {
+	case parseErr == nil && len(parsedToolCalls) > 0 && !toolChoiceIsNone(*toolChoiceToSend):
+		slog.Warn("backend returned tool calls in assistant text; executing parsed fallback",
+			"turn", turn,
+			"tool_call_count", len(parsedToolCalls),
+		)
+		choice.Content = sanitizedContent
+		choice.ToolCalls = parsedToolCalls
+		return false
+	case *textToolCallRetries < textToolCallRetryLimit:
+		(*textToolCallRetries)++
+		slog.Warn("backend returned malformed tool-call text; asking for retry",
+			"turn", turn,
+			"attempt", *textToolCallRetries,
+			"error", parseErr,
+		)
+		*messages = append(*messages, openai.ChatCompletionMessage{
+			Role:    "user",
+			Content: localize.T("tools.prompt.text_tool_call_retry"),
+		})
+		*toolChoiceToSend = "auto"
+	default:
+		slog.Warn("backend kept returning malformed tool-call text; requesting plain-text final answer",
+			"turn", turn,
+			"error", parseErr,
+		)
+		*messages = append(*messages, openai.ChatCompletionMessage{
+			Role:    "user",
+			Content: localize.T("tools.prompt.stop_calls"),
+		})
+		*toolChoiceToSend = "none"
+	}
+	return true
+}
+
+func (s *Session) handleFirstTurnDirectAnswer(turn int, choice openai.ChatCompletionMessage, messages *[]openai.ChatCompletionMessage, toolChoiceToSend *interface{}, firstTurnToolUseRetries *int) bool {
+	if turn != 1 || s.readerPath == "" || len(choice.ToolCalls) != 0 || strings.TrimSpace(choice.Content) == "" {
+		return false
+	}
+
+	switch s.firstTurnAnswerPolicy {
+	case FirstTurnAnswerWarn:
+		slog.Warn("tools backend returned a direct answer without using file tools",
+			"turn", turn,
+			"file_path", s.inputPath,
+			"reader_path", s.readerPath,
+			"message_role", choice.Role,
+		)
+	case FirstTurnAnswerRequireToolUse:
+		if *firstTurnToolUseRetries < firstTurnToolUseRetryLimit {
+			(*firstTurnToolUseRetries)++
+			slog.Warn("tools backend returned a direct answer before model-driven tool use; retrying with explicit verification request",
+				"turn", turn,
+				"file_path", s.inputPath,
+				"reader_path", s.readerPath,
+				"message_role", choice.Role,
+				"attempt", *firstTurnToolUseRetries,
+			)
+			*messages = append(*messages, openai.ChatCompletionMessage{
+				Role:    "user",
+				Content: localize.T("tools.prompt.first_turn_tool_retry"),
+			})
+			*toolChoiceToSend = "auto"
+			return true
+		}
+	}
+
+	return false
+}
+
+func (s *Session) handleToolCallTurn(
+	ctx context.Context,
+	turn int,
+	choice openai.ChatCompletionMessage,
+	turnMeter verbose.Meter,
+	messages *[]openai.ChatCompletionMessage,
+	haveToolResults *bool,
+	stalledToolRetries *int,
+	toolChoiceToSend *interface{},
+	logStop func(string, int),
+) (bool, error) {
+	if len(choice.ToolCalls) == 0 {
+		return false, nil
+	}
+
+	slog.Debug("received tool calls from model", "turn", turn, "count", len(choice.ToolCalls))
+	toolMeter := turnMeter.WithStage(localize.T("progress.tools.call_stage"))
+	toolMeter.Start(localize.T("progress.tools.executing_calls", localize.Data{"Count": len(choice.ToolCalls)}))
+
+	results, err := s.state.executeToolCalls(ctx, choice.ToolCalls, toolMeter)
+	slog.Debug("tool calls finished", "turn", turn, "result_count", len(results), "has_error", err != nil)
+	for i, result := range results {
+		*messages = append(*messages, openai.ChatCompletionMessage{
+			Role:       "tool",
+			Name:       choice.ToolCalls[i].Function.Name,
+			Content:    result,
+			ToolCallID: choice.ToolCalls[i].ID,
+		})
+	}
+	*haveToolResults = *haveToolResults || len(results) > 0
+	if err != nil {
+		var orchErr orchestrationError
+		if errorsAsOrchestration(err, &orchErr) && shouldRetryWithoutTools(orchErr) && *stalledToolRetries < stalledToolRetryLimit {
+			(*stalledToolRetries)++
+			slog.Warn("tool loop stalled, retrying without tools",
+				"turn", turn,
+				"code", orchErr.Code,
+				"attempt", *stalledToolRetries,
+			)
+			*messages = append(*messages, openai.ChatCompletionMessage{
+				Role:    "user",
+				Content: localize.T("tools.prompt.stop_calls"),
+			})
+			*toolChoiceToSend = "none"
+			return true, nil
+		}
+		if errorsAsOrchestration(err, &orchErr) {
+			logStop(orchErr.Code, turn)
+		} else {
+			logStop("tool_error", turn)
+		}
+		return false, fmt.Errorf("failed to execute tool calls: %w", err)
+	}
+
+	toolMeter.Done(localize.T("progress.tools.calls_done", localize.Data{"Count": len(results)}))
+	return true, nil
+}
+
+func handleEmptyFinalAnswer(emptyFinalAnswerRetries *int, messages *[]openai.ChatCompletionMessage, toolChoiceToSend *interface{}) bool {
+	if *emptyFinalAnswerRetries >= emptyFinalAnswerRetryLimit {
+		return false
+	}
+
+	(*emptyFinalAnswerRetries)++
+	slog.Warn("received empty final answer from model, retrying without tools", "attempt", *emptyFinalAnswerRetries)
+	*messages = append(*messages, openai.ChatCompletionMessage{
+		Role:    "user",
+		Content: localize.T("tools.prompt.final_retry"),
+	})
+	*toolChoiceToSend = "none"
+	return true
 }
 
 func newToolLoopState(ctx context.Context, source input.FileBackedSource, embedder llm.EmbeddingRequester, opts Options, indexMeter verbose.Meter) (*toolLoopState, error) {

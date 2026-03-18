@@ -430,6 +430,7 @@ func TestOpenErrors(t *testing.T) {
 		{
 			name: "missing file",
 			call: func(t *testing.T) (*Handle, error) {
+				t.Helper()
 				return Open(filepath.Join(t.TempDir(), "missing.txt"), nil)
 			},
 			wantError: "failed to open file",
@@ -437,6 +438,7 @@ func TestOpenErrors(t *testing.T) {
 		{
 			name: "create temp",
 			call: func(t *testing.T) (*Handle, error) {
+				t.Helper()
 				stubInputDeps(t)
 				wantErr := errors.New("create temp failed")
 				createTemp = func(_, _ string) (tempFile, error) {
@@ -450,6 +452,7 @@ func TestOpenErrors(t *testing.T) {
 		{
 			name: "read stdin",
 			call: func(t *testing.T) (*Handle, error) {
+				t.Helper()
 				return Open("", failingReader{err: errors.New("stdin read failed")})
 			},
 			wantError: "failed to read stdin",
@@ -458,6 +461,7 @@ func TestOpenErrors(t *testing.T) {
 		{
 			name: "close temp",
 			call: func(t *testing.T) (*Handle, error) {
+				t.Helper()
 				stubInputDeps(t)
 				wantErr := errors.New("close temp failed")
 				createTemp = func(_, _ string) (tempFile, error) {
@@ -474,6 +478,7 @@ func TestOpenErrors(t *testing.T) {
 		{
 			name: "reopen temp",
 			call: func(t *testing.T) (*Handle, error) {
+				t.Helper()
 				stubInputDeps(t)
 				wantErr := errors.New("reopen failed")
 				originalOpenFile := openFile

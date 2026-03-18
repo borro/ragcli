@@ -6,7 +6,7 @@ pre-commit:
       run: gofmt -w {staged_files}
       stage_fixed: true
     golangci-lint:
-      run: golangci-lint run --timeout=5m ./cmd/... ./internal/...
+      run: golangci-lint run ./cmd/... ./internal/...
     go-test:
       run: go test ./...
     govulncheck:
@@ -24,4 +24,7 @@ pre-push:
   commands:
     live-e2e-smoke:
       interactive: true
+      glob:
+        - "*.go"
+        - "**/*.go"
       run: ./scripts/e2e_live_smoke.sh

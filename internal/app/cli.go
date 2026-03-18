@@ -49,7 +49,6 @@ func newCLI(cfg cliConfig) *cli.Command {
 func buildCLICommands(cfg cliConfig) []*cli.Command {
 	commands := make([]*cli.Command, 0, len(commandSpecs())+1)
 	for _, spec := range commandSpecs() {
-		spec := spec
 		commands = append(commands, newCLICommand(spec, buildFlags(spec.flagSpecs), cfg.execute))
 	}
 	commands = append(commands, newVersionCLICommand())

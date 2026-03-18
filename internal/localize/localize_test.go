@@ -367,7 +367,7 @@ func resetLocalizationState(t *testing.T) {
 
 	bundleOnce = sync.Once{}
 	bundleInst = nil
-	bundleErr = nil
+	errBundle = nil
 	currentLocal.Store(nil)
 
 	registryMu.Lock()

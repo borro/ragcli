@@ -1,6 +1,7 @@
 package input
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -344,7 +345,7 @@ func isBinaryFile(path string) (bool, error) {
 
 	buffer := make([]byte, 512)
 	read, err := file.Read(buffer)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return false, err
 	}
 	sample := buffer[:read]

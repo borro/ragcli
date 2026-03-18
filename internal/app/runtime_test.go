@@ -385,13 +385,12 @@ func TestRunInteractionSupportsAskResetAndExit(t *testing.T) {
 	}
 	session := &commandSession{
 		runtime:  runtime,
-		ctx:      context.Background(),
 		inv:      testInvocation("map", CommonOptions{}, defaultLLMOptions(), nil),
 		reporter: runtime.newReporter(io.Discard, false, false),
 		source:   handle.Source(),
 	}
 
-	if err := session.runInteraction(repl); err != nil {
+	if err := session.runInteraction(context.Background(), repl); err != nil {
 		t.Fatalf("runInteraction() error = %v", err)
 	}
 	if got := stdout.String(); got != "answer 1\nanswer 2\n" {
@@ -427,7 +426,7 @@ func TestRuntimeExecuteInteractiveKeepsStdinSnapshotUntilLoopEnds(t *testing.T) 
 
 	spec := &commandSpec{
 		name: "custom",
-		execute: func(session *commandSession) (commandResult, error) {
+		execute: func(_ context.Context, session *commandSession) (commandResult, error) {
 			source, err := session.ensureInputOpened(session.plan.Stage("prepare"))
 			if err != nil {
 				return commandResult{}, err
@@ -480,7 +479,7 @@ func TestRuntimeExecuteInteractiveStdinRequiresTTY(t *testing.T) {
 
 	spec := &commandSpec{
 		name: "custom",
-		execute: func(session *commandSession) (commandResult, error) {
+		execute: func(_ context.Context, session *commandSession) (commandResult, error) {
 			if _, err := session.ensureInputOpened(session.plan.Stage("prepare")); err != nil {
 				return commandResult{}, err
 			}

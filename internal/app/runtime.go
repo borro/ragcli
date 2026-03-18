@@ -29,7 +29,7 @@ type reporterFactory func(io.Writer, bool, bool) verbose.Reporter
 type inputOpener func(string, io.Reader) (*input.Handle, error)
 type outputFormatter func(string, io.Writer, bool) (string, error)
 type interactionIOOpener func(input.Source, io.Reader, io.Writer) (*interactionIO, error)
-type runtimeCommandExecutor func(*commandSession) (commandResult, error)
+type runtimeCommandExecutor func(context.Context, *commandSession) (commandResult, error)
 type selfUpdaterFactory func() (selfUpdater, error)
 
 type selfUpdater interface {
@@ -68,7 +68,6 @@ type appRuntime struct {
 
 type commandSession struct {
 	runtime     *appRuntime
-	ctx         context.Context
 	inv         commandInvocation
 	reporter    verbose.Reporter
 	plan        *verbose.Plan
@@ -112,7 +111,6 @@ func (r *appRuntime) execute(ctx context.Context, inv commandInvocation) error {
 	reporter := r.newReporter(r.stderr, inv.Common.Verbose, inv.Common.Debug)
 	session := &commandSession{
 		runtime:  r,
-		ctx:      commandCtx,
 		inv:      inv,
 		reporter: reporter,
 		plan:     NewPlan(inv.Name(), reporter),
@@ -125,7 +123,7 @@ func (r *appRuntime) execute(ctx context.Context, inv commandInvocation) error {
 		return unknownSubcommandError(inv.Name())
 	}
 
-	result, err := inv.spec.execute(session)
+	result, err := inv.spec.execute(commandCtx, session)
 	if err != nil {
 		return err
 	}
@@ -139,7 +137,7 @@ func (r *appRuntime) execute(ctx context.Context, inv commandInvocation) error {
 		return err
 	}
 	if inv.Common.Interaction && result.Interactive != nil {
-		if err := session.runInteraction(result.Interactive); err != nil {
+		if err := session.runInteraction(commandCtx, result.Interactive); err != nil {
 			return err
 		}
 	}
@@ -310,46 +308,49 @@ func (s *commandSession) interactiveResult(
 }
 
 func (s *commandSession) executeChatMode(
+	ctx context.Context,
 	meter verbose.Meter,
 	logMessage string,
 	logArgs []any,
-	run func(input.Source, llm.ChatAutoContextRequester) (string, error),
-	start func(input.Source, llm.ChatAutoContextRequester) (interactiveSession, string, error),
+	run func(context.Context, input.Source, llm.ChatAutoContextRequester) (string, error),
+	start func(context.Context, input.Source, llm.ChatAutoContextRequester) (interactiveSession, string, error),
 ) (commandResult, error) {
 	return s.withChatInput(meter, func(source input.Source, client llm.ChatAutoContextRequester) (commandResult, error) {
 		slog.Info(logMessage, logArgs...)
 		return s.interactiveResult(
 			func() (string, error) {
-				return run(source, client)
+				return run(ctx, source, client)
 			},
 			func() (interactiveSession, string, error) {
-				return start(source, client)
+				return start(ctx, source, client)
 			},
 		)
 	})
 }
 
 func (s *commandSession) executeChatEmbeddingMode(
+	ctx context.Context,
 	meter verbose.Meter,
 	logMessage string,
 	logArgs []any,
-	run func(input.Source, llm.ChatAutoContextRequester, llm.EmbeddingRequester) (string, error),
-	start func(input.Source, llm.ChatAutoContextRequester, llm.EmbeddingRequester) (interactiveSession, string, error),
+	run func(context.Context, input.Source, llm.ChatAutoContextRequester, llm.EmbeddingRequester) (string, error),
+	start func(context.Context, input.Source, llm.ChatAutoContextRequester, llm.EmbeddingRequester) (interactiveSession, string, error),
 ) (commandResult, error) {
 	return s.withChatAndEmbeddingInput(meter, func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (commandResult, error) {
 		slog.Info(logMessage, logArgs...)
 		return s.interactiveResult(
 			func() (string, error) {
-				return run(source, client, embedder)
+				return run(ctx, source, client, embedder)
 			},
 			func() (interactiveSession, string, error) {
-				return start(source, client, embedder)
+				return start(ctx, source, client, embedder)
 			},
 		)
 	})
 }
 
 func executeChatEmbeddingPayloadMode[Opts any](
+	ctx context.Context,
 	session *commandSession,
 	logMessage string,
 	logArgs []any,
@@ -361,14 +362,15 @@ func executeChatEmbeddingPayloadMode[Opts any](
 		return commandResult{}, err
 	}
 	return session.executeChatEmbeddingMode(
+		ctx,
 		session.plan.Stage("prepare"),
 		logMessage,
 		logArgs,
-		func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
-			return run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
+		func(ctx context.Context, source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
+			return run(ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
 		},
-		func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (interactiveSession, string, error) {
-			return start(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
+		func(ctx context.Context, source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (interactiveSession, string, error) {
+			return start(ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
 		},
 	)
 }
@@ -445,27 +447,28 @@ func unknownSubcommandError(name string) error {
 	return fmt.Errorf("%s", localize.T("error.app.unknown_subcommand", localize.Data{"Name": name}))
 }
 
-func executeMapCommand(session *commandSession) (commandResult, error) {
+func executeMapCommand(ctx context.Context, session *commandSession) (commandResult, error) {
 	opts, err := payloadAs[mapmode.Options](session.inv.payload)
 	if err != nil {
 		return commandResult{}, err
 	}
 
 	return session.executeChatMode(
+		ctx,
 		session.plan.Stage("prepare"),
 		"starting map processing",
 		nil,
-		func(source input.Source, client llm.ChatAutoContextRequester) (string, error) {
-			return mapmode.Run(session.ctx, client, source, opts, session.inv.Common.Prompt, session.plan)
+		func(ctx context.Context, source input.Source, client llm.ChatAutoContextRequester) (string, error) {
+			return mapmode.Run(ctx, client, source, opts, session.inv.Common.Prompt, session.plan)
 		},
-		func(source input.Source, client llm.ChatAutoContextRequester) (interactiveSession, string, error) {
-			conv, answer, err := mapmode.StartConversation(session.ctx, client, source, opts, session.inv.Common.Prompt, session.plan)
+		func(ctx context.Context, source input.Source, client llm.ChatAutoContextRequester) (interactiveSession, string, error) {
+			conv, answer, err := mapmode.StartConversation(ctx, client, source, opts, session.inv.Common.Prompt, session.plan)
 			return conv, answer, err
 		},
 	)
 }
 
-func executeToolsCommand(session *commandSession) (commandResult, error) {
+func executeToolsCommand(ctx context.Context, session *commandSession) (commandResult, error) {
 	opts, err := payloadAs[tools.Options](session.inv.payload)
 	if err != nil {
 		return commandResult{}, err
@@ -473,35 +476,38 @@ func executeToolsCommand(session *commandSession) (commandResult, error) {
 
 	if !opts.EnableRAG {
 		return session.executeChatMode(
+			ctx,
 			session.plan.Stage("prepare"),
 			"starting tools processing",
 			nil,
-			func(source input.Source, client llm.ChatAutoContextRequester) (string, error) {
-				return tools.Run(session.ctx, client, nil, source, opts, session.inv.Common.Prompt, session.plan)
+			func(ctx context.Context, source input.Source, client llm.ChatAutoContextRequester) (string, error) {
+				return tools.Run(ctx, client, nil, source, opts, session.inv.Common.Prompt, session.plan)
 			},
-			func(source input.Source, client llm.ChatAutoContextRequester) (interactiveSession, string, error) {
-				conv, answer, err := tools.StartConversation(session.ctx, client, nil, source, opts, session.inv.Common.Prompt, session.plan)
+			func(ctx context.Context, source input.Source, client llm.ChatAutoContextRequester) (interactiveSession, string, error) {
+				conv, answer, err := tools.StartConversation(ctx, client, nil, source, opts, session.inv.Common.Prompt, session.plan)
 				return conv, answer, err
 			},
 		)
 	}
 
 	return session.executeChatEmbeddingMode(
+		ctx,
 		session.plan.Stage("prepare"),
 		"starting tools processing",
 		[]any{"rag_enabled", true},
-		func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
-			return tools.Run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
+		func(ctx context.Context, source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
+			return tools.Run(ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
 		},
-		func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (interactiveSession, string, error) {
-			conv, answer, err := tools.StartConversation(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
+		func(ctx context.Context, source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (interactiveSession, string, error) {
+			conv, answer, err := tools.StartConversation(ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
 			return conv, answer, err
 		},
 	)
 }
 
-func executeRAGCommand(session *commandSession) (commandResult, error) {
+func executeRAGCommand(ctx context.Context, session *commandSession) (commandResult, error) {
 	return executeChatEmbeddingPayloadMode[rag.Options](
+		ctx,
 		session,
 		"starting rag processing",
 		nil,
@@ -510,8 +516,9 @@ func executeRAGCommand(session *commandSession) (commandResult, error) {
 	)
 }
 
-func executeHybridCommand(session *commandSession) (commandResult, error) {
+func executeHybridCommand(ctx context.Context, session *commandSession) (commandResult, error) {
 	return executeChatEmbeddingPayloadMode[hybrid.Options](
+		ctx,
 		session,
 		"starting hybrid processing",
 		nil,
@@ -520,7 +527,7 @@ func executeHybridCommand(session *commandSession) (commandResult, error) {
 	)
 }
 
-func executeSelfUpdateCommand(session *commandSession) (commandResult, error) {
+func executeSelfUpdateCommand(ctx context.Context, session *commandSession) (commandResult, error) {
 	opts, err := payloadAs[selfupdatepkg.Options](session.inv.payload)
 	if err != nil {
 		return commandResult{}, err
@@ -532,7 +539,7 @@ func executeSelfUpdateCommand(session *commandSession) (commandResult, error) {
 	}
 
 	slog.Info("starting self-update", "check_only", opts.CheckOnly)
-	result, err := updater.Run(session.ctx, session.runtime.version, opts, session.plan.Stage("update"))
+	result, err := updater.Run(ctx, session.runtime.version, opts, session.plan.Stage("update"))
 	if err != nil {
 		return commandResult{}, err
 	}

@@ -137,12 +137,13 @@ func LogToolCallStarted(call openai.ToolCall, args map[string]any) {
 }
 
 func LogToolCallFinished(call openai.ToolCall, duration time.Duration, status string, summary map[string]any) {
-	logArgs := []any{
+	logArgs := make([]any, 0, 8+2*len(summary))
+	logArgs = append(logArgs,
 		"tool_name", call.Function.Name,
 		"tool_call_id", call.ID,
 		"status", status,
-		"duration", float64(duration.Round(time.Millisecond)) / float64(time.Second),
-	}
+		"duration", float64(duration.Round(time.Millisecond))/float64(time.Second),
+	)
 	for key, value := range summary {
 		logArgs = append(logArgs, key, value)
 	}

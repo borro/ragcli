@@ -25,7 +25,7 @@ type Data map[string]any
 var (
 	bundleOnce sync.Once
 	bundleInst *i18n.Bundle
-	bundleErr  error
+	errBundle  error
 
 	currentLocal atomic.Pointer[i18n.Localizer]
 
@@ -106,13 +106,13 @@ func bundle() (*i18n.Bundle, error) {
 		seenMessages := make(map[messageKey]string)
 		for _, catalog := range freezeCatalogFiles() {
 			if err := loadCatalogFile(b, catalog, seenMessages); err != nil {
-				bundleErr = err
+				errBundle = err
 				return
 			}
 		}
 		bundleInst = b
 	})
-	return bundleInst, bundleErr
+	return bundleInst, errBundle
 }
 
 func freezeCatalogFiles() []catalogFile {

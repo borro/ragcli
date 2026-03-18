@@ -502,7 +502,7 @@ func TestNewClientProxyURLOverridesEnvironment(t *testing.T) {
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", client.httpClient.Transport)
 	}
-	req := httptest.NewRequest(http.MethodGet, "https://api.example.com/v1/chat", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.example.com/v1/chat", nil)
 	proxyURL, err := transport.Proxy(req)
 	if err != nil {
 		t.Fatalf("transport.Proxy() error = %v", err)
@@ -783,6 +783,7 @@ func TestResolveAutoContextLength_Scenarios(t *testing.T) {
 							return notFoundResponse(), nil
 						},
 					}), func(t *testing.T) {
+						t.Helper()
 						if hitsPath != 1 {
 							t.Fatalf("path models hits = %d, want 1", hitsPath)
 						}
@@ -810,6 +811,7 @@ func TestResolveAutoContextLength_Scenarios(t *testing.T) {
 							return jsonHTTPResponse(http.StatusOK, `{"models":[{"key":"`+testLMStudioModel+`","loaded_instances":[{"config":{"context_length":65536}}]}]}`), nil
 						},
 					}), func(t *testing.T) {
+						t.Helper()
 						if hitsPath != 1 {
 							t.Fatalf("path models hits = %d, want 1", hitsPath)
 						}
@@ -825,6 +827,7 @@ func TestResolveAutoContextLength_Scenarios(t *testing.T) {
 			baseURL: testBaseURL,
 			model:   testLMStudioModel,
 			buildResponder: func(t *testing.T) (transportResponder, func(*testing.T)) {
+				t.Helper()
 				modelsCalls := 0
 				warmupCalls := 0
 				return routeResponder(map[string]transportResponder{
@@ -844,6 +847,7 @@ func TestResolveAutoContextLength_Scenarios(t *testing.T) {
 							return jsonHTTPResponse(http.StatusOK, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`), nil
 						},
 					}), func(t *testing.T) {
+						t.Helper()
 						if warmupCalls != 1 {
 							t.Fatalf("warmupCalls = %d, want 1", warmupCalls)
 						}

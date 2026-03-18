@@ -1,0 +1,24 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - dupl
+    - errorlint
+    - errname
+    - gocritic
+    - gocyclo
+    - loggercheck
+    - nilerr
+    - noctx
+    - nolintlint
+    - prealloc
+    - sloglint
+    - thelper
