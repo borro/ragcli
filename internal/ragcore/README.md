@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Пакет содержит канонический shared RAG runtime для `rag`, `tools --rag` и `hybrid`: build/load локального индекса, semantic search, fused seed retrieval и concrete tool `search_rag`.
+Пакет содержит канонический shared retrieval runtime для `rag`, `tools --rag` и `hybrid`: build/load локального индекса, semantic search, query variant generation и fused ranking. Tool-контракты и seeded tool history вынесены в `internal/aitools/*`.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
@@ -12,10 +12,9 @@
 - build/load index с TTL;
 - chunking документа или нескольких файлов для retrieval;
 - query embedding, retrieval и rerank;
-- fused multi-query seed retrieval;
-- concrete tool `search_rag` и его JSON-контракт;
-- helper-ы для synthetic seed/verification history в `hybrid`;
-- финальная генерация ответа и дописывание citation block для standalone `rag`.
+- deterministic query variants для fused retrieval;
+- pure fused ranking helpers, которые делят standalone `rag` и seeded tool preprocessing;
+- retrieval-facing hit/index types для mode- и tool-layer.
 
 ## Ключевые entrypoints/types
 
@@ -26,11 +25,12 @@
 - `(*PreparedSearch).Search(...)`
 - `(*PreparedSearch).FusedSearch(...)`
 - `(*PreparedSearch).FusedSearchWithHook(...)`
-- `BuildSeedBundle(ctx, executor, prompt, opts)`
-- `NewSearchTool(searcher, embedder)`
+- `SeedQueries(prompt)`
+- `FuseSeedMatches(matches, topK)`
 - `Chunk`
 - `Index`
-- `SearchResult`
+- `FusedSeedHit`
+- `FusedSeedMatch`
 - `Manifest` alias на `retrieval.Manifest`
 
 ## Входящие/исходящие зависимости
@@ -40,7 +40,8 @@
 - `internal/rag`
 - `internal/tools`
 - `internal/hybrid`
-- `internal/app`
+- `internal/aitools/rag`
+- `internal/aitools/seed`
 
 Исходящие:
 
@@ -48,14 +49,11 @@
 - `internal/llm`
 - `internal/retrieval`
 - `internal/verbose`
-- `internal/localize`
-- `internal/aitools`
-- `internal/aitools/files`
 
 ## Инварианты
 
 - shared helper-ы должны делить те же chunking, hash, TTL и scoring semantics между `rag`, `tools --rag` и `hybrid`;
-- standalone `rag` использует этот core для fused seed retrieval, но сам отвечает без tool loop и без synthetic exact reads;
-- `hybrid` использует те же seed/fusion helper-ы, но остаётся владельцем orchestration;
-- `search_rag` сохраняет стабильный JSON wire contract и pagination semantics;
+- `ragcore` не знает о `openai.ToolCall`, tool-message JSON envelope и synthetic history;
+- standalone `rag` использует этот core для fused retrieval, но отвечает без tool loop и без synthetic exact reads;
+- tool-facing retrieval API живёт выше, в `internal/aitools/rag` и `internal/aitools/seed`;
 - индексные файлы должны быть приватными и атомарно опубликованными.

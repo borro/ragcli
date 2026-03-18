@@ -20,7 +20,7 @@ type ToolOptions struct {
 
 type baseTool struct {
 	reader LineReader
-	cache  map[string]aitools.ExecuteResult
+	cache  map[string]aitools.Execution
 }
 
 func NewTools(reader LineReader, opts ToolOptions) []aitools.Tool {
@@ -39,17 +39,17 @@ func NewTools(reader LineReader, opts ToolOptions) []aitools.Tool {
 func newBaseTool(reader LineReader) baseTool {
 	return baseTool{
 		reader: reader,
-		cache:  make(map[string]aitools.ExecuteResult),
+		cache:  make(map[string]aitools.Execution),
 	}
 }
 
 func (b baseTool) clone() baseTool {
 	cloned := baseTool{
 		reader: b.reader,
-		cache:  make(map[string]aitools.ExecuteResult, len(b.cache)),
+		cache:  make(map[string]aitools.Execution, len(b.cache)),
 	}
 	for key, value := range b.cache {
-		cloned.cache[key] = aitools.CloneExecuteResult(value)
+		cloned.cache[key] = aitools.CloneExecution(value)
 	}
 	return cloned
 }
@@ -69,31 +69,42 @@ func canonicalToolSignature(call openai.ToolCall) (string, error) {
 	return args.canonicalSignature(call.Function.Name)
 }
 
-func (b *baseTool) execute(ctx context.Context, name string, call openai.ToolCall) (aitools.ExecuteResult, error) {
+func (b *baseTool) execute(ctx context.Context, name string, call openai.ToolCall) (aitools.Execution, error) {
 	return aitools.ExecuteCachedTool(ctx, call, aitools.CachedExecutionSpec{
 		Name:               name,
 		Cache:              b.cache,
 		SummarizeArguments: SummarizeToolArguments,
 		CanonicalSignature: canonicalToolSignature,
-		Execute: func(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
+		Execute: func(ctx context.Context, call openai.ToolCall) (aitools.Execution, error) {
 			raw, err := executeToolRaw(call, b.reader)
 			if err != nil {
-				return aitools.ExecuteResult{}, err
+				return aitools.Execution{}, err
 			}
-
-			keys, err := progressKeys(call.Function.Name, raw)
+			result, err := buildToolResult(call.Function.Name, raw)
 			if err != nil {
-				return aitools.ExecuteResult{}, err
+				return aitools.Execution{}, err
 			}
-
-			return aitools.ExecuteResult{
-				Payload:      raw,
-				Summary:      aitools.CloneSummary(SummarizeToolResult(call.Function.Name, raw)),
-				ProgressKeys: aitools.CloneStrings(keys),
-				Hints:        aitools.CloneHints(toolHints(call.Function.Name, raw)),
-			}, nil
+			return aitools.Execution{Result: result}, nil
 		},
 	})
+}
+
+func buildToolResult(toolName string, raw string) (aitools.ToolResult, error) {
+	payload, err := decodeToolPayload(toolName, raw)
+	if err != nil {
+		return aitools.ToolResult{}, err
+	}
+	keys, err := progressKeys(toolName, raw)
+	if err != nil {
+		return aitools.ToolResult{}, err
+	}
+	return aitools.ToolResult{
+		Payload:      payload,
+		Summary:      aitools.CloneSummary(SummarizeToolResult(toolName, raw)),
+		ProgressKeys: aitools.CloneStrings(keys),
+		Hints:        aitools.CloneHints(toolHints(toolName, raw)),
+		Evidence:     evidenceFromToolPayload(toolName, raw),
+	}, nil
 }
 
 type listFilesTool struct {
@@ -131,7 +142,7 @@ func (t *listFilesTool) ToolDefinition() openai.Tool {
 	}
 }
 
-func (t *listFilesTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
+func (t *listFilesTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.Execution, error) {
 	return t.execute(ctx, t.Name(), call)
 }
 
@@ -195,7 +206,7 @@ func (t *searchFileTool) ToolDefinition() openai.Tool {
 	}
 }
 
-func (t *searchFileTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
+func (t *searchFileTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.Execution, error) {
 	return t.execute(ctx, t.Name(), call)
 }
 
@@ -255,7 +266,7 @@ func (t *readLinesTool) ToolDefinition() openai.Tool {
 	}
 }
 
-func (t *readLinesTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
+func (t *readLinesTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.Execution, error) {
 	return t.execute(ctx, t.Name(), call)
 }
 
@@ -322,7 +333,7 @@ func (t *readAroundTool) ToolDefinition() openai.Tool {
 	}
 }
 
-func (t *readAroundTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
+func (t *readAroundTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.Execution, error) {
 	return t.execute(ctx, t.Name(), call)
 }
 
@@ -360,7 +371,7 @@ func extractLineKeys(toolName, raw string) (map[string]struct{}, error) {
 			return nil, fmt.Errorf("failed to decode list_files result: %w", err)
 		}
 		for _, path := range result.Files {
-			keys["file:"+strings.TrimSpace(path)] = struct{}{}
+			keys["files:file:"+strings.TrimSpace(path)] = struct{}{}
 		}
 	case "search_file":
 		var result SearchResult
@@ -405,9 +416,9 @@ func lineKey(path string, fallbackPath string, lineNumber int) string {
 		trimmed = strings.TrimSpace(fallbackPath)
 	}
 	if lineNumber <= 0 {
-		return "file:" + trimmed
+		return "files:file:" + trimmed
 	}
-	return fmt.Sprintf("%s:%d", trimmed, lineNumber)
+	return fmt.Sprintf("files:%s:%d", trimmed, lineNumber)
 }
 
 func suggestedNextOffset(toolName, raw string) int {
@@ -434,7 +445,97 @@ func suggestedNextOffset(toolName, raw string) int {
 
 func toolHints(toolName, raw string) map[string]any {
 	if next := suggestedNextOffset(toolName, raw); next > 0 {
-		return map[string]any{HintSuggestedNextOffset: next}
+		return map[string]any{aitools.HintSuggestedNextOffset: next}
 	}
 	return nil
+}
+
+func decodeToolPayload(toolName string, raw string) (any, error) {
+	switch toolName {
+	case "list_files":
+		var result ListFilesResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil, fmt.Errorf("failed to decode list_files result: %w", err)
+		}
+		return result, nil
+	case "search_file":
+		var result SearchResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil, fmt.Errorf("failed to decode search_file result: %w", err)
+		}
+		return result, nil
+	case "read_lines":
+		var result ReadLinesResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil, fmt.Errorf("failed to decode read_lines result: %w", err)
+		}
+		return result, nil
+	case "read_around":
+		var result ReadAroundResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil, fmt.Errorf("failed to decode read_around result: %w", err)
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("unsupported tool payload: %s", toolName)
+	}
+}
+
+func evidenceFromToolPayload(toolName string, raw string) []aitools.Evidence {
+	switch toolName {
+	case "search_file":
+		var result SearchResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil
+		}
+		evidence := make([]aitools.Evidence, 0, len(result.Matches))
+		for _, match := range result.Matches {
+			path := strings.TrimSpace(match.Path)
+			if path == "" {
+				path = strings.TrimSpace(result.Path)
+			}
+			if path == "" || match.LineNumber < 1 {
+				continue
+			}
+			evidence = append(evidence, aitools.Evidence{
+				Kind:       aitools.EvidenceVerified,
+				SourcePath: path,
+				StartLine:  match.LineNumber,
+				EndLine:    match.LineNumber,
+			})
+		}
+		return evidence
+	case "read_lines":
+		var result ReadLinesResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil
+		}
+		path := strings.TrimSpace(result.Path)
+		if path == "" || result.StartLine < 1 || result.EndLine < result.StartLine {
+			return nil
+		}
+		return []aitools.Evidence{{
+			Kind:       aitools.EvidenceVerified,
+			SourcePath: path,
+			StartLine:  result.StartLine,
+			EndLine:    result.EndLine,
+		}}
+	case "read_around":
+		var result ReadAroundResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return nil
+		}
+		path := strings.TrimSpace(result.Path)
+		if path == "" || result.StartLine < 1 || result.EndLine < result.StartLine {
+			return nil
+		}
+		return []aitools.Evidence{{
+			Kind:       aitools.EvidenceVerified,
+			SourcePath: path,
+			StartLine:  result.StartLine,
+			EndLine:    result.EndLine,
+		}}
+	default:
+		return nil
+	}
 }

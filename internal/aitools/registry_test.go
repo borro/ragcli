@@ -11,7 +11,7 @@ import (
 type fakeTool struct {
 	name    string
 	payload string
-	cache   map[string]ExecuteResult
+	cache   map[string]Execution
 }
 
 func (t *fakeTool) Name() string {
@@ -36,21 +36,21 @@ func (t *fakeTool) DescribeCall(call openai.ToolCall) CallDescription {
 	}
 }
 
-func (t *fakeTool) Execute(ctx context.Context, call openai.ToolCall) (ExecuteResult, error) {
+func (t *fakeTool) Execute(ctx context.Context, call openai.ToolCall) (Execution, error) {
 	select {
 	case <-ctx.Done():
-		return ExecuteResult{}, ctx.Err()
+		return Execution{}, ctx.Err()
 	default:
 	}
 
 	if call.Function.Name != t.name {
-		return ExecuteResult{}, NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
+		return Execution{}, NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
 			"tool": call.Function.Name,
 		})
 	}
 
 	if t.cache == nil {
-		t.cache = make(map[string]ExecuteResult)
+		t.cache = make(map[string]Execution)
 	}
 	if cached, ok := t.cache[call.Function.Arguments]; ok {
 		cached.Cached = true
@@ -58,9 +58,11 @@ func (t *fakeTool) Execute(ctx context.Context, call openai.ToolCall) (ExecuteRe
 		return cached, nil
 	}
 
-	result := ExecuteResult{
-		Payload:      t.payload,
-		ProgressKeys: []string{t.name + ":" + call.Function.Arguments},
+	result := Execution{
+		Result: ToolResult{
+			Payload:      map[string]any{"payload": t.payload},
+			ProgressKeys: []string{t.name + ":" + call.Function.Arguments},
+		},
 	}
 	t.cache[call.Function.Arguments] = result
 	return result, nil

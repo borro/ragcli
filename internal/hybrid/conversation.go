@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"strings"
 
+	aitoolseed "github.com/borro/ragcli/internal/aitools/seed"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
-	"github.com/borro/ragcli/internal/ragcore"
 	"github.com/borro/ragcli/internal/retrieval"
 	"github.com/borro/ragcli/internal/tools"
 	"github.com/borro/ragcli/internal/verbose"
@@ -64,7 +64,7 @@ func StartConversation(
 	retrievalMeter := plan.Stage("retrieval")
 	retrievalMeter.Start(localize.T("progress.hybrid.seed_start"))
 	retrievalMeter.Note(localize.T("progress.hybrid.seed_search"))
-	seedBundle, err := ragcore.BuildSeedBundle(ctx, session, prompt, opts.Search)
+	seedBundle, err := aitoolseed.BuildSeedBundle(ctx, session, prompt, opts.Search)
 	if err != nil {
 		return nil, "", err
 	}

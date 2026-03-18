@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/borro/ragcli/internal/input"
+	"github.com/borro/ragcli/internal/input/testsource"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/ragcore"
@@ -110,16 +111,7 @@ func (s testSource) InputPath() string {
 }
 
 func (s testSource) DisplayName() string {
-	if path := strings.TrimSpace(s.inputPath); path != "" {
-		return path
-	}
-	if s.kind == input.KindStdin {
-		return "stdin"
-	}
-	if len(s.files) > 0 && strings.TrimSpace(s.files[0].DisplayPath) != "" {
-		return s.files[0].DisplayPath
-	}
-	return strings.TrimSpace(s.snapshotPath)
+	return testsource.DisplayName(s.kind, s.inputPath, s.snapshotPath, s.files)
 }
 
 func (s testSource) SnapshotPath() string {
@@ -149,7 +141,7 @@ func fileSource(reader io.Reader, path string) testSource {
 	snapshotPath := ""
 	files := []input.File(nil)
 	if reader != nil {
-		snapshotPath = writeSourceTempFile(reader, filepath.Base(path))
+		snapshotPath = testsource.WriteTempFile(reader, filepath.Base(path))
 		files = []input.File{{
 			Path:        snapshotPath,
 			DisplayPath: filepath.Base(path),
@@ -167,7 +159,7 @@ func stdinSource(reader io.Reader) testSource {
 	snapshotPath := ""
 	files := []input.File(nil)
 	if reader != nil {
-		snapshotPath = writeSourceTempFile(reader, "stdin.txt")
+		snapshotPath = testsource.WriteTempFile(reader, "stdin.txt")
 		files = []input.File{{
 			Path:        snapshotPath,
 			DisplayPath: "stdin",
@@ -178,21 +170,6 @@ func stdinSource(reader io.Reader) testSource {
 		snapshotPath: snapshotPath,
 		files:        files,
 	}
-}
-
-func writeSourceTempFile(reader io.Reader, name string) string {
-	tmpFile, err := os.CreateTemp("", "rag-test-*"+filepath.Ext(name))
-	if err != nil {
-		panic(err)
-	}
-	if _, err := io.Copy(tmpFile, reader); err != nil {
-		_ = tmpFile.Close()
-		panic(err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		panic(err)
-	}
-	return tmpFile.Name()
 }
 
 type gatedEmbedder struct {

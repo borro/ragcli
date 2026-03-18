@@ -1,21 +1,20 @@
-package ragcore
+package rag
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/borro/ragcli/internal/aitools"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
+	"github.com/borro/ragcli/internal/ragcore"
 	openai "github.com/sashabaranov/go-openai"
 )
 
 const (
-	defaultSearchLimit      = 5
-	maxSearchLimit          = 20
-	HintSuggestedNextOffset = "suggested_next_offset"
+	defaultSearchLimit = 5
+	maxSearchLimit     = 20
 )
 
 type SearchParams struct {
@@ -46,34 +45,33 @@ type SearchResult struct {
 	HasMore      bool          `json:"has_more"`
 	NextOffset   int           `json:"next_offset,omitempty"`
 	Matches      []SearchMatch `json:"matches"`
-	Error        string        `json:"error,omitempty"`
 }
 
-type searchRAGTool struct {
-	searcher *PreparedSearch
+type searchTool struct {
+	searcher *ragcore.PreparedSearch
 	embedder llm.EmbeddingRequester
-	cache    map[string]aitools.ExecuteResult
+	cache    map[string]aitools.Execution
 }
 
-func NewSearchTool(searcher *PreparedSearch, embedder llm.EmbeddingRequester) aitools.Tool {
-	return &searchRAGTool{
+func NewSearchTool(searcher *ragcore.PreparedSearch, embedder llm.EmbeddingRequester) aitools.Tool {
+	return &searchTool{
 		searcher: searcher,
 		embedder: embedder,
-		cache:    make(map[string]aitools.ExecuteResult),
+		cache:    make(map[string]aitools.Execution),
 	}
 }
 
-func (t *searchRAGTool) CloneTool() aitools.Tool {
+func (t *searchTool) CloneTool() aitools.Tool {
 	if t == nil {
-		return (*searchRAGTool)(nil)
+		return (*searchTool)(nil)
 	}
-	cloned := &searchRAGTool{
+	cloned := &searchTool{
 		searcher: t.searcher,
 		embedder: t.embedder,
-		cache:    make(map[string]aitools.ExecuteResult, len(t.cache)),
+		cache:    make(map[string]aitools.Execution, len(t.cache)),
 	}
 	for key, value := range t.cache {
-		cloned.cache[key] = aitools.CloneExecuteResult(value)
+		cloned.cache[key] = aitools.CloneExecution(value)
 	}
 	return cloned
 }
@@ -93,19 +91,11 @@ func NormalizeSearchParams(params SearchParams) SearchParams {
 	return params
 }
 
-func MarshalJSON(v any) (string, error) {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal tool result: %w", err)
-	}
-	return string(data), nil
-}
-
-func (t *searchRAGTool) Name() string {
+func (t *searchTool) Name() string {
 	return "search_rag"
 }
 
-func (t *searchRAGTool) ToolDefinition() openai.Tool {
+func (t *searchTool) ToolDefinition() openai.Tool {
 	return openai.Tool{
 		Type: "function",
 		Function: &openai.FunctionDefinition{
@@ -137,14 +127,14 @@ func (t *searchRAGTool) ToolDefinition() openai.Tool {
 	}
 }
 
-func (t *searchRAGTool) DescribeCall(call openai.ToolCall) aitools.CallDescription {
+func (t *searchTool) DescribeCall(call openai.ToolCall) aitools.CallDescription {
 	return aitools.CallDescription{
 		Arguments:    aitools.CloneSummary(SummarizeToolArguments(call)),
 		VerboseLabel: compactToolCallLabel(call),
 	}
 }
 
-func (t *searchRAGTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
+func (t *searchTool) Execute(ctx context.Context, call openai.ToolCall) (aitools.Execution, error) {
 	var params searchToolArgs
 	return aitools.ExecuteCachedTool(ctx, call, aitools.CachedExecutionSpec{
 		Name:               t.Name(),
@@ -157,17 +147,12 @@ func (t *searchRAGTool) Execute(ctx context.Context, call openai.ToolCall) (aito
 			}
 			return signature, err
 		},
-		Execute: func(ctx context.Context, call openai.ToolCall) (aitools.ExecuteResult, error) {
-			raw, err := t.search(ctx, params.SearchParams)
+		Execute: func(ctx context.Context, call openai.ToolCall) (aitools.Execution, error) {
+			result, err := t.search(ctx, params.SearchParams)
 			if err != nil {
-				return aitools.ExecuteResult{}, err
+				return aitools.Execution{}, err
 			}
-			return aitools.ExecuteResult{
-				Payload:      raw,
-				Summary:      aitools.CloneSummary(SummarizeToolResult(raw)),
-				ProgressKeys: progressKeys(raw),
-				Hints:        toolHints(raw),
-			}, nil
+			return aitools.Execution{Result: result}, nil
 		},
 	})
 }
@@ -184,25 +169,25 @@ func canonicalToolSignature(call openai.ToolCall) (string, searchToolArgs, error
 	return signature, params, nil
 }
 
-func (t *searchRAGTool) search(ctx context.Context, params SearchParams) (string, error) {
+func (t *searchTool) search(ctx context.Context, params SearchParams) (aitools.ToolResult, error) {
 	if t.searcher == nil || t.searcher.Index == nil {
-		return "", aitools.NewToolError("tool_not_ready", "rag index is not prepared", false, map[string]any{
+		return aitools.ToolResult{}, aitools.NewToolError("tool_not_ready", "rag index is not prepared", false, map[string]any{
 			"tool": "search_rag",
 		})
 	}
 	if t.embedder == nil {
-		return "", aitools.NewToolError("tool_not_ready", "embedding client is not configured", false, map[string]any{
+		return aitools.ToolResult{}, aitools.NewToolError("tool_not_ready", "embedding client is not configured", false, map[string]any{
 			"tool": "search_rag",
 		})
 	}
 	if params.Query == "" {
-		return "", aitools.NewToolError("invalid_arguments", "query must not be empty", false, map[string]any{
+		return aitools.ToolResult{}, aitools.NewToolError("invalid_arguments", "query must not be empty", false, map[string]any{
 			"tool":  "search_rag",
 			"field": "query",
 		})
 	}
 	if params.Path != "" && !pathExists(t.searcher.Index, params.Path) {
-		return "", aitools.NewToolError("invalid_arguments", "path is not part of the attached corpus", false, map[string]any{
+		return aitools.ToolResult{}, aitools.NewToolError("invalid_arguments", "path is not part of the attached corpus", false, map[string]any{
 			"tool":  "search_rag",
 			"field": "path",
 			"value": params.Path,
@@ -211,7 +196,10 @@ func (t *searchRAGTool) search(ctx context.Context, params SearchParams) (string
 
 	hits, _, err := t.searcher.Search(ctx, t.embedder, params.Query, params.Path)
 	if err != nil {
-		return "", fmt.Errorf("failed to search rag index: %w", err)
+		return aitools.ToolResult{}, aitools.NewToolError("tool_execution_failed", "failed to search rag index", false, map[string]any{
+			"tool":  "search_rag",
+			"error": err.Error(),
+		})
 	}
 
 	totalMatches := len(hits)
@@ -247,10 +235,16 @@ func (t *searchRAGTool) search(ctx context.Context, params SearchParams) (string
 		})
 	}
 
-	return MarshalJSON(result)
+	return aitools.ToolResult{
+		Payload:      result,
+		Summary:      summarizeSearchResult(result),
+		ProgressKeys: progressKeys(result),
+		Hints:        toolHints(result),
+		Evidence:     evidence(result),
+	}, nil
 }
 
-func pathExists(index *Index, path string) bool {
+func pathExists(index *ragcore.Index, path string) bool {
 	target := strings.TrimSpace(path)
 	for _, chunk := range index.Chunks {
 		if chunk.SourcePath == target {
@@ -288,12 +282,7 @@ func compactToolCallLabel(call openai.ToolCall) string {
 	return params.compactLabel(label)
 }
 
-func SummarizeToolResult(raw string) map[string]any {
-	var result SearchResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return map[string]any{"decode_error": err.Error()}
-	}
-
+func summarizeSearchResult(result SearchResult) map[string]any {
 	summary := map[string]any{
 		"match_count":   result.MatchCount,
 		"total_matches": result.TotalMatches,
@@ -308,12 +297,7 @@ func SummarizeToolResult(raw string) map[string]any {
 	return summary
 }
 
-func progressKeys(raw string) []string {
-	var result SearchResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return nil
-	}
-
+func progressKeys(result SearchResult) []string {
 	keys := make([]string, 0, len(result.Matches)*4)
 	for _, match := range result.Matches {
 		path := strings.TrimSpace(match.Path)
@@ -321,19 +305,35 @@ func progressKeys(raw string) []string {
 			path = strings.TrimSpace(result.Path)
 		}
 		for line := match.StartLine; line <= match.EndLine; line++ {
-			keys = append(keys, fmt.Sprintf("%s:%d", path, line))
+			keys = append(keys, "rag:"+path+":"+strconv.Itoa(line))
 		}
 	}
 	return keys
 }
 
-func toolHints(raw string) map[string]any {
-	var result SearchResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return nil
-	}
+func toolHints(result SearchResult) map[string]any {
 	if result.HasMore {
-		return map[string]any{HintSuggestedNextOffset: result.NextOffset}
+		return map[string]any{aitools.HintSuggestedNextOffset: result.NextOffset}
 	}
 	return nil
+}
+
+func evidence(result SearchResult) []aitools.Evidence {
+	evidence := make([]aitools.Evidence, 0, len(result.Matches))
+	for _, match := range result.Matches {
+		path := strings.TrimSpace(match.Path)
+		if path == "" {
+			path = strings.TrimSpace(result.Path)
+		}
+		if path == "" || match.StartLine < 1 || match.EndLine < match.StartLine {
+			continue
+		}
+		evidence = append(evidence, aitools.Evidence{
+			Kind:       aitools.EvidenceRetrieved,
+			SourcePath: path,
+			StartLine:  match.StartLine,
+			EndLine:    match.EndLine,
+		})
+	}
+	return evidence
 }

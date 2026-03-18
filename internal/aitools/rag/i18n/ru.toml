@@ -1,0 +1,8 @@
+[tools.description]
+search_rag = "Семантически искать по заранее проиндексированному подключённому файлу или корпусу директории. Поддерживает необязательное сужение через path и pagination через limit/offset. Возвращает tool-envelope с semantic search результатами и orchestration metadata."
+
+[tools.rag.param]
+path = "Relative path внутри подключённого корпуса директории; опускай только когда подключён один файл или нужен corpus-wide semantic search"
+query = "Семантический поисковый запрос по проиндексированному корпусу"
+limit = "Максимум результатов на текущей странице semantic search"
+offset = "Offset для pagination результатов semantic search"

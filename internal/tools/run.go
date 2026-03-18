@@ -13,6 +13,7 @@ import (
 
 	"github.com/borro/ragcli/internal/aitools"
 	"github.com/borro/ragcli/internal/aitools/files"
+	aitoolsrag "github.com/borro/ragcli/internal/aitools/rag"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
@@ -111,7 +112,7 @@ func (e orchestrationError) Error() string {
 type toolLoopState struct {
 	toolset               []aitools.Tool
 	registry              aitools.Registry
-	seenLinesByDomain     map[string]map[string]struct{}
+	seenProgressKeys      map[string]struct{}
 	evidence              []retrieval.Evidence
 	seenEvidence          map[string]struct{}
 	consecutiveNoProgress int
@@ -679,15 +680,15 @@ func newToolLoopState(ctx context.Context, source input.FileBackedSource, embedd
 		if err != nil {
 			return nil, err
 		}
-		toolset = append(toolset, ragcore.NewSearchTool(searcher, embedder))
+		toolset = append(toolset, aitoolsrag.NewSearchTool(searcher, embedder))
 	} else {
 		indexMeter.Done(localize.T("progress.tools.index_skip"))
 	}
 	return &toolLoopState{
-		toolset:           toolset,
-		registry:          aitools.NewRegistry(toolset...),
-		seenLinesByDomain: make(map[string]map[string]struct{}),
-		seenEvidence:      make(map[string]struct{}),
+		toolset:          toolset,
+		registry:         aitools.NewRegistry(toolset...),
+		seenProgressKeys: make(map[string]struct{}),
+		seenEvidence:     make(map[string]struct{}),
 	}, nil
 }
 
@@ -699,19 +700,15 @@ func (s *toolLoopState) clone() *toolLoopState {
 	cloned := &toolLoopState{
 		toolset:               clonedToolset,
 		registry:              aitools.NewRegistry(clonedToolset...),
-		seenLinesByDomain:     make(map[string]map[string]struct{}, len(s.seenLinesByDomain)),
+		seenProgressKeys:      make(map[string]struct{}, len(s.seenProgressKeys)),
 		evidence:              append([]retrieval.Evidence(nil), s.evidence...),
 		seenEvidence:          make(map[string]struct{}, len(s.seenEvidence)),
 		consecutiveNoProgress: s.consecutiveNoProgress,
 		consecutiveDuplicates: s.consecutiveDuplicates,
 		stats:                 s.stats,
 	}
-	for domain, seenLines := range s.seenLinesByDomain {
-		clonedLines := make(map[string]struct{}, len(seenLines))
-		for key := range seenLines {
-			clonedLines[key] = struct{}{}
-		}
-		cloned.seenLinesByDomain[domain] = clonedLines
+	for key := range s.seenProgressKeys {
+		cloned.seenProgressKeys[key] = struct{}{}
 	}
 	for key := range s.seenEvidence {
 		cloned.seenEvidence[key] = struct{}{}
@@ -752,7 +749,7 @@ func (s *toolLoopState) executeToolCalls(ctx context.Context, toolCalls []openai
 		result, meta, err := s.executeToolCall(ctx, call)
 		if err != nil {
 			slog.Error("executeTool error", "tool_name", call.Function.Name, "error", err)
-			toolErr, marshalErr := files.MarshalJSON(files.AsToolError(err))
+			toolErr, marshalErr := aitools.EncodeToolError(err)
 			if marshalErr != nil {
 				return nil, marshalErr
 			}
@@ -832,52 +829,51 @@ func (s *toolLoopState) executeToolCallWithOptions(ctx context.Context, call ope
 	if opts.Synthetic {
 		ctx = aitools.WithoutToolCache(ctx)
 	}
-	result, err := s.registry.Execute(ctx, call)
+	execution, err := s.registry.Execute(ctx, call)
 	if err != nil {
 		return "", toolExecutionMeta{}, err
 	}
-	s.recordEvidence(call.Function.Name, result.Payload)
+	s.recordEvidence(execution.Result.Evidence)
 
-	if result.Cached {
+	if execution.Cached {
 		s.stats.cacheHits++
 		s.stats.duplicateCalls++
 
 		meta := toolExecutionMeta{
 			Cached:       true,
-			Duplicate:    result.Duplicate,
+			Duplicate:    execution.Duplicate,
 			AlreadySeen:  true,
 			NovelLines:   0,
 			ProgressHint: "duplicate tool call; reuse cached result and change strategy instead of repeating the same request",
 		}
-		if suggested := intHint(result.Hints, files.HintSuggestedNextOffset); suggested > 0 {
+		if suggested := intHint(execution.Result.Hints, aitools.HintSuggestedNextOffset); suggested > 0 {
 			meta.SuggestedNextOffset = suggested
 		}
 
-		annotated, err := annotateToolPayload(result.Payload, meta)
+		annotated, err := aitools.EncodeToolResult(execution, aitools.ToolResponseMeta{
+			AlreadySeen:         meta.AlreadySeen,
+			NovelLines:          meta.NovelLines,
+			ProgressHint:        meta.ProgressHint,
+			SuggestedNextOffset: meta.SuggestedNextOffset,
+		})
 		if err != nil {
 			return "", toolExecutionMeta{}, err
 		}
 		return annotated, meta, nil
 	}
 
-	lineKeys := make(map[string]struct{}, len(result.ProgressKeys))
-	for _, key := range result.ProgressKeys {
+	lineKeys := make(map[string]struct{}, len(execution.Result.ProgressKeys))
+	for _, key := range execution.Result.ProgressKeys {
 		lineKeys[key] = struct{}{}
-	}
-	domain := coverageDomain(call.Function.Name)
-	seenLines := s.seenLinesByDomain[domain]
-	if seenLines == nil && !opts.Synthetic {
-		seenLines = make(map[string]struct{})
-		s.seenLinesByDomain[domain] = seenLines
 	}
 	novelLines := 0
 	for key := range lineKeys {
-		if _, seen := seenLines[key]; seen {
+		if _, seen := s.seenProgressKeys[key]; seen {
 			continue
 		}
 		novelLines++
 		if !opts.Synthetic {
-			seenLines[key] = struct{}{}
+			s.seenProgressKeys[key] = struct{}{}
 		}
 	}
 
@@ -890,11 +886,16 @@ func (s *toolLoopState) executeToolCallWithOptions(ctx context.Context, call ope
 	} else {
 		meta.ProgressHint = "new lines discovered; read local context or answer if evidence is sufficient"
 	}
-	if suggested := intHint(result.Hints, files.HintSuggestedNextOffset); suggested > 0 {
+	if suggested := intHint(execution.Result.Hints, aitools.HintSuggestedNextOffset); suggested > 0 {
 		meta.SuggestedNextOffset = suggested
 	}
 
-	annotated, err := annotateToolPayload(result.Payload, meta)
+	annotated, err := aitools.EncodeToolResult(execution, aitools.ToolResponseMeta{
+		AlreadySeen:         meta.AlreadySeen,
+		NovelLines:          meta.NovelLines,
+		ProgressHint:        meta.ProgressHint,
+		SuggestedNextOffset: meta.SuggestedNextOffset,
+	})
 	if err != nil {
 		return "", toolExecutionMeta{}, err
 	}
@@ -935,163 +936,20 @@ func (s *toolLoopState) Citations() []retrieval.Citation {
 	return citations
 }
 
-func coverageDomain(toolName string) string {
-	switch toolName {
-	case "search_rag":
-		return "rag"
-	case "list_files", "search_file", "read_lines", "read_around":
-		return "files"
-	default:
-		return "default"
-	}
-}
-
-func (s *toolLoopState) recordEvidence(toolName string, raw string) {
-	for _, item := range evidenceFromToolPayload(toolName, raw) {
+func (s *toolLoopState) recordEvidence(items []aitools.Evidence) {
+	for _, item := range items {
 		key := fmt.Sprintf("%s:%s:%d-%d", item.Kind, item.SourcePath, item.StartLine, item.EndLine)
 		if _, seen := s.seenEvidence[key]; seen {
 			continue
 		}
 		s.seenEvidence[key] = struct{}{}
-		s.evidence = append(s.evidence, item)
-	}
-}
-
-func evidenceFromToolPayload(toolName string, raw string) []retrieval.Evidence {
-	evidenceKind := evidenceKindForTool(toolName)
-	if evidenceKind == "" {
-		return nil
-	}
-
-	citations := citationsFromToolPayload(toolName, raw)
-	evidence := make([]retrieval.Evidence, 0, len(citations))
-	for _, citation := range citations {
-		evidence = append(evidence, retrieval.Evidence{
-			Kind:       evidenceKind,
-			SourcePath: citation.SourcePath,
-			StartLine:  citation.StartLine,
-			EndLine:    citation.EndLine,
+		s.evidence = append(s.evidence, retrieval.Evidence{
+			Kind:       retrieval.EvidenceKind(item.Kind),
+			SourcePath: item.SourcePath,
+			StartLine:  item.StartLine,
+			EndLine:    item.EndLine,
 		})
 	}
-	return evidence
-}
-
-func evidenceKindForTool(toolName string) retrieval.EvidenceKind {
-	switch toolName {
-	case "search_rag":
-		return retrieval.EvidenceRetrieved
-	case "search_file", "read_lines", "read_around":
-		return retrieval.EvidenceVerified
-	default:
-		return ""
-	}
-}
-
-func citationsFromToolPayload(toolName string, raw string) []retrieval.Citation {
-	switch toolName {
-	case "search_rag":
-		var result ragcore.SearchResult
-		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return nil
-		}
-		citations := make([]retrieval.Citation, 0, len(result.Matches))
-		for _, match := range result.Matches {
-			path := strings.TrimSpace(match.Path)
-			if path == "" {
-				path = strings.TrimSpace(result.Path)
-			}
-			if path == "" || match.StartLine < 1 || match.EndLine < match.StartLine {
-				continue
-			}
-			citations = append(citations, retrieval.Citation{
-				SourcePath: path,
-				StartLine:  match.StartLine,
-				EndLine:    match.EndLine,
-			})
-		}
-		return citations
-	case "search_file":
-		var result files.SearchResult
-		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return nil
-		}
-		citations := make([]retrieval.Citation, 0, len(result.Matches))
-		for _, match := range result.Matches {
-			path := strings.TrimSpace(match.Path)
-			if path == "" {
-				path = strings.TrimSpace(result.Path)
-			}
-			if path == "" || match.LineNumber < 1 {
-				continue
-			}
-			citations = append(citations, retrieval.Citation{
-				SourcePath: path,
-				StartLine:  match.LineNumber,
-				EndLine:    match.LineNumber,
-			})
-		}
-		return citations
-	case "read_lines":
-		var result files.ReadLinesResult
-		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return nil
-		}
-		path := strings.TrimSpace(result.Path)
-		if path == "" || result.StartLine < 1 || result.EndLine < result.StartLine {
-			return nil
-		}
-		return []retrieval.Citation{{
-			SourcePath: path,
-			StartLine:  result.StartLine,
-			EndLine:    result.EndLine,
-		}}
-	case "read_around":
-		var result files.ReadAroundResult
-		if err := json.Unmarshal([]byte(raw), &result); err != nil {
-			return nil
-		}
-		path := strings.TrimSpace(result.Path)
-		if path == "" || result.StartLine < 1 || result.EndLine < result.StartLine {
-			return nil
-		}
-		return []retrieval.Citation{{
-			SourcePath: path,
-			StartLine:  result.StartLine,
-			EndLine:    result.EndLine,
-		}}
-	default:
-		return nil
-	}
-}
-
-func annotateToolPayload(raw string, meta toolExecutionMeta) (string, error) {
-	if raw == "" {
-		return raw, nil
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", fmt.Errorf("failed to decode tool payload for annotation: %w", err)
-	}
-
-	if meta.Cached {
-		payload["cached"] = true
-	}
-	if meta.Duplicate {
-		payload["duplicate"] = true
-	}
-	if meta.AlreadySeen {
-		payload["already_seen"] = true
-	}
-	payload["novel_lines"] = meta.NovelLines
-	if meta.ProgressHint != "" {
-		payload["progress_hint"] = meta.ProgressHint
-	}
-	if meta.SuggestedNextOffset > 0 {
-		payload["suggested_next_offset"] = meta.SuggestedNextOffset
-	}
-
-	return files.MarshalJSON(payload)
 }
 
 func parseTextToolCalls(content string, turn int) (string, []openai.ToolCall, bool, error) {

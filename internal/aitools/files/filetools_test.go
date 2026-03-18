@@ -14,6 +14,24 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+func payloadAs[T any](t *testing.T, execution aitools.Execution) T {
+	t.Helper()
+	payload, ok := execution.Result.Payload.(T)
+	if !ok {
+		t.Fatalf("payload type = %T, want %T", execution.Result.Payload, *new(T))
+	}
+	return payload
+}
+
+func payloadJSON(t *testing.T, execution aitools.Execution) string {
+	t.Helper()
+	raw, err := aitools.MarshalJSON(execution.Result.Payload)
+	if err != nil {
+		t.Fatalf("MarshalJSON(payload) error = %v", err)
+	}
+	return raw
+}
+
 func TestStdinSearch(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -471,15 +489,11 @@ func TestListFiles_DefaultsAndPagination(t *testing.T) {
 		{Path: writeTempFile(t, "gamma\n"), DisplayPath: "z.log"},
 	})
 
-	raw, err := ExecuteTool(toolCall("1", "list_files", `{"limit":2}`), reader)
+	execution, err := ExecuteTool(toolCall("1", "list_files", `{"limit":2}`), reader)
 	if err != nil {
 		t.Fatalf("ExecuteTool(list_files) error = %v", err)
 	}
-
-	var result ListFilesResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatalf("json.Unmarshal(list_files) error = %v", err)
-	}
+	result := payloadAs[ListFilesResult](t, execution)
 	if result.FileCount != 2 || result.TotalFiles != 3 || !result.HasMore || result.NextOffset != 2 {
 		t.Fatalf("result = %+v, want first paged file listing", result)
 	}
@@ -487,14 +501,11 @@ func TestListFiles_DefaultsAndPagination(t *testing.T) {
 		t.Fatalf("files = %q, want first page", got)
 	}
 
-	secondRaw, err := ExecuteTool(toolCall("2", "list_files", `{"limit":2,"offset":2}`), reader)
+	secondExecution, err := ExecuteTool(toolCall("2", "list_files", `{"limit":2,"offset":2}`), reader)
 	if err != nil {
 		t.Fatalf("ExecuteTool(list_files page 2) error = %v", err)
 	}
-	secondResult := ListFilesResult{}
-	if err := json.Unmarshal([]byte(secondRaw), &secondResult); err != nil {
-		t.Fatalf("json.Unmarshal(list_files page 2) error = %v", err)
-	}
+	secondResult := payloadAs[ListFilesResult](t, secondExecution)
 	if secondResult.FileCount != 1 || secondResult.TotalFiles != 3 || secondResult.HasMore || secondResult.NextOffset != 0 {
 		t.Fatalf("result = %+v, want second paged file listing", secondResult)
 	}
@@ -509,15 +520,11 @@ func TestSearchAutoAcrossCorpusPrefersLiteralMatches(t *testing.T) {
 		{Path: writeTempFile(t, "retry policy\n"), DisplayPath: "b.txt"},
 	})
 
-	raw, err := ExecuteTool(toolCall("1", "search_file", `{"query":"retry policy"}`), reader)
+	execution, err := ExecuteTool(toolCall("1", "search_file", `{"query":"retry policy"}`), reader)
 	if err != nil {
 		t.Fatalf("ExecuteTool(search_file) error = %v", err)
 	}
-
-	var result SearchResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatalf("json.Unmarshal(search_file) error = %v", err)
-	}
+	result := payloadAs[SearchResult](t, execution)
 	if result.Mode != "literal" {
 		t.Fatalf("Mode = %q, want literal", result.Mode)
 	}
@@ -532,15 +539,11 @@ func TestSearchAutoAcrossCorpusSortsTokenOverlapGlobally(t *testing.T) {
 		{Path: writeTempFile(t, "retry backoff policy\n"), DisplayPath: "b.txt"},
 	})
 
-	raw, err := ExecuteTool(toolCall("1", "search_file", `{"query":"retry policy backoff"}`), reader)
+	execution, err := ExecuteTool(toolCall("1", "search_file", `{"query":"retry policy backoff"}`), reader)
 	if err != nil {
 		t.Fatalf("ExecuteTool(search_file) error = %v", err)
 	}
-
-	var result SearchResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatalf("json.Unmarshal(search_file) error = %v", err)
-	}
+	result := payloadAs[SearchResult](t, execution)
 	if result.Mode != "token_overlap" {
 		t.Fatalf("Mode = %q, want token_overlap", result.Mode)
 	}
@@ -656,8 +659,8 @@ func TestConcreteTool_CachesDuplicateCalls(t *testing.T) {
 	if !second.Cached || !second.Duplicate {
 		t.Fatalf("second result = %+v, want cached duplicate", second)
 	}
-	if second.Payload != first.Payload {
-		t.Fatalf("cached payload changed:\nfirst=%q\nsecond=%q", first.Payload, second.Payload)
+	if payloadJSON(t, second) != payloadJSON(t, first) {
+		t.Fatalf("cached payload changed:\nfirst=%q\nsecond=%q", payloadJSON(t, first), payloadJSON(t, second))
 	}
 }
 
@@ -684,14 +687,10 @@ func TestNewTools_BuildsOrderedDefinitionsAndSearchContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("searchTool.Execute() error = %v", err)
 	}
-	if result.Payload == "" || len(result.ProgressKeys) == 0 {
+	if result.Result.Payload == nil || len(result.Result.ProgressKeys) == 0 {
 		t.Fatalf("result = %+v, want payload and progress keys", result)
 	}
-
-	var payload SearchResult
-	if err := json.Unmarshal([]byte(result.Payload), &payload); err != nil {
-		t.Fatalf("json.Unmarshal(result.Payload) error = %v", err)
-	}
+	payload := payloadAs[SearchResult](t, result)
 	if payload.MatchCount != 1 || len(payload.Matches) != 1 {
 		t.Fatalf("payload = %+v, want one match", payload)
 	}
@@ -711,10 +710,10 @@ func TestConcreteTools_ExposeProgressKeysAndHints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listTool.Execute() error = %v", err)
 	}
-	if len(listResult.ProgressKeys) != 1 || listResult.ProgressKeys[0] != "file:a.txt" {
-		t.Fatalf("listResult.ProgressKeys = %#v, want file:a.txt", listResult.ProgressKeys)
+	if len(listResult.Result.ProgressKeys) != 1 || listResult.Result.ProgressKeys[0] != "files:file:a.txt" {
+		t.Fatalf("listResult.ProgressKeys = %#v, want files:file:a.txt", listResult.Result.ProgressKeys)
 	}
-	if got := listResult.Hints[HintSuggestedNextOffset]; got != 1 {
+	if got := listResult.Result.Hints[aitools.HintSuggestedNextOffset]; got != 1 {
 		t.Fatalf("listResult.Hints[%q] = %#v, want 1", HintSuggestedNextOffset, got)
 	}
 
@@ -723,10 +722,10 @@ func TestConcreteTools_ExposeProgressKeysAndHints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("searchTool.Execute() error = %v", err)
 	}
-	if len(searchResult.ProgressKeys) == 0 {
-		t.Fatalf("searchResult.ProgressKeys = %#v, want non-empty", searchResult.ProgressKeys)
+	if len(searchResult.Result.ProgressKeys) == 0 {
+		t.Fatalf("searchResult.ProgressKeys = %#v, want non-empty", searchResult.Result.ProgressKeys)
 	}
-	if got := searchResult.Hints[HintSuggestedNextOffset]; got != 1 {
+	if got := searchResult.Result.Hints[aitools.HintSuggestedNextOffset]; got != 1 {
 		t.Fatalf("searchResult.Hints[%q] = %#v, want 1", HintSuggestedNextOffset, got)
 	}
 }
@@ -769,26 +768,20 @@ func TestNewCorpusReaderDisambiguatesDuplicateDisplayPaths(t *testing.T) {
 		{Path: writeTempFile(t, "beta\n"), DisplayPath: "a.txt"},
 	})
 
-	listRaw, err := ExecuteTool(toolCall("1", "list_files", `{}`), reader)
+	listExec, err := ExecuteTool(toolCall("1", "list_files", `{}`), reader)
 	if err != nil {
 		t.Fatalf("ExecuteTool(list_files) error = %v", err)
 	}
-	var listResult ListFilesResult
-	if err := json.Unmarshal([]byte(listRaw), &listResult); err != nil {
-		t.Fatalf("json.Unmarshal(list_files) error = %v", err)
-	}
+	listResult := payloadAs[ListFilesResult](t, listExec)
 	if got := strings.Join(listResult.Files, ","); got != "a.txt,a.txt#2" {
 		t.Fatalf("files = %q, want disambiguated duplicate paths", got)
 	}
 
-	readRaw, err := ExecuteTool(toolCall("2", "read_lines", `{"path":"a.txt#2","start_line":1,"end_line":1}`), reader)
+	readExec, err := ExecuteTool(toolCall("2", "read_lines", `{"path":"a.txt#2","start_line":1,"end_line":1}`), reader)
 	if err != nil {
 		t.Fatalf("ExecuteTool(read_lines) error = %v", err)
 	}
-	var readResult ReadLinesResult
-	if err := json.Unmarshal([]byte(readRaw), &readResult); err != nil {
-		t.Fatalf("json.Unmarshal(read_lines) error = %v", err)
-	}
+	readResult := payloadAs[ReadLinesResult](t, readExec)
 	if len(readResult.Lines) != 1 || readResult.Lines[0].Content != "beta" {
 		t.Fatalf("readResult = %+v, want second file contents", readResult)
 	}
@@ -1083,7 +1076,7 @@ func TestExtractLineKeys_ByTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractLineKeys(list_files) error = %v", err)
 	}
-	for _, want := range []string{"file:a.txt", "file:nested/b.txt"} {
+	for _, want := range []string{"files:file:a.txt", "files:file:nested/b.txt"} {
 		if _, ok := listKeys[want]; !ok {
 			t.Fatalf("list_keys missing %q: %#v", want, listKeys)
 		}
@@ -1110,7 +1103,7 @@ func TestExtractLineKeys_ByTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractLineKeys(search_file) error = %v", err)
 	}
-	for _, want := range []string{"a.txt:9", "a.txt:10", "other.txt:11"} {
+	for _, want := range []string{"files:a.txt:9", "files:a.txt:10", "files:other.txt:11"} {
 		if _, ok := searchKeys[want]; !ok {
 			t.Fatalf("search_keys missing %q: %#v", want, searchKeys)
 		}
@@ -1129,8 +1122,8 @@ func TestExtractLineKeys_ByTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractLineKeys(read_lines) error = %v", err)
 	}
-	if _, ok := readLinesKeys["nested/b.txt:4"]; !ok {
-		t.Fatalf("read_lines keys = %#v, want nested/b.txt:4", readLinesKeys)
+	if _, ok := readLinesKeys["files:nested/b.txt:4"]; !ok {
+		t.Fatalf("read_lines keys = %#v, want files:nested/b.txt:4", readLinesKeys)
 	}
 
 	readAroundRaw, err := MarshalJSON(ReadAroundResult{
@@ -1146,8 +1139,8 @@ func TestExtractLineKeys_ByTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractLineKeys(read_around) error = %v", err)
 	}
-	if _, ok := readAroundKeys["nested/c.txt:7"]; !ok {
-		t.Fatalf("read_around keys = %#v, want nested/c.txt:7", readAroundKeys)
+	if _, ok := readAroundKeys["files:nested/c.txt:7"]; !ok {
+		t.Fatalf("read_around keys = %#v, want files:nested/c.txt:7", readAroundKeys)
 	}
 }
 
@@ -1254,15 +1247,11 @@ func TestMultiFileReader_SearchAcrossCorpusAndReadByPath(t *testing.T) {
 		{Path: secondPath, DisplayPath: "nested/b.txt"},
 	})
 
-	raw, err := ExecuteTool(toolCall("1", "search_file", `{"query":"alpha"}`), reader)
+	searchExec, err := ExecuteTool(toolCall("1", "search_file", `{"query":"alpha"}`), reader)
 	if err != nil {
 		t.Fatalf("ExecuteTool(search_file) error = %v", err)
 	}
-
-	var result SearchResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatalf("json.Unmarshal(search) error = %v", err)
-	}
+	result := payloadAs[SearchResult](t, searchExec)
 	if len(result.Matches) != 2 {
 		t.Fatalf("len(Matches) = %d, want 2", len(result.Matches))
 	}
@@ -1273,14 +1262,11 @@ func TestMultiFileReader_SearchAcrossCorpusAndReadByPath(t *testing.T) {
 		t.Fatalf("Matches[1].Path = %q, want nested/b.txt", result.Matches[1].Path)
 	}
 
-	linesRaw, err := ExecuteTool(toolCall("2", "read_lines", `{"path":"nested/b.txt","start_line":2,"end_line":2}`), reader)
+	linesExec, err := ExecuteTool(toolCall("2", "read_lines", `{"path":"nested/b.txt","start_line":2,"end_line":2}`), reader)
 	if err != nil {
 		t.Fatalf("ExecuteTool(read_lines) error = %v", err)
 	}
-	var lines ReadLinesResult
-	if err := json.Unmarshal([]byte(linesRaw), &lines); err != nil {
-		t.Fatalf("json.Unmarshal(read_lines) error = %v", err)
-	}
+	lines := payloadAs[ReadLinesResult](t, linesExec)
 	if lines.Path != "nested/b.txt" {
 		t.Fatalf("ReadLinesResult.Path = %q, want nested/b.txt", lines.Path)
 	}

@@ -33,6 +33,8 @@ Repo-level инструкции для кодинг-агентов лежат в
 
 - [`../internal/aitools/README.md`](../internal/aitools/README.md)
 - [`../internal/aitools/files/README.md`](../internal/aitools/files/README.md)
+- [`../internal/aitools/rag/README.md`](../internal/aitools/rag/README.md)
+- [`../internal/aitools/seed/README.md`](../internal/aitools/seed/README.md)
 - [`../internal/ragcore/README.md`](../internal/ragcore/README.md)
 - [`../internal/llm/README.md`](../internal/llm/README.md)
 - [`../internal/input/README.md`](../internal/input/README.md)

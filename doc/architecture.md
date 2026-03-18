@@ -7,7 +7,7 @@
 - тонкую точку входа `cmd/ragcli`;
 - orchestration-слой `internal/app`;
 - mode-пакеты `hybrid`, `tools`, `rag`, `map`;
-- shared infrastructure: `ragcore`, `llm`, `input`, `retrieval`, `aitools`, `selfupdate`, `verbose`, `localize`, `logging`.
+- shared infrastructure: `ragcore`, `llm`, `input`, `retrieval`, `aitools/*`, `selfupdate`, `verbose`, `localize`, `logging`.
 
 Главный принцип: `internal/app` связывает CLI, input lifecycle, создание клиентов и вывод результата, а domain-specific пайплайны живут в отдельных пакетах режимов.
 
@@ -34,6 +34,10 @@ flowchart LR
     ragcore --> retrieval["internal/retrieval"]
     tools --> aitools["internal/aitools"]
     tools --> aitoolsfiles["internal/aitools/files"]
+    tools --> aitoolsrag["internal/aitools/rag"]
+    hybrid --> aitoolsseed["internal/aitools/seed"]
+    aitoolsseed --> aitoolsrag
+    aitoolsseed --> ragcore
     llm --> goopenai["go-openai"]
 ```
 
@@ -41,10 +45,10 @@ flowchart LR
 
 - `cmd/ragcli` не содержит логики кроме вызова `app.Run`.
 - `internal/app` знает про все режимы и shared packages; режимы не знают про CLI.
-- `internal/rag` остаётся mode-пакетом standalone retrieval и использует `internal/ragcore` как shared search/index/seed слой.
-- `internal/ragcore` использует `internal/retrieval` как общее ядро файлового retrieval и владеет `search_rag`.
-- `internal/tools` оркестрирует tool calling, а общий registry/API делегирует `internal/aitools`, файловый домен — `internal/aitools/files`.
-- `internal/hybrid` переиспользует shared tool session из `internal/tools`, а fused seed/history собирает через `internal/ragcore`.
+- `internal/rag` остаётся mode-пакетом standalone retrieval и использует `internal/ragcore` как shared search/index/fusion слой.
+- `internal/ragcore` использует `internal/retrieval` как общее ядро файлового retrieval и больше не знает о tool contracts.
+- `internal/tools` оркестрирует tool calling, а общий registry/API делегирует `internal/aitools`; файловый домен живёт в `internal/aitools/files`, retrieval-domain tool — в `internal/aitools/rag`.
+- `internal/hybrid` переиспользует shared tool session из `internal/tools`, а fused seed/history собирает через `internal/aitools/seed`.
 - `internal/map` не зависит от retrieval и tool calling.
 - `internal/selfupdate` изолирует GitHub Releases discovery, checksum validation и безопасную замену бинаря для `ragcli self-update`.
 
@@ -137,17 +141,17 @@ sequenceDiagram
 Реальный pipeline:
 
 1. Через `internal/tools.PrepareSession` заранее поднимается тот же tool registry, что и для `tools --rag`.
-2. До первого LLM turn выполняется fused semantic seed: несколько deterministic `search_rag` вызовов по variants исходного вопроса.
+2. До первого LLM turn `internal/aitools/seed` выполняет fused semantic seed: несколько deterministic `search_rag` вызовов по variants исходного вопроса.
 3. Search phase и synthetic exact reads по strongest hit'ам добавляются в историю как два preloaded assistant/tool batch.
 4. Общий orchestration loop из `internal/tools` позволяет модели оценить preloaded retrieval, дочитать контекст через file-tools и при необходимости повторить `search_rag` с новым запросом.
 5. В финале `internal/hybrid` дописывает `Sources:` с provenance-aware секциями `Verified` и `Retrieved`.
 6. При `--interaction` direct-context fast path остаётся history-based chat path, а retrieval/tool path переиспользует baseline tools conversation и умеет `/reset`.
 
-Почему `aitools`/`aitools/files` и `ragcore` разведены:
+Почему `aitools/*` и `ragcore` разведены:
 
 - общий AI-tool registry и контракты должны переиспользоваться между режимами;
 - файловый домен удобно развивать отдельно от orchestration loop и отдельно от будущих не-файловых tools;
-- retrieval-domain tools удобно держать рядом с shared RAG runtime, но на том же базовом `aitools.Registry`;
+- retrieval-domain tools удобно держать в tool-layer рядом с другими AI tools, но поверх того же базового `aitools.Registry`;
 - каждый concrete tool можно подключать в разных сочетаниях через общий `aitools.Registry`.
 
 ### 5.2 `tools`
@@ -162,7 +166,7 @@ sequenceDiagram
 2. При `--rag` заранее выполняется build/load retrieval index через `internal/ragcore`.
 3. В каждом turn отправляется chat request с tool definitions.
 4. Если модель запросила tool calls, `toolLoopState` выполняет их локально.
-5. Результаты возвращаются как `role=tool` сообщения в JSON.
+5. Результаты возвращаются как `role=tool` сообщения в едином JSON envelope с полями `result` и `meta`.
 6. Loop отслеживает duplicate calls, already-seen строки и уже перечисленные пути, а также no-progress runs.
 7. При зацикливании включаются защитные ветки: retry without tools, stop-calls prompt, forced finalization.
 8. Режим завершает работу, когда получает содержательный финальный text answer.

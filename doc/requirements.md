@@ -115,7 +115,7 @@
 - если помещается, сразу передавать весь текст в prompt как untrusted data и отвечать без индекса, seeded retrieval и tool loop;
 - заранее строить или переиспользовать тот же локальный индекс, что используют `tools --rag` и `rag`;
 - до первого model turn выполнять fused semantic seed: до 5 deterministic `search_rag` запросов по variants исходного вопроса;
-- класть preloaded search phase в историю как assistant/tool batch с несколькими `search_rag` calls и их JSON-результатами;
+- класть preloaded search phase в историю как assistant/tool batch с несколькими `search_rag` calls и их JSON tool-envelopes;
 - после semantic seed выполнять synthetic `read_lines`/`read_around` по strongest non-overlapping hit'ам и добавлять их второй preloaded phase в историю;
 - после seeded retrieval запускать тот же orchestration loop и тот же набор инструментов, что и `tools --rag`;
 - позволять модели оценить preloaded seed bundle, исследовать файлы через file-tools и при необходимости повторно вызывать `search_rag` с уточнённым запросом;
@@ -195,7 +195,7 @@
 
 - максимум `20` turns в одном orchestration loop;
 - guard на повторные no-progress/duplicate tool runs;
-- JSON-результаты инструментов как единственный wire-format между локальным tool runner и моделью.
+- JSON tool-envelope (`result` + `meta`, либо `error`) как единственный wire-format между локальным tool runner и моделью.
 - при `--interaction` follow-up turns должны переиспользовать ту же history, evidence tracking, duplicate cache и progress guards; `/reset` возвращает их к baseline после первого ответа.
 
 ### 4.3 `rag`

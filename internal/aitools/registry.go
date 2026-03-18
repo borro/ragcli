@@ -21,7 +21,7 @@ type Tool interface {
 	Name() string
 	ToolDefinition() openai.Tool
 	DescribeCall(call openai.ToolCall) CallDescription
-	Execute(ctx context.Context, call openai.ToolCall) (ExecuteResult, error)
+	Execute(ctx context.Context, call openai.ToolCall) (Execution, error)
 }
 
 type CloneableTool interface {
@@ -29,19 +29,10 @@ type CloneableTool interface {
 	CloneTool() Tool
 }
 
-type ExecuteResult struct {
-	Payload      string
-	Summary      map[string]any
-	Cached       bool
-	Duplicate    bool
-	ProgressKeys []string
-	Hints        map[string]any
-}
-
 type Registry interface {
 	ToolDefinitions() []openai.Tool
 	DescribeCall(call openai.ToolCall) CallDescription
-	Execute(ctx context.Context, call openai.ToolCall) (ExecuteResult, error)
+	Execute(ctx context.Context, call openai.ToolCall) (Execution, error)
 }
 
 type ToolError struct {
@@ -99,14 +90,14 @@ func (r *toolRegistry) DescribeCall(call openai.ToolCall) CallDescription {
 	return desc
 }
 
-func (r *toolRegistry) Execute(ctx context.Context, call openai.ToolCall) (ExecuteResult, error) {
+func (r *toolRegistry) Execute(ctx context.Context, call openai.ToolCall) (Execution, error) {
 	tool, ok := r.byName[call.Function.Name]
 	if !ok {
 		err := NewToolError("unknown_tool", "unknown tool requested", false, map[string]any{
 			"tool": call.Function.Name,
 		})
 		LogToolCallError(call, 0, fallbackCallDescription(call).Arguments, err)
-		return ExecuteResult{}, err
+		return Execution{}, err
 	}
 	return tool.Execute(ctx, call)
 }

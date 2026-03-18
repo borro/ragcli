@@ -848,8 +848,16 @@ func buildLineSlices(lines []string, displayPath string, start int, end int) []L
 	return result
 }
 
-func ExecuteTool(call openai.ToolCall, reader LineReader) (string, error) {
-	return executeToolRaw(call, reader)
+func ExecuteTool(call openai.ToolCall, reader LineReader) (aitools.Execution, error) {
+	raw, err := executeToolRaw(call, reader)
+	if err != nil {
+		return aitools.Execution{}, err
+	}
+	result, err := buildToolResult(call.Function.Name, raw)
+	if err != nil {
+		return aitools.Execution{}, err
+	}
+	return aitools.Execution{Result: result}, nil
 }
 
 func executeToolRaw(call openai.ToolCall, reader LineReader) (string, error) {

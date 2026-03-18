@@ -180,26 +180,21 @@ func Open(path string, stdin io.Reader) (*Handle, error) {
 		_ = os.Remove(tmpFile.Name())
 		return nil, fmt.Errorf("%s", localize.T("error.input.read_stdin", localize.Data{"Error": err}))
 	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("%s", localize.T("error.input.close_temp", localize.Data{"Error": err}))
-	}
-
-	if err := verifySnapshot(tmpFile.Name()); err != nil {
-		_ = os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("%s", localize.T("error.input.reopen_temp", localize.Data{"Error": err}))
+	snapshotPath, err := finalizeTempSnapshot(tmpFile)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Handle{
 		source: newSource(Descriptor{
 			Kind: KindStdin,
 			Files: []File{{
-				Path:        tmpFile.Name(),
+				Path:        snapshotPath,
 				DisplayPath: "stdin",
 			}},
-		}, tmpFile.Name()),
+		}, snapshotPath),
 		closeFn: func() error {
-			return os.Remove(tmpFile.Name())
+			return os.Remove(snapshotPath)
 		},
 	}, nil
 }
@@ -229,14 +224,9 @@ func openDirectory(path string) (*Handle, error) {
 		_ = os.Remove(tmpFile.Name())
 		return nil, fmt.Errorf("%s", localize.T("error.input.read_dir", localize.Data{"Error": err}))
 	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("%s", localize.T("error.input.close_temp", localize.Data{"Error": err}))
-	}
-
-	if err := verifySnapshot(tmpFile.Name()); err != nil {
-		_ = os.Remove(tmpFile.Name())
-		return nil, fmt.Errorf("%s", localize.T("error.input.reopen_temp", localize.Data{"Error": err}))
+	snapshotPath, err := finalizeTempSnapshot(tmpFile)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Handle{
@@ -244,9 +234,9 @@ func openDirectory(path string) (*Handle, error) {
 			Kind:  KindDirectory,
 			Path:  path,
 			Files: files,
-		}, tmpFile.Name()),
+		}, snapshotPath),
 		closeFn: func() error {
-			return os.Remove(tmpFile.Name())
+			return os.Remove(snapshotPath)
 		},
 	}, nil
 }
@@ -266,6 +256,19 @@ func verifySnapshot(path string) error {
 		return err
 	}
 	return file.Close()
+}
+
+func finalizeTempSnapshot(tmpFile tempFile) (string, error) {
+	snapshotPath := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(snapshotPath)
+		return "", fmt.Errorf("%s", localize.T("error.input.close_temp", localize.Data{"Error": err}))
+	}
+	if err := verifySnapshot(snapshotPath); err != nil {
+		_ = os.Remove(snapshotPath)
+		return "", fmt.Errorf("%s", localize.T("error.input.reopen_temp", localize.Data{"Error": err}))
+	}
+	return snapshotPath, nil
 }
 
 func collectDirectoryFiles(root string) ([]File, error) {

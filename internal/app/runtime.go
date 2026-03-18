@@ -294,6 +294,135 @@ func (s *commandSession) withChatAndEmbeddingInput(
 	})
 }
 
+func (s *commandSession) interactiveResult(
+	run func() (string, error),
+	start func() (interactiveSession, string, error),
+) (commandResult, error) {
+	if !s.inv.Common.Interaction {
+		answer, err := run()
+		return commandResult{Output: answer}, err
+	}
+	conv, answer, err := start()
+	if err != nil {
+		return commandResult{}, err
+	}
+	return commandResult{Output: answer, Interactive: conv}, nil
+}
+
+func (s *commandSession) executeChatMode(
+	meter verbose.Meter,
+	logMessage string,
+	logArgs []any,
+	run func(input.Source, llm.ChatAutoContextRequester) (string, error),
+	start func(input.Source, llm.ChatAutoContextRequester) (interactiveSession, string, error),
+) (commandResult, error) {
+	return s.withChatInput(meter, func(source input.Source, client llm.ChatAutoContextRequester) (commandResult, error) {
+		slog.Info(logMessage, logArgs...)
+		return s.interactiveResult(
+			func() (string, error) {
+				return run(source, client)
+			},
+			func() (interactiveSession, string, error) {
+				return start(source, client)
+			},
+		)
+	})
+}
+
+func (s *commandSession) executeChatEmbeddingMode(
+	meter verbose.Meter,
+	logMessage string,
+	logArgs []any,
+	run func(input.Source, llm.ChatAutoContextRequester, llm.EmbeddingRequester) (string, error),
+	start func(input.Source, llm.ChatAutoContextRequester, llm.EmbeddingRequester) (interactiveSession, string, error),
+) (commandResult, error) {
+	return s.withChatAndEmbeddingInput(meter, func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (commandResult, error) {
+		slog.Info(logMessage, logArgs...)
+		return s.interactiveResult(
+			func() (string, error) {
+				return run(source, client, embedder)
+			},
+			func() (interactiveSession, string, error) {
+				return start(source, client, embedder)
+			},
+		)
+	})
+}
+
+func executeChatEmbeddingPayloadMode[Opts any](
+	session *commandSession,
+	logMessage string,
+	logArgs []any,
+	run func(context.Context, llm.ChatAutoContextRequester, llm.EmbeddingRequester, input.FileBackedSource, Opts, string, *verbose.Plan) (string, error),
+	start func(context.Context, llm.ChatAutoContextRequester, llm.EmbeddingRequester, input.FileBackedSource, Opts, string, *verbose.Plan) (interactiveSession, string, error),
+) (commandResult, error) {
+	opts, err := payloadAs[Opts](session.inv.payload)
+	if err != nil {
+		return commandResult{}, err
+	}
+	return session.executeChatEmbeddingMode(
+		session.plan.Stage("prepare"),
+		logMessage,
+		logArgs,
+		func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
+			return run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
+		},
+		func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (interactiveSession, string, error) {
+			return start(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
+		},
+	)
+}
+
+func runRAGMode(
+	ctx context.Context,
+	client llm.ChatAutoContextRequester,
+	embedder llm.EmbeddingRequester,
+	source input.FileBackedSource,
+	opts rag.Options,
+	prompt string,
+	plan *verbose.Plan,
+) (string, error) {
+	return rag.Run(ctx, client, embedder, source, opts, prompt, plan)
+}
+
+func startRAGMode(
+	ctx context.Context,
+	client llm.ChatAutoContextRequester,
+	embedder llm.EmbeddingRequester,
+	source input.FileBackedSource,
+	opts rag.Options,
+	prompt string,
+	plan *verbose.Plan,
+) (interactiveSession, string, error) {
+	conv, answer, err := rag.StartConversation(ctx, client, embedder, source, opts, prompt, plan)
+	return conv, answer, err
+}
+
+func runHybridMode(
+	ctx context.Context,
+	client llm.ChatAutoContextRequester,
+	embedder llm.EmbeddingRequester,
+	source input.FileBackedSource,
+	opts hybrid.Options,
+	prompt string,
+	plan *verbose.Plan,
+) (string, error) {
+	return hybrid.Run(ctx, client, embedder, source, opts, prompt, plan)
+}
+
+func startHybridMode(
+	ctx context.Context,
+	client llm.ChatAutoContextRequester,
+	embedder llm.EmbeddingRequester,
+	source input.FileBackedSource,
+	opts hybrid.Options,
+	prompt string,
+	plan *verbose.Plan,
+) (interactiveSession, string, error) {
+	conv, answer, err := hybrid.StartConversation(ctx, client, embedder, source, opts, prompt, plan)
+	return conv, answer, err
+}
+
 func (s *commandSession) writeResult(result string) error {
 	formatted, err := s.runtime.formatOutput(result, s.runtime.stdout, s.inv.Common.Raw)
 	if err != nil {
@@ -322,18 +451,18 @@ func executeMapCommand(session *commandSession) (commandResult, error) {
 		return commandResult{}, err
 	}
 
-	return session.withChatInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester) (commandResult, error) {
-		slog.Info("starting map processing")
-		if !session.inv.Common.Interaction {
-			answer, err := mapmode.Run(session.ctx, client, source, opts, session.inv.Common.Prompt, session.plan)
-			return commandResult{Output: answer}, err
-		}
-		conv, answer, err := mapmode.StartConversation(session.ctx, client, source, opts, session.inv.Common.Prompt, session.plan)
-		if err != nil {
-			return commandResult{}, err
-		}
-		return commandResult{Output: answer, Interactive: conv}, nil
-	})
+	return session.executeChatMode(
+		session.plan.Stage("prepare"),
+		"starting map processing",
+		nil,
+		func(source input.Source, client llm.ChatAutoContextRequester) (string, error) {
+			return mapmode.Run(session.ctx, client, source, opts, session.inv.Common.Prompt, session.plan)
+		},
+		func(source input.Source, client llm.ChatAutoContextRequester) (interactiveSession, string, error) {
+			conv, answer, err := mapmode.StartConversation(session.ctx, client, source, opts, session.inv.Common.Prompt, session.plan)
+			return conv, answer, err
+		},
+	)
 }
 
 func executeToolsCommand(session *commandSession) (commandResult, error) {
@@ -343,72 +472,52 @@ func executeToolsCommand(session *commandSession) (commandResult, error) {
 	}
 
 	if !opts.EnableRAG {
-		return session.withChatInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester) (commandResult, error) {
-			slog.Info("starting tools processing")
-			if !session.inv.Common.Interaction {
-				answer, err := tools.Run(session.ctx, client, nil, source, opts, session.inv.Common.Prompt, session.plan)
-				return commandResult{Output: answer}, err
-			}
-			conv, answer, err := tools.StartConversation(session.ctx, client, nil, source, opts, session.inv.Common.Prompt, session.plan)
-			if err != nil {
-				return commandResult{}, err
-			}
-			return commandResult{Output: answer, Interactive: conv}, nil
-		})
+		return session.executeChatMode(
+			session.plan.Stage("prepare"),
+			"starting tools processing",
+			nil,
+			func(source input.Source, client llm.ChatAutoContextRequester) (string, error) {
+				return tools.Run(session.ctx, client, nil, source, opts, session.inv.Common.Prompt, session.plan)
+			},
+			func(source input.Source, client llm.ChatAutoContextRequester) (interactiveSession, string, error) {
+				conv, answer, err := tools.StartConversation(session.ctx, client, nil, source, opts, session.inv.Common.Prompt, session.plan)
+				return conv, answer, err
+			},
+		)
 	}
 
-	return session.withChatAndEmbeddingInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (commandResult, error) {
-		slog.Info("starting tools processing", "rag_enabled", true)
-		if !session.inv.Common.Interaction {
-			answer, err := tools.Run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
-			return commandResult{Output: answer}, err
-		}
-		conv, answer, err := tools.StartConversation(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
-		if err != nil {
-			return commandResult{}, err
-		}
-		return commandResult{Output: answer, Interactive: conv}, nil
-	})
+	return session.executeChatEmbeddingMode(
+		session.plan.Stage("prepare"),
+		"starting tools processing",
+		[]any{"rag_enabled", true},
+		func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (string, error) {
+			return tools.Run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
+		},
+		func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (interactiveSession, string, error) {
+			conv, answer, err := tools.StartConversation(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
+			return conv, answer, err
+		},
+	)
 }
 
 func executeRAGCommand(session *commandSession) (commandResult, error) {
-	opts, err := payloadAs[rag.Options](session.inv.payload)
-	if err != nil {
-		return commandResult{}, err
-	}
-
-	return session.withChatAndEmbeddingInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (commandResult, error) {
-		slog.Info("starting rag processing")
-		if !session.inv.Common.Interaction {
-			answer, err := rag.Run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
-			return commandResult{Output: answer}, err
-		}
-		conv, answer, err := rag.StartConversation(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
-		if err != nil {
-			return commandResult{}, err
-		}
-		return commandResult{Output: answer, Interactive: conv}, nil
-	})
+	return executeChatEmbeddingPayloadMode[rag.Options](
+		session,
+		"starting rag processing",
+		nil,
+		runRAGMode,
+		startRAGMode,
+	)
 }
 
 func executeHybridCommand(session *commandSession) (commandResult, error) {
-	opts, err := payloadAs[hybrid.Options](session.inv.payload)
-	if err != nil {
-		return commandResult{}, err
-	}
-
-	return session.withChatAndEmbeddingInput(session.plan.Stage("prepare"), func(source input.Source, client llm.ChatAutoContextRequester, embedder llm.EmbeddingRequester) (commandResult, error) {
-		slog.Info("starting hybrid processing")
-		if !session.inv.Common.Interaction {
-			answer, err := hybrid.Run(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
-			return commandResult{Output: answer}, err
-		}
-		conv, answer, err := hybrid.StartConversation(session.ctx, client, embedder, source, opts, session.inv.Common.Prompt, session.plan)
-		if err != nil {
-			return commandResult{}, err
-		}
-		return commandResult{Output: answer, Interactive: conv}, nil
-	})
+	return executeChatEmbeddingPayloadMode[hybrid.Options](
+		session,
+		"starting hybrid processing",
+		nil,
+		runHybridMode,
+		startHybridMode,
+	)
 }
 
 func executeSelfUpdateCommand(session *commandSession) (commandResult, error) {

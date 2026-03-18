@@ -1,4 +1,4 @@
-package ragcore
+package rag
 
 import (
 	"embed"
@@ -10,5 +10,5 @@ import (
 var i18nFS embed.FS
 
 func init() {
-	localize.MustRegister("internal/ragcore", i18nFS, "i18n/en.toml", "i18n/ru.toml")
+	localize.MustRegister("internal/aitools/rag", i18nFS, "i18n/en.toml", "i18n/ru.toml")
 }

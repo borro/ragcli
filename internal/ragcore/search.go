@@ -115,8 +115,8 @@ func (p *PreparedSearch) FusedSearchWithHook(ctx context.Context, embedder llm.E
 }
 
 func (p *PreparedSearch) fusedSearch(ctx context.Context, embedder llm.EmbeddingRequester, prompt string, path string, onFirstQueryEmbedded func()) ([]FusedSeedHit, FusedSearchStats, error) {
-	queries := seedQueries(prompt)
-	fused := make(map[string]*fusedSeedCandidate, len(queries)*p.Options.TopK)
+	queries := SeedQueries(prompt)
+	matches := make([]FusedSeedMatch, 0, len(queries)*p.Options.TopK)
 	stats := FusedSearchStats{}
 	firstQueryReady := false
 	filter := strings.TrimSpace(path)
@@ -133,7 +133,7 @@ func (p *PreparedSearch) fusedSearch(ctx context.Context, embedder llm.Embedding
 			firstQueryReady = true
 		}
 		for rank, hit := range hits {
-			addFusedCandidate(fused, seedMatch{
+			matches = append(matches, FusedSeedMatch{
 				Path:       hit.Chunk.SourcePath,
 				ChunkID:    hit.Chunk.ChunkID,
 				StartLine:  hit.Chunk.StartLine,
@@ -142,11 +142,12 @@ func (p *PreparedSearch) fusedSearch(ctx context.Context, embedder llm.Embedding
 				Score:      hit.Score,
 				Similarity: hit.Similarity,
 				Overlap:    hit.Overlap,
-			}, rank)
+				Rank:       rank,
+			})
 		}
 	}
 
-	return truncateFusedHits(sortFusedHits(fused), p.Options.TopK), stats, nil
+	return FuseSeedMatches(matches, p.Options.TopK), stats, nil
 }
 
 func FusedSearchTooWeak(hits []FusedSeedHit) bool {

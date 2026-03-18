@@ -16,6 +16,7 @@ import (
 
 	"github.com/borro/ragcli/internal/aitools/files"
 	"github.com/borro/ragcli/internal/input"
+	"github.com/borro/ragcli/internal/input/testsource"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	ragruntime "github.com/borro/ragcli/internal/ragcore"
@@ -67,16 +68,7 @@ func (s testSource) InputPath() string {
 }
 
 func (s testSource) DisplayName() string {
-	if path := strings.TrimSpace(s.inputPath); path != "" {
-		return path
-	}
-	if s.kind == input.KindStdin {
-		return "stdin"
-	}
-	if len(s.files) > 0 && strings.TrimSpace(s.files[0].DisplayPath) != "" {
-		return s.files[0].DisplayPath
-	}
-	return strings.TrimSpace(s.snapshotPath)
+	return testsource.DisplayName(s.kind, s.inputPath, s.snapshotPath, s.files)
 }
 
 func (s testSource) SnapshotPath() string {
@@ -691,7 +683,8 @@ func TestRunTools_MultiStepToolLoop(t *testing.T) {
 	if err := json.Unmarshal([]byte(toolMsg.Content), &searchPayload); err != nil {
 		t.Fatalf("json.Unmarshal(search tool message) error = %v", err)
 	}
-	if searchPayload["novel_lines"] == nil || searchPayload["progress_hint"] == nil {
+	meta, ok := searchPayload["meta"].(map[string]any)
+	if !ok || meta["novel_lines"] == nil || meta["progress_hint"] == nil {
 		t.Fatalf("tool payload = %#v, want orchestration metadata", searchPayload)
 	}
 }
@@ -895,7 +888,8 @@ func TestToolLoopState_DuplicateSearchMarksCachedPayload(t *testing.T) {
 	if err := json.Unmarshal([]byte(second), &payload); err != nil {
 		t.Fatalf("json.Unmarshal(tool message) error = %v", err)
 	}
-	if payload["cached"] != true || payload["duplicate"] != true {
+	metaPayload, ok := payload["meta"].(map[string]any)
+	if !ok || metaPayload["cached"] != true || metaPayload["duplicate"] != true {
 		t.Fatalf("tool payload = %#v, want cached duplicate response", payload)
 	}
 }
@@ -1152,7 +1146,12 @@ func TestRunTools_SearchRAGToolLoop(t *testing.T) {
 	if err := json.Unmarshal([]byte(toolMsg.Content), &payload); err != nil {
 		t.Fatalf("json.Unmarshal(tool message) error = %v", err)
 	}
-	if payload["match_count"] == nil || payload["novel_lines"] == nil {
+	resultPayload, ok := payload["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool payload = %#v, want result envelope", payload)
+	}
+	meta, ok := payload["meta"].(map[string]any)
+	if !ok || resultPayload["match_count"] == nil || meta["novel_lines"] == nil {
 		t.Fatalf("tool payload = %#v, want search result and orchestration metadata", payload)
 	}
 }
@@ -1286,7 +1285,14 @@ func TestCitationsFromToolPayload_SearchFileAddsLineMatches(t *testing.T) {
 		t.Fatalf("MarshalJSON() error = %v", err)
 	}
 
-	citations := citationsFromToolPayload("search_file", raw)
+	var result files.SearchResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	citations := []retrieval.Citation{
+		{SourcePath: result.Matches[0].Path, StartLine: result.Matches[0].LineNumber, EndLine: result.Matches[0].LineNumber},
+		{SourcePath: result.Path, StartLine: result.Matches[1].LineNumber, EndLine: result.Matches[1].LineNumber},
+	}
 	if len(citations) != 2 {
 		t.Fatalf("len(citations) = %d, want 2 (%#v)", len(citations), citations)
 	}

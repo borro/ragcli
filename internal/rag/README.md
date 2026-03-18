@@ -2,14 +2,14 @@
 
 ## TL;DR
 
-Пакет реализует standalone-режим `rag`: он поднимает shared search core из [`internal/ragcore`](../ragcore/README.md), выполняет fused semantic seed без tool loop и синтезирует финальный ответ с `Sources:`.
+Пакет реализует standalone-режим `rag`: он поднимает shared retrieval core из [`internal/ragcore`](../ragcore/README.md), выполняет fused semantic retrieval без tool loop и синтезирует финальный ответ с `Sources:`.
 
 См. также [`doc/architecture.md`](../../doc/architecture.md).
 
 ## Зона ответственности
 
 - standalone orchestration режима `rag`;
-- запуск fused seed retrieval через `internal/ragcore`;
+- запуск fused semantic retrieval через `internal/ragcore`;
 - выбор evidence chunks для прямого ответа без synthetic verification reads;
 - синтез финального ответа и дописывание `Sources:`.
 - reusable session и interactive follow-up wrapper поверх уже подготовленного индекса.
@@ -47,7 +47,7 @@
 ## Инварианты и ошибки
 
 - Режим не должен запускать synthetic `read_lines`/`read_around` и tool orchestration.
-- Shared index/search/seed/tool logic меняется в `internal/ragcore`, а mode-specific answer generation и finalization остаются здесь.
+- Shared retrieval/index/fusion logic меняется в `internal/ragcore`, а mode-specific answer generation и finalization остаются здесь.
 
 ## Куда вносить изменения
 

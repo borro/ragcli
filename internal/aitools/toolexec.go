@@ -11,10 +11,10 @@ type cacheBypassKey struct{}
 
 type CachedExecutionSpec struct {
 	Name               string
-	Cache              map[string]ExecuteResult
+	Cache              map[string]Execution
 	SummarizeArguments func(openai.ToolCall) map[string]any
 	CanonicalSignature func(openai.ToolCall) (string, error)
-	Execute            func(context.Context, openai.ToolCall) (ExecuteResult, error)
+	Execute            func(context.Context, openai.ToolCall) (Execution, error)
 }
 
 func WithoutToolCache(ctx context.Context) context.Context {
@@ -24,10 +24,10 @@ func WithoutToolCache(ctx context.Context) context.Context {
 	return context.WithValue(ctx, cacheBypassKey{}, true)
 }
 
-func ExecuteCachedTool(ctx context.Context, call openai.ToolCall, spec CachedExecutionSpec) (ExecuteResult, error) {
+func ExecuteCachedTool(ctx context.Context, call openai.ToolCall, spec CachedExecutionSpec) (Execution, error) {
 	select {
 	case <-ctx.Done():
-		return ExecuteResult{}, ctx.Err()
+		return Execution{}, ctx.Err()
 	default:
 	}
 
@@ -38,7 +38,7 @@ func ExecuteCachedTool(ctx context.Context, call openai.ToolCall, spec CachedExe
 			"tool": call.Function.Name,
 		})
 		LogToolCallError(call, 0, args, err)
-		return ExecuteResult{}, err
+		return Execution{}, err
 	}
 
 	LogToolCallStarted(call, args)
@@ -46,17 +46,17 @@ func ExecuteCachedTool(ctx context.Context, call openai.ToolCall, spec CachedExe
 	signature, err := spec.CanonicalSignature(call)
 	if err != nil {
 		LogToolCallError(call, 0, args, err)
-		return ExecuteResult{}, err
+		return Execution{}, err
 	}
 
 	bypassCache := ctx != nil && ctx.Value(cacheBypassKey{}) == true
 	if !bypassCache {
 		if cached, ok := spec.Cache[signature]; ok {
-			result := CloneExecuteResult(cached)
+			result := CloneExecution(cached)
 			result.Cached = true
 			result.Duplicate = true
 
-			summary := CloneSummary(result.Summary)
+			summary := CloneSummary(result.Result.Summary)
 			if summary == nil {
 				summary = map[string]any{}
 			}
@@ -71,25 +71,14 @@ func ExecuteCachedTool(ctx context.Context, call openai.ToolCall, spec CachedExe
 	result, err := spec.Execute(ctx, call)
 	if err != nil {
 		LogToolCallError(call, time.Since(startedAt), args, err)
-		return ExecuteResult{}, err
+		return Execution{}, err
 	}
 
 	if !bypassCache {
-		spec.Cache[signature] = CloneExecuteResult(result)
+		spec.Cache[signature] = CloneExecution(result)
 	}
-	LogToolCallFinished(call, time.Since(startedAt), "ok", CloneSummary(result.Summary))
-	return CloneExecuteResult(result), nil
-}
-
-func CloneExecuteResult(result ExecuteResult) ExecuteResult {
-	return ExecuteResult{
-		Payload:      result.Payload,
-		Summary:      CloneSummary(result.Summary),
-		Cached:       result.Cached,
-		Duplicate:    result.Duplicate,
-		ProgressKeys: CloneStrings(result.ProgressKeys),
-		Hints:        CloneHints(result.Hints),
-	}
+	LogToolCallFinished(call, time.Since(startedAt), "ok", CloneSummary(result.Result.Summary))
+	return CloneExecution(result), nil
 }
 
 func CloneSummary(summary map[string]any) map[string]any {

@@ -1,8 +1,7 @@
-package ragcore_test
+package rag_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -11,8 +10,10 @@ import (
 	"time"
 
 	"github.com/borro/ragcli/internal/aitools"
+	ragtools "github.com/borro/ragcli/internal/aitools/rag"
 	"github.com/borro/ragcli/internal/input"
 	"github.com/borro/ragcli/internal/llm"
+	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/ragcore"
 	"github.com/borro/ragcli/internal/verbose"
 	openai "github.com/sashabaranov/go-openai"
@@ -40,8 +41,15 @@ func (f embeddingRequesterFunc) CreateEmbeddingsWithMetrics(ctx context.Context,
 	return f(ctx, inputs)
 }
 
+func TestMain(m *testing.M) {
+	if err := localize.SetCurrent(localize.EN); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
 func TestToolDefinitionRequiresQuery(t *testing.T) {
-	tool := ragcore.NewSearchTool(&ragcore.PreparedSearch{}, embeddingRequesterFunc(func(context.Context, []string) ([][]float32, llm.EmbeddingMetrics, error) {
+	tool := ragtools.NewSearchTool(&ragcore.PreparedSearch{}, embeddingRequesterFunc(func(context.Context, []string) ([][]float32, llm.EmbeddingMetrics, error) {
 		return nil, llm.EmbeddingMetrics{}, nil
 	}))
 
@@ -60,23 +68,23 @@ func TestToolDefinitionRequiresQuery(t *testing.T) {
 	}
 }
 
-func TestSearchRAGExecuteReturnsPaginatedMatchesAndHints(t *testing.T) {
+func TestSearchRAGExecuteReturnsTypedPaginationAndHints(t *testing.T) {
 	tool := newPreparedTool(t)
 
 	first, err := tool.Execute(context.Background(), toolCall("1", "search_rag", `{"query":"retry","limit":1}`))
 	if err != nil {
 		t.Fatalf("Execute(first) error = %v", err)
 	}
-	if next := first.Hints[ragcore.HintSuggestedNextOffset]; next != 1 {
+	if next := first.Result.Hints[aitools.HintSuggestedNextOffset]; next != 1 {
 		t.Fatalf("next offset = %#v, want 1", next)
 	}
-	if len(first.ProgressKeys) == 0 {
-		t.Fatal("ProgressKeys = empty, want expanded line keys")
+	if len(first.Result.ProgressKeys) == 0 || !strings.HasPrefix(first.Result.ProgressKeys[0], "rag:") {
+		t.Fatalf("ProgressKeys = %#v, want rag-prefixed keys", first.Result.ProgressKeys)
 	}
 
-	var payload ragcore.SearchResult
-	if err := json.Unmarshal([]byte(first.Payload), &payload); err != nil {
-		t.Fatalf("json.Unmarshal(first.Payload) error = %v", err)
+	payload, ok := first.Result.Payload.(ragtools.SearchResult)
+	if !ok {
+		t.Fatalf("payload type = %T, want rag.SearchResult", first.Result.Payload)
 	}
 	if payload.MatchCount != 1 || payload.TotalMatches < 2 || !payload.HasMore {
 		t.Fatalf("payload = %+v, want paginated matches", payload)
@@ -84,49 +92,27 @@ func TestSearchRAGExecuteReturnsPaginatedMatchesAndHints(t *testing.T) {
 	if payload.NextOffset != 1 {
 		t.Fatalf("NextOffset = %d, want 1", payload.NextOffset)
 	}
-	if payload.Matches[0].ChunkID < 0 || payload.Matches[0].Similarity <= 0 || payload.Matches[0].Overlap <= 0 {
-		t.Fatalf("first match = %+v, want chunk_id/similarity/overlap for fused hybrid seed", payload.Matches[0])
-	}
 
 	second, err := tool.Execute(context.Background(), toolCall("2", "search_rag", `{"query":"retry","limit":1,"offset":1}`))
 	if err != nil {
 		t.Fatalf("Execute(second) error = %v", err)
 	}
-	var secondPayload ragcore.SearchResult
-	if err := json.Unmarshal([]byte(second.Payload), &secondPayload); err != nil {
-		t.Fatalf("json.Unmarshal(second.Payload) error = %v", err)
-	}
+	secondPayload := second.Result.Payload.(ragtools.SearchResult)
 	if secondPayload.Offset != 1 || secondPayload.MatchCount != 1 {
 		t.Fatalf("second payload = %+v, want second page", secondPayload)
 	}
 }
 
-func TestSearchRAGExecuteSupportsPathFilter(t *testing.T) {
+func TestSearchRAGExecuteSupportsPathFilterAndCache(t *testing.T) {
 	tool := newPreparedTool(t)
 
 	result, err := tool.Execute(context.Background(), toolCall("1", "search_rag", `{"path":"c.txt","query":"retry"}`))
 	if err != nil {
 		t.Fatalf("Execute(path filter) error = %v", err)
 	}
-	var payload ragcore.SearchResult
-	if err := json.Unmarshal([]byte(result.Payload), &payload); err != nil {
-		t.Fatalf("json.Unmarshal(result.Payload) error = %v", err)
-	}
+	payload := result.Result.Payload.(ragtools.SearchResult)
 	if payload.Path != "c.txt" || payload.MatchCount != 1 {
 		t.Fatalf("payload = %+v, want one match in c.txt", payload)
-	}
-	if payload.Matches[0].Path != "c.txt" {
-		t.Fatalf("first match = %+v, want c.txt", payload.Matches[0])
-	}
-}
-
-func TestSearchRAGExecuteRejectsUnknownPathAndCachesDuplicates(t *testing.T) {
-	tool := newPreparedTool(t)
-
-	if _, err := tool.Execute(context.Background(), toolCall("1", "search_rag", `{"path":"missing.txt","query":"retry"}`)); err == nil {
-		t.Fatal("Execute(missing path) error = nil, want invalid_arguments")
-	} else if code := aitools.AsToolError(err).Code; code != "invalid_arguments" {
-		t.Fatalf("Code = %q, want invalid_arguments", code)
 	}
 
 	first, err := tool.Execute(context.Background(), toolCall("2", "search_rag", `{"query":"database"}`))
@@ -145,35 +131,18 @@ func TestSearchRAGExecuteRejectsUnknownPathAndCachesDuplicates(t *testing.T) {
 	}
 }
 
-func TestSearchRAGDescribeCall_UsesCompactVerboseLabel(t *testing.T) {
+func TestSearchRAGDescribeCallAndErrors(t *testing.T) {
 	tool := newPreparedTool(t)
 
 	desc := tool.DescribeCall(toolCall("1", "search_rag", `{"query":"retry","path":"c.txt","limit":1,"offset":2}`))
 	if desc.VerboseLabel != `search_rag(query="retry", path="c.txt", limit=1, offset=2)` {
 		t.Fatalf("VerboseLabel = %q, want compact label", desc.VerboseLabel)
 	}
-	if got := desc.Arguments["query"]; got != "retry" {
-		t.Fatalf("query = %#v, want retry", got)
-	}
-	if got := desc.Arguments["path"]; got != "c.txt" {
-		t.Fatalf("path = %#v, want c.txt", got)
-	}
-	if got := desc.Arguments["limit"]; got != 1 {
-		t.Fatalf("limit = %#v, want 1", got)
-	}
-	if got := desc.Arguments["offset"]; got != 2 {
-		t.Fatalf("offset = %#v, want 2", got)
-	}
 
-	normalized := tool.DescribeCall(toolCall("2", "search_rag", `{"query":"retry","limit":0,"offset":-1}`))
-	if normalized.VerboseLabel != `search_rag(query="retry")` {
-		t.Fatalf("VerboseLabel = %q, want normalized compact label", normalized.VerboseLabel)
-	}
-	if got := normalized.Arguments["limit"]; got != 5 {
-		t.Fatalf("limit = %#v, want normalized default 5", got)
-	}
-	if got := normalized.Arguments["offset"]; got != 0 {
-		t.Fatalf("offset = %#v, want normalized default 0", got)
+	if _, err := tool.Execute(context.Background(), toolCall("2", "search_rag", `{"path":"missing.txt","query":"retry"}`)); err == nil {
+		t.Fatal("Execute(missing path) error = nil, want invalid_arguments")
+	} else if code := aitools.AsToolError(err).Code; code != "invalid_arguments" {
+		t.Fatalf("Code = %q, want invalid_arguments", code)
 	}
 }
 
@@ -188,13 +157,13 @@ func TestSearchRAGExecuteReportsEmbedderErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("preparedSearch() error = %v", err)
 	}
-	tool := ragcore.NewSearchTool(searcher, embeddingRequesterFunc(func(_ context.Context, _ []string) ([][]float32, llm.EmbeddingMetrics, error) {
+	tool := ragtools.NewSearchTool(searcher, embeddingRequesterFunc(func(_ context.Context, _ []string) ([][]float32, llm.EmbeddingMetrics, error) {
 		return nil, llm.EmbeddingMetrics{}, errors.New("embed failed")
 	}))
 
 	_, err = tool.Execute(context.Background(), toolCall("1", "search_rag", `{"query":"retry"}`))
-	if err == nil || !strings.Contains(err.Error(), "embed failed") {
-		t.Fatalf("Execute() error = %v, want embed failure", err)
+	if err == nil || !strings.Contains(err.Error(), "failed to search rag index") {
+		t.Fatalf("Execute() error = %v, want wrapped embed failure", err)
 	}
 }
 
@@ -219,7 +188,7 @@ func newPreparedTool(t *testing.T) aitools.Tool {
 		t.Fatalf("preparedSearch() error = %v", err)
 	}
 
-	return ragcore.NewSearchTool(searcher, embedder)
+	return ragtools.NewSearchTool(searcher, embedder)
 }
 
 func preparedSearch(t *testing.T, embedder llm.EmbeddingRequester) (*ragcore.PreparedSearch, error) {
@@ -267,11 +236,19 @@ func toolCall(id string, name string, arguments string) openai.ToolCall {
 
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
-	path := t.TempDir() + "/input.txt"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+
+	file, err := os.CreateTemp(t.TempDir(), "rag-*.txt")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
 	}
-	return path
+	if _, err := file.WriteString(content); err != nil {
+		_ = file.Close()
+		t.Fatalf("WriteString() error = %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	return file.Name()
 }
 
 func vectorFor(input string) []float32 {

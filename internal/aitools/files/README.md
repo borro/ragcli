@@ -52,12 +52,12 @@
 1. `cachedLineReader` или `multiFileReader` загружает строки при первом обращении к нужному файлу.
 2. Поисковые и read-операции возвращают стабильный JSON wire-format.
 3. `NewTools` создаёт concrete file tools для single-file или multi-file режима.
-4. Каждый tool валидирует `openai.ToolCall`, выполняет локальную операцию и возвращает generic `aitools.ExecuteResult`.
-5. `ProgressKeys` кодируют file/line evidence для orchestration, а pagination hints пишутся в `Hints`.
+4. Каждый tool валидирует `openai.ToolCall`, выполняет локальную операцию и возвращает typed `aitools.Execution`.
+5. Payload остаётся file-domain struct (`SearchResult`, `ReadLinesResult`, ...), а `ProgressKeys`/`Hints`/`Evidence` собираются внутри пакета, а не в orchestration.
 
 ## Инварианты и ошибки
 
 - `auto` search сначала делает literal search, затем token-overlap fallback.
 - В multi-file режиме `path` относится к relative display path внутри attached corpus.
 - duplicate-call cache хранится на уровне конкретного tool instance.
-- File-specific runtime hints и progress semantics не поднимаются в базовый `aitools`.
+- File-domain payload shape остаётся здесь; общий `aitools` видит только typed result metadata и единый tool-message envelope.

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/borro/ragcli/internal/input"
+	"github.com/borro/ragcli/internal/input/testsource"
 	"github.com/borro/ragcli/internal/llm"
 	"github.com/borro/ragcli/internal/localize"
 	"github.com/borro/ragcli/internal/retrieval"
@@ -68,16 +69,7 @@ func (s testSource) InputPath() string {
 }
 
 func (s testSource) DisplayName() string {
-	if path := strings.TrimSpace(s.inputPath); path != "" {
-		return path
-	}
-	if s.kind == input.KindStdin {
-		return "stdin"
-	}
-	if len(s.files) > 0 && strings.TrimSpace(s.files[0].DisplayPath) != "" {
-		return s.files[0].DisplayPath
-	}
-	return strings.TrimSpace(s.snapshotPath)
+	return testsource.DisplayName(s.kind, s.inputPath, s.snapshotPath, s.files)
 }
 
 func (s testSource) SnapshotPath() string {
@@ -107,7 +99,7 @@ func fileSource(reader io.Reader, path string, label string) testSource {
 	snapshotPath := ""
 	files := []input.File(nil)
 	if reader != nil {
-		snapshotPath = writeSourceTempFile(reader, filepath.Base(path))
+		snapshotPath = testsource.WriteTempFile(reader, filepath.Base(path))
 		files = []input.File{{
 			Path:        snapshotPath,
 			DisplayPath: filepath.Base(path),
@@ -127,21 +119,6 @@ func directorySource(label string, path string, files []input.File) testSource {
 		inputPath: path,
 		files:     append([]input.File(nil), files...),
 	}
-}
-
-func writeSourceTempFile(reader io.Reader, name string) string {
-	tmpFile, err := os.CreateTemp("", "rag-test-*"+filepath.Ext(name))
-	if err != nil {
-		panic(err)
-	}
-	if _, err := io.Copy(tmpFile, reader); err != nil {
-		_ = tmpFile.Close()
-		panic(err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		panic(err)
-	}
-	return tmpFile.Name()
 }
 
 func TestChunkTextPreservesLineRanges(t *testing.T) {
@@ -519,8 +496,8 @@ func TestBuildOrLoadIndexFromFilesUsesCache(t *testing.T) {
 		IndexTTL:       time.Hour,
 		IndexDir:       t.TempDir(),
 	}
-	firstPath := writeSourceTempFile(strings.NewReader("retry policy enabled\n"), "a.txt")
-	secondPath := writeSourceTempFile(strings.NewReader("database settings\n"), "b.txt")
+	firstPath := testsource.WriteTempFile(strings.NewReader("retry policy enabled\n"), "a.txt")
+	secondPath := testsource.WriteTempFile(strings.NewReader("database settings\n"), "b.txt")
 	source := directorySource("corpus", "/tmp/corpus", []input.File{
 		{Path: firstPath, DisplayPath: "a.txt"},
 		{Path: secondPath, DisplayPath: "b.txt"},
@@ -635,8 +612,8 @@ func TestCmpChunkOrder(t *testing.T) {
 
 func TestPreparedSearchFusedSearch(t *testing.T) {
 	source := directorySource("corpus", "/tmp/corpus", []input.File{
-		{Path: writeSourceTempFile(strings.NewReader("retry policy enabled\nbackoff is exponential\n"), "a.txt"), DisplayPath: "a.txt"},
-		{Path: writeSourceTempFile(strings.NewReader("database connections stable\n"), "b.txt"), DisplayPath: "b.txt"},
+		{Path: testsource.WriteTempFile(strings.NewReader("retry policy enabled\nbackoff is exponential\n"), "a.txt"), DisplayPath: "a.txt"},
+		{Path: testsource.WriteTempFile(strings.NewReader("database connections stable\n"), "b.txt"), DisplayPath: "b.txt"},
 	})
 	searcher, stats, err := PrepareSearch(context.Background(), &fakeEmbedder{}, source, SearchOptions{
 		TopK:           3,

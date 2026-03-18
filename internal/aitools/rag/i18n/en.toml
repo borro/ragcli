@@ -1,0 +1,8 @@
+[tools.description]
+search_rag = "Search the pre-indexed attached file or directory corpus semantically. Supports optional path narrowing and pagination via limit/offset. Returns a tool envelope with semantic search matches and orchestration metadata."
+
+[tools.rag.param]
+path = "Relative path inside the attached directory corpus; omit it only when a single file is attached or for corpus-wide semantic search"
+query = "Semantic search query for the indexed corpus"
+limit = "Maximum results for the current semantic search page"
+offset = "Offset for semantic search result pagination"

@@ -1,4 +1,4 @@
-package ragcore
+package rag
 
 import (
 	"encoding/json"
@@ -25,7 +25,7 @@ func parseSearchToolArgs(call openai.ToolCall) (searchToolArgs, error) {
 }
 
 func (a searchToolArgs) canonicalSignature(toolName string) (string, error) {
-	body, err := MarshalJSON(a.SearchParams)
+	body, err := aitools.MarshalJSON(a.SearchParams)
 	if err != nil {
 		return "", err
 	}
