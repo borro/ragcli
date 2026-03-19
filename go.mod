@@ -14,6 +14,7 @@ require (
 	github.com/urfave/cli/v3 v3.7.0
 	golang.org/x/term v0.41.0
 	golang.org/x/text v0.35.0
+	pgregory.net/rapid v1.2.0
 )
 
 require (

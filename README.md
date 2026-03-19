@@ -281,3 +281,5 @@ Live e2e smoke для реальной интеграции вынесен в [`
 `lefthook` запускает этот smoke на `pre-push` только когда в push есть `*.go` файлы, а не на `pre-commit`. Если обязательные env не заданы, hook печатает `skip` и пропускает push; для жёсткого режима выставьте `RAGCLI_E2E_REQUIRED=1`.
 
 На `pre-commit` `lefthook` запускает `gofmt`, `golangci-lint`, `go test ./...` и `govulncheck ./...`. Для локальной установки `govulncheck` используйте `go install golang.org/x/vuln/cmd/govulncheck@v1.1.4`.
+
+Если нужно погонять property-based тесты глубже обычного цикла, увеличьте число `rapid`-проверок локально: `go test ./... -args -rapid.checks=500`.
