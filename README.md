@@ -280,9 +280,16 @@ Live e2e smoke для реальной интеграции вынесен в [`
 
 `lefthook` запускает этот smoke на `pre-push` только когда в push есть `*.go` файлы, а не на `pre-commit`. Если обязательные env не заданы, hook печатает `skip` и пропускает push; для жёсткого режима выставьте `RAGCLI_E2E_REQUIRED=1`.
 
-На `pre-commit` `lefthook` запускает `gofmt`, `golangci-lint`, `go test ./...` и `govulncheck ./...`. Для локальной установки `govulncheck` используйте `go install golang.org/x/vuln/cmd/govulncheck@v1.1.4`.
+На `pre-commit` `lefthook` запускает `gofmt`, `golangci-lint`, `go test ./...`, отдельный property-based прогон через [`scripts/property_test.sh`](/home/borro/projects/llm-code/ragcli/scripts/property_test.sh) и `govulncheck ./...`. Для локальной установки `govulncheck` используйте `go install golang.org/x/vuln/cmd/govulncheck@v1.1.4`.
 
-Если нужно погонять property-based тесты глубже обычного цикла, увеличьте число `rapid`-проверок локально: `go test ./... -args -rapid.checks=500`.
+В CI property-based тесты идут отдельным job в `.github/workflows/ci.yaml`, а локально тот же entrypoint можно запускать напрямую:
+
+```bash
+./scripts/property_test.sh
+RAGCLI_PROPERTY_RAPID_CHECKS=1000 ./scripts/property_test.sh
+```
+
+По умолчанию скрипт гоняет property-only subset пакетов с `-rapid.checks=500` и `go test -count=1`. Для изменения глубины используйте `RAGCLI_PROPERTY_RAPID_CHECKS`, а для явного контроля числа прогонов `go test` — `RAGCLI_PROPERTY_GO_TEST_COUNT`.
 
 Мутационное тестирование вынесено в отдельный workflow `.github/workflows/mutation.yaml` и локальный скрипт [`scripts/mutation_test.sh`](/home/borro/projects/llm-code/ragcli/scripts/mutation_test.sh). Оно намеренно не добавлено в `lefthook` и основной `.github/workflows/ci.yaml`: для PR это blocking quality gate, но по времени оно слишком тяжёлое для каждого `pre-commit` и обычного `Lint & Test` job.
 

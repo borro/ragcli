@@ -9,6 +9,8 @@ pre-commit:
       run: golangci-lint run ./cmd/... ./internal/...
     go-test:
       run: go test ./...
+    property-tests:
+      run: ./scripts/property_test.sh
     govulncheck:
       run: |
         if command -v govulncheck >/dev/null 2>&1; then

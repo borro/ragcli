@@ -30,7 +30,8 @@
 - Линт как в CI: `golangci-lint run --timeout=5m`
 - Базовая проверка: `go test ./...`
 - Полная CI-like проверка локально: `go test -v -race -coverprofile=coverage.out ./...`
-- Углублённый локальный property-based прогон: `go test ./... -args -rapid.checks=500`
+- Отдельный property-based прогон: `./scripts/property_test.sh`
+- Углублённый локальный property-based прогон: `RAGCLI_PROPERTY_RAPID_CHECKS=1000 ./scripts/property_test.sh`
 - Локальный mutation dry/full run: `./scripts/mutation_test.sh [origin/master]`
 - Live smoke script с реальными CLI-сценариями: `./scripts/e2e_live_smoke.sh`
 
@@ -40,6 +41,7 @@
 - При изменении CLI-флагов, defaults или mode-пайплайнов обновляй соответствующие docs в `doc/` и package-level `README.md`.
 - При изменении строк или ключей локализации вноси изменения во все файлы локализации, чтобы набор переводов оставался синхронным.
 - При изменении локальных quality checks или CI-пайплайна держи `.github/workflows/ci.yaml` и `lefthook.yml` синхронными по набору обязательных проверок, если нет явно задокументированного исключения.
+- Separate property-based run не является исключением: если меняешь его scope, entrypoint или глубину, синхронизируй `scripts/property_test.sh`, `.github/workflows/ci.yaml`, `lefthook.yml` и dev-docs.
 - Mutation testing — как раз такое задокументированное исключение: оно живёт отдельно в `.github/workflows/mutation.yaml`, `.gremlins.yaml` и `scripts/mutation_test.sh`, а не в `lefthook` и не в основном `ci.yaml`.
 - Если трогаешь property-based тесты на `rapid` или добавляешь новые, используй shared helper из `internal/testutil`, чтобы mutation-mode (`RAGCLI_MUTATION=1`) оставался детерминированным и не расходился по пакетам.
 - Для нового пакета с самостоятельной ролью добавляй рядом `README.md`.
