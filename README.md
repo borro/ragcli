@@ -283,3 +283,21 @@ Live e2e smoke для реальной интеграции вынесен в [`
 На `pre-commit` `lefthook` запускает `gofmt`, `golangci-lint`, `go test ./...` и `govulncheck ./...`. Для локальной установки `govulncheck` используйте `go install golang.org/x/vuln/cmd/govulncheck@v1.1.4`.
 
 Если нужно погонять property-based тесты глубже обычного цикла, увеличьте число `rapid`-проверок локально: `go test ./... -args -rapid.checks=500`.
+
+Мутационное тестирование вынесено в отдельный workflow `.github/workflows/mutation.yaml` и локальный скрипт [`scripts/mutation_test.sh`](/home/borro/projects/llm-code/ragcli/scripts/mutation_test.sh). Оно намеренно не добавлено в `lefthook` и основной `.github/workflows/ci.yaml`: для PR это blocking quality gate, но по времени оно слишком тяжёлое для каждого `pre-commit` и обычного `Lint & Test` job.
+
+Локальный запуск:
+
+```bash
+./scripts/mutation_test.sh
+./scripts/mutation_test.sh origin/master
+```
+
+Скрипт сам выставляет `RAGCLI_MUTATION=1`, пишет JSON-отчёт в `${RAGCLI_MUTATION_OUTPUT:-.artifacts/mutation/mutation-report.json}` и использует установленный `gremlins`, а если бинаря нет — fallback на `go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0`.
+
+Для mutation-режима доступны точечные overrides существующих property-based тестов:
+
+- `RAGCLI_MUTATION_RAPID_CHECKS`
+- `RAGCLI_MUTATION_RAPID_SEED`
+- `RAGCLI_MUTATION_RAPID_SHRINKTIME`
+- `RAGCLI_MUTATION_RAPID_NOFAILFILE`

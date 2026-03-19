@@ -38,6 +38,7 @@ coverage.txt
 cover.out
 coverage.html
 coverage.json
+.artifacts/
 
 # Log files
 *.log

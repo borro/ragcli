@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/borro/ragcli/internal/testutil"
 	"pgregory.net/rapid"
 )
 
 func TestBuildLineSlices_PropertyClampsAndPreservesOrder(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
+	testutil.RapidCheck(t, func(t *rapid.T) {
 		lines := drawFileToolLines(t, "lines", 12, 24)
 		displayPath := drawFileToolPath(t, "path", 24)
 		start := rapid.IntRange(-5, 20).Draw(t, "start")
@@ -33,7 +34,7 @@ func TestBuildLineSlices_PropertyClampsAndPreservesOrder(t *testing.T) {
 }
 
 func TestReadLinesFromLines_PropertyReturnsConsistentJSON(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
+	testutil.RapidCheck(t, func(t *rapid.T) {
 		lines := drawFileToolLines(t, "lines", 12, 24)
 		displayPath := drawFileToolPath(t, "path", 24)
 		start := rapid.IntRange(-5, 20).Draw(t, "start")
@@ -75,7 +76,7 @@ func TestReadLinesFromLines_PropertyReturnsConsistentJSON(t *testing.T) {
 }
 
 func TestReadAroundFromLines_PropertyReturnsClampedWindow(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
+	testutil.RapidCheck(t, func(t *rapid.T) {
 		lines := drawFileToolLines(t, "lines", 12, 24)
 		displayPath := drawFileToolPath(t, "path", 24)
 		line := rapid.IntRange(-2, 20).Draw(t, "line")
@@ -139,7 +140,7 @@ func TestReadAroundFromLines_PropertyReturnsClampedWindow(t *testing.T) {
 }
 
 func TestSortTokenOverlapMatches_PropertyOrdersAndPreservesEqualKeyOrder(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
+	testutil.RapidCheck(t, func(t *rapid.T) {
 		count := rapid.IntRange(0, 20).Draw(t, "count")
 		matches := make([]SearchMatch, 0, count)
 		originalIndex := make(map[string]int, count)

@@ -6,11 +6,12 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/borro/ragcli/internal/testutil"
 	"pgregory.net/rapid"
 )
 
 func TestSplitOversizedApproxLine_PropertyPreservesTextAndBudgets(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
+	testutil.RapidCheck(t, func(t *rapid.T) {
 		line := drawMapString(t, "line", 72, []rune{'a', 'B', 'ж', 'Я', '🙂', '1', ' ', '\t', '-', '_'})
 		maxChunkTokens := rapid.IntRange(1, 12).Draw(t, "maxChunkTokens")
 		requestOverhead := rapid.IntRange(0, 80).Draw(t, "requestOverhead")

@@ -1,0 +1,43 @@
+silent: false
+
+unleash:
+  integration: false
+  dry-run: false
+  tags: ""
+  output: ""
+  diff: ""
+  output-statuses: "lctv"
+  workers: 2
+  test-cpu: 1
+  timeout-coefficient: 0
+  threshold:
+    efficacy: 65
+    mutant-coverage: 50
+  exclude-files:
+    - '^cmd/ragcli/main\.go$'
+    - '^internal/input/testsource/'
+    - '^internal/verbose/testutil/'
+
+mutants:
+  arithmetic-base:
+    enabled: true
+  conditionals-boundary:
+    enabled: true
+  conditionals-negation:
+    enabled: true
+  increment-decrement:
+    enabled: true
+  invert-assignments:
+    enabled: false
+  invert-bitwise:
+    enabled: false
+  invert-bwassign:
+    enabled: false
+  invert-negatives:
+    enabled: true
+  invert-logical:
+    enabled: false
+  invert-loopctrl:
+    enabled: false
+  remove-self-assignments:
+    enabled: false

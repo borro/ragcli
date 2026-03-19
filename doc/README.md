@@ -40,6 +40,7 @@ Repo-level инструкции для кодинг-агентов лежат в
 - [`../internal/input/README.md`](../internal/input/README.md)
 - [`../internal/retrieval/README.md`](../internal/retrieval/README.md)
 - [`../internal/selfupdate/README.md`](../internal/selfupdate/README.md)
+- [`../internal/testutil/README.md`](../internal/testutil/README.md)
 - [`../internal/verbose/README.md`](../internal/verbose/README.md)
 - [`../internal/verbose/testutil/README.md`](../internal/verbose/testutil/README.md)
 - [`../internal/localize/README.md`](../internal/localize/README.md)
@@ -51,3 +52,4 @@ Repo-level инструкции для кодинг-агентов лежат в
 - При изменении пайплайна одного режима обновляйте `doc/architecture.md` и package-level `README.md` соответствующего пакета.
 - При добавлении нового пакета с самостоятельной ролью добавляйте рядом с ним `README.md` и ссылку на него из этого индекса.
 - Live smoke с реальным backend'ом запускается через `scripts/e2e_live_smoke.sh`; `lefthook` вешает его на `pre-push` только для пушей с `*.go` файлами, а на `pre-commit` гоняет `gofmt`, `golangci-lint`, `go test ./...` и `govulncheck ./...`.
+- Mutation testing запускается отдельно через `scripts/mutation_test.sh` и `.github/workflows/mutation.yaml`; это осознанное исключение из обычной синхронизации `lefthook` и основного `ci.yaml`, потому что mutation run слишком дорог для каждого `pre-commit` и стандартного CI job.

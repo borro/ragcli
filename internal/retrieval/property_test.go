@@ -8,11 +8,12 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/borro/ragcli/internal/testutil"
 	"pgregory.net/rapid"
 )
 
 func TestWalkLines_PropertyPreservesOffsetsAndContent(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
+	testutil.RapidCheck(t, func(t *rapid.T) {
 		input := drawRetrievalString(t, "input", 48, []rune{'a', 'B', 'ж', 'Я', '🙂', '1', ' ', '\t', '\n', '\r', '-', '_'})
 
 		type lineRecord struct {
@@ -71,7 +72,7 @@ func TestWalkLines_PropertyPreservesOffsetsAndContent(t *testing.T) {
 }
 
 func TestMergeRanges_PropertyPreservesUnionAndNormalizesOrder(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
+	testutil.RapidCheck(t, func(t *rapid.T) {
 		ranges := drawLineRanges(t, "ranges", 12, -5, 20)
 		merged := mergeRanges(ranges)
 
@@ -102,7 +103,7 @@ func TestMergeRanges_PropertyPreservesUnionAndNormalizesOrder(t *testing.T) {
 }
 
 func TestSubtractRanges_PropertyMatchesSetDifference(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
+	testutil.RapidCheck(t, func(t *rapid.T) {
 		base := mergeRanges(drawLineRanges(t, "base", 12, -5, 20))
 		subtractor := drawLineRange(t, "subtractor", -5, 20)
 
@@ -132,7 +133,7 @@ func TestSubtractRanges_PropertyMatchesSetDifference(t *testing.T) {
 }
 
 func TestTokenize_PropertyNormalizesDistinctLowercaseTokens(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
+	testutil.RapidCheck(t, func(t *rapid.T) {
 		input := drawRetrievalString(t, "input", 48, []rune{'A', 'a', 'B', 'b', 'Ж', 'ж', 'X', 'x', '2', '4', ' ', '\t', '\n', ',', '.', '-', '_', '/', ':'})
 		tokens := Tokenize(input)
 		lowerInput := strings.ToLower(input)
@@ -163,7 +164,7 @@ func TestTokenize_PropertyNormalizesDistinctLowercaseTokens(t *testing.T) {
 }
 
 func TestTokenOverlapRatio_PropertyMatchesMatchedTokenFraction(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
+	testutil.RapidCheck(t, func(t *rapid.T) {
 		query := drawRetrievalString(t, "query", 36, []rune{'A', 'a', 'B', 'b', 'Ж', 'ж', 'X', 'x', '2', '4', ' ', '\t', '\n', ',', '.', '-', '_', '/', ':'})
 		text := drawRetrievalString(t, "text", 36, []rune{'A', 'a', 'B', 'b', 'Ж', 'ж', 'X', 'x', '2', '4', ' ', '\t', '\n', ',', '.', '-', '_', '/', ':'})
 
