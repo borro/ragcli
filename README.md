@@ -42,6 +42,8 @@
 - Для `hybrid`, `tools --rag` и `rag` дополнительно нужен совместимый embedding endpoint (`/embeddings`).
 - Поддерживаемые сценарии включают локальные backend'ы вроде Ollama, LM Studio и vLLM, если они совместимы по API.
 
+Если у вас нет локальной нейронки, можете воспользоваться [LLM-агрегатором Polza.ai](https://polza.ai?referral=LFCBwGrif7).
+
 ## Quickstart
 
 ```bash
